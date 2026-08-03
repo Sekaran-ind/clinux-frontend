@@ -1,4 +1,5 @@
 import { createLocalCollection } from '../collectionFactory.js';
+import { apiFetch } from '../../config.js';
 
 // Replaces clinixflow's cf_forms_library localStorage key. One record per formId:
 //   { formId, isSystem, archived, bookmarked, activeVersion, versions: [{version, status, yaml, questionnaire, savedAt}] }
@@ -12,7 +13,7 @@ export const formsLibrary = createLocalCollection('cf_forms_library_v2', {
 // already present — same "seed once, never overwrite a locally-edited copy" behavior as
 // system-forms.js's seedSystemForms(). Returns true if anything was added.
 export async function seedSystemForms(apiBase) {
-  const res = await fetch(`${apiBase}/api/workflow/system-forms`).then((r) => r.json());
+  const res = await apiFetch(`${apiBase}/api/workflow/system-forms`).then((r) => r.json());
   if (!res.success) {
     console.warn('Could not load system forms catalog:', res.error);
     return false;

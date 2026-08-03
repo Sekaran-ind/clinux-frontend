@@ -23,7 +23,7 @@ import {
   buildHprCreateBody, buildHprPasswordLoginBody,
   buildHfrSearchBody, buildHfrBasicInfoBody, buildHfrAdditionalInfoBody, buildHfrDetailedInfoBody, buildHfrSubmitBody,
 } from '../data/abdmAdapter.js';
-import { API_BASE, ABDM_GATEWAY_BASE } from '../config.js';
+import { API_BASE, ABDM_GATEWAY_BASE, apiFetch } from '../config.js';
 
 const router = useRouter();
 const onboarding = useOnboardingStore();
@@ -220,7 +220,7 @@ async function pingGateway() {
   gatewayStatus.value = 'pending';
   localStorage.setItem('cf_abdm_gateway_url', gatewayUrl.value);
   try {
-    const res = await fetch(gatewayUrl.value + '/hpr/master/states');
+    const res = await apiFetch(gatewayUrl.value + '/hpr/master/states');
     gatewayStatus.value = res.ok ? 'online' : 'offline';
   } catch (e) {
     gatewayStatus.value = 'offline';
@@ -229,7 +229,7 @@ async function pingGateway() {
 
 async function callGateway(method, path, body, extraHeaders) {
   try {
-    const res = await fetch(gatewayUrl.value + path, {
+    const res = await apiFetch(gatewayUrl.value + path, {
       method,
       headers: { 'Content-Type': 'application/json', ...(extraHeaders || {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,

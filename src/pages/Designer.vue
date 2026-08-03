@@ -18,7 +18,7 @@ import {
 } from '../data/useSystemForms.js';
 import { useThemeStore } from '../stores/theme.js';
 import { useAuthStore } from '../stores/auth.js';
-import { API_BASE } from '../config.js';
+import { API_BASE, apiFetch } from '../config.js';
 
 const theme = useThemeStore();
 const auth = useAuthStore();
@@ -74,7 +74,7 @@ onMounted(async () => {
   const changed = await seedSystemForms(API_BASE).catch(() => false);
   if (changed) libraryVersion.value++;
 
-  const res = await fetch(`${API_BASE}/api/workflow/default-blueprint`).then((r) => r.json()).catch(() => ({ success: false }));
+  const res = await apiFetch(`${API_BASE}/api/workflow/default-blueprint`).then((r) => r.json()).catch(() => ({ success: false }));
   if (res.success) {
     yamlInput.value = res.yaml;
     await compileWorkflow();
@@ -122,7 +122,7 @@ async function compileWorkflow() {
   // A fresh compile means the previewed form may have changed since the last save.
   savedVersionLabel.value = '';
 
-  const res = await fetch(`${API_BASE}/api/workflow/compile`, {
+  const res = await apiFetch(`${API_BASE}/api/workflow/compile`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ yamlPayload: yamlInput.value }),
@@ -564,7 +564,7 @@ async function saveToLibrary(status = 'draft') {
 
   // Subscribed clinics additionally get a durable server-side copy.
   if (auth.currentUser?.subscriptionActive) {
-    const res = await fetch(`${API_BASE}/api/workflow/save-to-library`, {
+    const res = await apiFetch(`${API_BASE}/api/workflow/save-to-library`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ yamlPayload: yamlInput.value, questionnaireJson: blueprintJson.value }),
@@ -588,10 +588,12 @@ async function testVoiceScribeExtraction() {
   // server's reverse-mapping match uses this run's keywords.
   syncKeywordsToBlueprint();
 
-  const res = await fetch(`${API_BASE}/api/workflow/test-scribe`, {
+  // source: 'designer-test' — lets clinuxflow-api deny this specific dev-testing path in
+  // production while leaving ConsultationDesk.vue's real scribe feature untouched.
+  const res = await apiFetch(`${API_BASE}/api/workflow/test-scribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ transcript: voiceTranscriptInput.value, activeBlueprint: blueprintJson.value }),
+    body: JSON.stringify({ transcript: voiceTranscriptInput.value, activeBlueprint: blueprintJson.value, source: 'designer-test' }),
   }).then((r) => r.json());
 
   if (res.success) {

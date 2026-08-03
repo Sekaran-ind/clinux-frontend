@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { chatThreads } from '../data/collections/chatThreads.js';
-import { API_BASE } from '../config.js';
+import { API_BASE, apiFetch } from '../config.js';
 
 let cuboRecognition = null; // holds the active SpeechRecognition instance; kept outside Pinia's
 // reactive state for the same reason it was kept outside Alpine's store — reactivity proxies
@@ -77,7 +77,7 @@ export const useCuboStore = defineStore('cubo', () => {
 
   async function loadSpecialityCatalog() {
     try {
-      const res = await fetch(`${API_BASE}/api/clinic-specialities`).then((r) => r.json());
+      const res = await apiFetch(`${API_BASE}/api/clinic-specialities`).then((r) => r.json());
       if (res.success) {
         specialityCatalog.value = res.specialities;
         specialityCatalogLoaded.value = true;
@@ -98,7 +98,7 @@ export const useCuboStore = defineStore('cubo', () => {
     if (!entry || !roleFile) return;
     const role = entry.roles.find((r) => r.file === roleFile);
     try {
-      const res = await fetch(`${API_BASE}/api/clinic-specialities/${entry.folder}/${roleFile}`).then((r) => r.json());
+      const res = await apiFetch(`${API_BASE}/api/clinic-specialities/${entry.folder}/${roleFile}`).then((r) => r.json());
       if (!res.success) {
         addCuboMessage('assistant', 'Could not load that role file: ' + res.error);
         return;

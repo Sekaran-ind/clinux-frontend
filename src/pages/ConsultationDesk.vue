@@ -18,7 +18,7 @@ import {
   encounterConsent as consentCollection, prescriptions as rxCollection,
   getEncounterImages, careTeam as careTeamCollection,
 } from '../data/collections/encounterDocs.js';
-import { API_BASE } from '../config.js';
+import { API_BASE, apiFetch } from '../config.js';
 
 const STAFF_FORM_ID = 'system-staff-profile-v1';
 const SOAP_FORM_ID = 'system-consultation-soap-v1';
@@ -130,7 +130,7 @@ async function generateSoapDraft() {
     const blueprint = activeQuestionnaire(SOAP_FORM_ID);
     // context is the virtual-room role .md content selected via Cübo's Profile panel — applied
     // server-side (clinuxflow-api) to the scribe LLM's system prompt.
-    const res = await fetch(`${API_BASE}/api/workflow/test-scribe`, {
+    const res = await apiFetch(`${API_BASE}/api/workflow/test-scribe`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transcript, activeBlueprint: blueprint, context: cubo.virtualRoom?.markdown || '' }),
     }).then((r) => r.json());
