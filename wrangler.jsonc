@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clinux-frontend",
+  "compatibility_date": "2026-07-19",
+  "observability": { "enabled": true },
+  // Same Workers Static Assets pattern as the sibling clinuxflow-web project, but serving the
+  // Vite build output (dist/) instead of a plain HTML tree directly — run `npm run build`
+  // before `wrangler deploy`/`wrangler dev --local` against this config.
+  // not_found_handling: "single-page-application" — this is a vue-router createWebHistory() SPA
+  // (client-side routing), so any path that isn't a real static file (e.g. /front-desk on a
+  // fresh load or a page refresh, not just an in-app navigation) must still be served index.html
+  // so vue-router can take over, rather than a real 404.
+  "assets": { "directory": "dist", "not_found_handling": "single-page-application" },
+  // clinux-frontend now owns clinux.yaxb.ai — clinuxflow-web (the older, 5-of-9-page Alpine.js
+  // snapshot that previously held this route) has had its own route removed to match; a custom
+  // domain can only resolve to one Worker at a time.
+  "routes": [
+    {
+      "pattern": "clinux.yaxb.ai",
+      "custom_domain": true
+    }
+  ]
+}

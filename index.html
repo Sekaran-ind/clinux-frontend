@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClinüxFlow</title>
+
+    <!-- Anti-FOUC: apply the persisted dark-mode class before Vue mounts, same convention every
+         clinixflow page used. -->
+    <script>
+      if (localStorage.getItem('cf_dark') === 'true'
+        || (!localStorage.getItem('cf_dark') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+      }
+    </script>
+
+    <!-- LHC-Forms (Angular Elements + Zone.js), vendored from the local `lforms` npm package
+         into public/vendor/lforms/ (see package.json's postinstall script) rather than fetched
+         from lforms-static.nlm.nih.gov. Zone.js is a classic global-patching script and must run
+         first. runtime.js/polyfills.js/main.js are the Angular CLI build's own ES module chunks
+         (confirmed from the lforms package's own webcomponent/index.html demo page) — main.js
+         registers the <lhc-forms> custom element + window.LForms itself and fetches lhc-forms.js
+         (a further code-split chunk sitting next to it) via its own internal dynamic import, so
+         that one doesn't get an explicit <script> tag here. -->
+    <script src="/vendor/lforms/zone.min.js"></script>
+    <script type="module" src="/vendor/lforms/runtime.js"></script>
+    <script type="module" src="/vendor/lforms/polyfills.js"></script>
+    <script type="module" src="/vendor/lforms/main.js"></script>
+    <link rel="stylesheet" href="/vendor/lforms/styles.css" />
+    <!-- defer (not a bare classic script): module scripts above are implicitly deferred to run
+         after HTML parsing, in document order — without defer here, this classic script would
+         run immediately when encountered, before main.js's module body has actually executed
+         and set window.LForms, throwing "LForms is not defined". -->
+    <script defer src="/vendor/lforms/lformsFHIR.min.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
