@@ -1,0 +1,36 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          # Not secret — these end up in the public JS bundle regardless of how they're set.
+          VITE_API_BASE: https://clinuxflow-api.tsekaran1949.workers.dev
+          VITE_ABDM_GATEWAY_BASE: https://clinuxflow-abdm-gateway.tsekaran1949.workers.dev
+          VITE_SERVICE_KEY: ${{ secrets.VITE_SERVICE_KEY }}
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: deploy
