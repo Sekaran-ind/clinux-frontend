@@ -11,11 +11,20 @@ export const ABDM_GATEWAY_BASE = import.meta.env.VITE_ABDM_GATEWAY_BASE || 'http
 // backed by CORS + rate limiting server-side for the operations that actually matter.
 const SERVICE_KEY = import.meta.env.VITE_SERVICE_KEY || '';
 
+export const SESSION_TOKEN_KEY = 'cf_session_token';
+
 // Drop-in replacement for fetch() against either backend — attaches X-Service-Key so callers
-// don't have to remember to.
+// don't have to remember to, plus the per-account session token (if one exists) as a Bearer
+// token so clinuxflow-api's requireUser()/requirePaidTier() routes work. Harmless no-op against
+// clinuxflow-abdm-gateway, which doesn't read this header.
 export function apiFetch(url, options = {}) {
+  const token = localStorage.getItem(SESSION_TOKEN_KEY);
   return fetch(url, {
     ...options,
-    headers: { ...(options.headers || {}), 'X-Service-Key': SERVICE_KEY },
+    headers: {
+      ...(options.headers || {}),
+      'X-Service-Key': SERVICE_KEY,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
   });
 }

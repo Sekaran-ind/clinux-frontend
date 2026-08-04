@@ -64,9 +64,9 @@ function showToast(msg) {
   setTimeout(() => (toast.value.show = false), 3000);
 }
 
-function registerClinic() {
+async function registerClinic() {
   regError.value = '';
-  const { error, user } = auth.register({ ...regForm });
+  const { error, user } = await auth.register({ ...regForm });
   if (error) { regError.value = error; return; }
   showRegister.value = false;
   Object.assign(regForm, { clinicName: '', adminName: '', designation: '', email: '', password: '', services: '', phone: '', city: '' });
@@ -74,9 +74,9 @@ function registerClinic() {
   router.push('/onboarding');
 }
 
-function loginClinic() {
+async function loginClinic() {
   loginError.value = '';
-  const { error } = auth.login(loginForm.email, loginForm.password);
+  const { error } = await auth.login(loginForm.email, loginForm.password);
   if (error) { loginError.value = error; return; }
   showLogin.value = false;
   Object.assign(loginForm, { email: '', password: '' });

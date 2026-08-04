@@ -16,6 +16,7 @@ import { aiEnginePatients } from './data/collections/aiEnginePatients.js';
 import { aiEngineStaff } from './data/collections/aiEngineStaff.js';
 import { aiEngineEncounters } from './data/collections/aiEngineEncounters.js';
 import { API_BASE } from './config.js';
+import { useAuthStore } from './stores/auth.js';
 
 // TanStack DB collections load their persisted data asynchronously (even the localStorage-backed
 // ones — see collection.preload()'s own doc comment: "useful for preloading collections"), not
@@ -36,6 +37,11 @@ const app = createApp(App);
 app.use(createPinia());
 app.use(router);
 app.mount('#app');
+
+// Revalidates a stored session against the server on every app load — picks up a tier change
+// (free -> paid) since last login without forcing a fresh login, and silently logs out if the
+// token's no longer valid.
+useAuthStore().refreshSession();
 
 // clinuxflow-api may not be running (e.g. local dev without `wrangler dev` started in that
 // project) — same tolerance clinixflow's seedSystemForms had for a missing server, just also

@@ -11,7 +11,6 @@
 // system-staff-profile-v1/system-encounter-intake-v1 field linkIds, so the shared pure readers
 // (getAnswer/getAnswers/recordSummary) work on them unmodified.
 import { computed, nextTick, onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { useLiveQuery } from '@tanstack/vue-db';
 import Cubo from '../components/Cubo.vue';
 import { useThemeStore } from '../stores/theme.js';
@@ -23,7 +22,6 @@ import { aiEngineStaff } from '../data/collections/aiEngineStaff.js';
 import { aiEngineEncounters } from '../data/collections/aiEngineEncounters.js';
 import { classify, warmUp } from '../nlp/aiEngineNlp.js';
 
-const router = useRouter();
 const theme = useThemeStore();
 const auth = useAuthStore();
 const cubo = useCuboStore();
@@ -107,8 +105,6 @@ function addLog(type, msg) {
 }
 
 onMounted(async () => {
-  if (!auth.currentUser) { router.push('/'); return; }
-
   // This tab exists to host Cübo full-time, so start expanded rather than showing the collapsed
   // FAB badge inside the tab — same page-level choice as ConsultationDesk.vue/AbdmOnboarding.vue.
   cubo.currentLayout = 'EXPANDED';

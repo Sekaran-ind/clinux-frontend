@@ -562,8 +562,8 @@ async function saveToLibrary(status = 'draft') {
   savedVersionLabel.value = `Saved as ${status === 'final' ? 'Final' : 'Draft'} v${nextVersion}`;
   terminologyLogs.value = [...terminologyLogs.value, `📚 Saved to local forms library: ${formId} v${nextVersion} [${status}] (browser storage).`];
 
-  // Subscribed clinics additionally get a durable server-side copy.
-  if (auth.currentUser?.subscriptionActive) {
+  // Paid-tier clinics additionally get a durable server-side copy.
+  if (auth.currentUser?.tier === 'paid') {
     const res = await apiFetch(`${API_BASE}/api/workflow/save-to-library`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -580,6 +580,10 @@ async function saveToLibrary(status = 'draft') {
 }
 
 async function testVoiceScribeExtraction() {
+  if (auth.currentUser?.tier !== 'paid') {
+    showToast('Voice-scribe testing requires a paid subscription.');
+    return;
+  }
   if (!blueprintJson.value) {
     showToast('Compile the form first — there is nothing to train or test yet.');
     return;
@@ -950,9 +954,10 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
       <div class="cf-card" style="border-radius:1rem;padding:1.5rem;margin-bottom:1.25rem">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem">
           <h3 style="font-size:.9rem;font-weight:700;color:var(--cf-text-strong);display:flex;align-items:center;gap:.5rem"><i class="fas fa-microphone" style="color:var(--color-primary)"></i>Voice Room Dictation Stream Simulator</h3>
-          <button class="btn-teal" @click="testVoiceScribeExtraction()" style="padding:.5rem 1rem;font-size:.78rem;display:flex;align-items:center;gap:.4rem">
+          <button v-if="auth.currentUser?.tier === 'paid'" class="btn-teal" @click="testVoiceScribeExtraction()" style="padding:.5rem 1rem;font-size:.78rem;display:flex;align-items:center;gap:.4rem">
             <i class="fas fa-bolt"></i>Trigger Scribe
           </button>
+          <span v-else style="font-size:.78rem;color:var(--cf-text)">Voice-scribe testing requires a paid subscription.</span>
         </div>
         <textarea v-model="voiceTranscriptInput" class="cf-textarea" rows="3"></textarea>
       </div>

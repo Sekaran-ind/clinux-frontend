@@ -9,6 +9,7 @@ import Cubo from '../components/Cubo.vue';
 import CornerstoneViewer from '../components/CornerstoneViewer.vue';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useCuboStore } from '../stores/cubo.js';
+import { useAuthStore } from '../stores/auth.js';
 import {
   listDataRecords, activeQuestionnaire, activeVersionNumber, saveDataRecord,
   getAnswer, patchRecordField,
@@ -25,6 +26,7 @@ const SOAP_FORM_ID = 'system-consultation-soap-v1';
 
 const clinical = useClinicalStore();
 const cubo = useCuboStore();
+const auth = useAuthStore();
 
 const encounter = clinical.getEncounter();
 const priority = ref(encounter ? getAnswer(encounter, 'encounter_priority') || 'Normal' : 'Normal');
@@ -122,6 +124,10 @@ function chatTranscript() {
 }
 
 async function generateSoapDraft() {
+  if (auth.currentUser?.tier !== 'paid') {
+    log('AI SOAP drafting requires a paid subscription.', 'border-amber-500');
+    return;
+  }
   const transcript = chatTranscript();
   if (!transcript.trim()) { log('Nothing dictated in the chat yet.', 'border-amber-500'); return; }
   isGenerating.value = true;
@@ -382,9 +388,10 @@ function removeTeamMember(staffId) {
       <div class="flex-1 overflow-y-auto p-4 space-y-3">
         <div class="flex items-center justify-between">
           <h2 class="font-bold text-lg" style="color:var(--cf-text-strong)">SOAP Note</h2>
-          <button class="text-xs px-2 py-1 rounded bg-(--color-primary)/10 text-(--color-primary) font-bold flex items-center gap-1.5" :disabled="isGenerating" @click="generateSoapDraft()">
+          <button v-if="auth.currentUser?.tier === 'paid'" class="text-xs px-2 py-1 rounded bg-(--color-primary)/10 text-(--color-primary) font-bold flex items-center gap-1.5" :disabled="isGenerating" @click="generateSoapDraft()">
             <i class="fas fa-magic" :class="isGenerating ? 'fa-spin fa-spinner' : ''"></i>{{ isGenerating ? 'Parsing chat…' : 'Generate SOAP Draft from Chat' }}
           </button>
+          <span v-else class="text-xs cf-text">AI SOAP drafting is a paid-tier feature.</span>
         </div>
         <div v-for="key in ['s', 'o', 'a', 'p']" :key="key">
           <label class="cf-label">{{ { s: 'Subjective', o: 'Objective', a: 'Assessment', p: 'Plan' }[key] }}</label>
