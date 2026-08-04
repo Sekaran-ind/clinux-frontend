@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "cap:sync": "cap sync"
+    "cap:sync": "cap sync",
+    "test": "vitest run"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
@@ -41,6 +42,7 @@
     "@vitejs/plugin-vue": "^6.0.7",
     "tailwindcss": "^4.3.3",
     "vite": "^8.1.1",
+    "vitest": "^4.1.10",
     "wrangler": "^4.114.0"
   }
 }
