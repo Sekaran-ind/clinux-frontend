@@ -7,12 +7,13 @@ import { computed, ref } from 'vue';
 import { jsPDF } from 'jspdf';
 import Cubo from '../components/Cubo.vue';
 import CornerstoneViewer from '../components/CornerstoneViewer.vue';
+import LhcFormHost from '../components/LhcFormHost.vue';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useCuboStore } from '../stores/cubo.js';
 import { useAuthStore } from '../stores/auth.js';
 import {
   listDataRecords, activeQuestionnaire, activeVersionNumber, saveDataRecord,
-  getAnswer, patchRecordField,
+  getAnswer, patchRecordField, withGroupFields,
 } from '../data/useSystemForms.js';
 import {
   getEncounterLogs, logEvent, encounterStage as stageCollection,
@@ -22,11 +23,14 @@ import {
 import { API_BASE, apiFetch } from '../config.js';
 
 const STAFF_FORM_ID = 'system-staff-profile-v1';
-const SOAP_FORM_ID = 'system-consultation-soap-v1';
 
 const clinical = useClinicalStore();
 const cubo = useCuboStore();
 const auth = useAuthStore();
+// Vitals/SOAP/Prescription/Billing all live inside this one merged Encounter-composition
+// record now — the right pane below renders the whole thing via LhcFormHost rather than a
+// SOAP-only textarea set.
+const ENCOUNTER_FORM_ID = clinical.ENCOUNTER_FORM_ID;
 
 const encounter = clinical.getEncounter();
 const priority = ref(encounter ? getAnswer(encounter, 'encounter_priority') || 'Normal' : 'Normal');
@@ -38,13 +42,9 @@ const consentModalOpen = ref(false);
 const consentCheckboxChecked = ref(false);
 const dataVersion = ref(0);
 
-const existingSoap = encounter
-  ? listDataRecords(SOAP_FORM_ID).find((r) => getAnswer(r, 'soap_encounter_ref') === encounter.id)
-  : null;
-const soapRecordId = ref(existingSoap?.id ?? null);
-const soap = ref(existingSoap
-  ? { s: getAnswer(existingSoap, 'soap_subjective'), o: getAnswer(existingSoap, 'soap_objective'), a: getAnswer(existingSoap, 'soap_assessment'), p: getAnswer(existingSoap, 'soap_plan') }
-  : { s: '', o: '', a: '', p: '' });
+const consultationQuestionnaire = computed(() => activeQuestionnaire(ENCOUNTER_FORM_ID));
+const liveRecord = ref(encounter);
+const consultationFormHost = ref(null);
 
 // This tab exists to host Cübo full-time, so start expanded rather than the collapsed FAB badge.
 cubo.currentLayout = 'EXPANDED';
@@ -133,7 +133,15 @@ async function generateSoapDraft() {
   isGenerating.value = true;
   log('Sending chat transcript to scribe engine…');
   try {
-    const blueprint = activeQuestionnaire(SOAP_FORM_ID);
+    // Send just the section_soap slice of the merged Questionnaire as the blueprint — the
+    // standalone SOAP-only form this used to reference no longer exists, but the server contract
+    // (POST /api/workflow/test-scribe) is unchanged: it just needs a Questionnaire whose item[]
+    // covers the fields being drafted.
+    const merged = consultationQuestionnaire.value;
+    const soapGroup = merged?.item?.find((i) => i.linkId === 'section_soap');
+    const blueprint = merged && soapGroup ? { ...merged, item: [soapGroup] } : null;
+    if (!blueprint) { log('SOAP form is not available.', 'border-red-500'); return; }
+
     // context is the virtual-room role .md content selected via Cübo's Profile panel — applied
     // server-side (clinuxflow-api) to the scribe LLM's system prompt.
     const res = await apiFetch(`${API_BASE}/api/workflow/test-scribe`, {
@@ -148,10 +156,18 @@ async function generateSoapDraft() {
     const o = getAnswer(envelope, 'soap_objective');
     const a = getAnswer(envelope, 'soap_assessment');
     const p = getAnswer(envelope, 'soap_plan');
-    if (s) soap.value.s = s;
-    if (o) soap.value.o = o;
-    if (a) soap.value.a = a;
-    if (p) soap.value.p = p;
+
+    // Extract whatever's currently in the live form first (so in-progress edits elsewhere in
+    // the merged document — Vitals, Prescription, Billing — survive the re-render below rather
+    // than being lost to a stale liveRecord snapshot), then patch just the SOAP group on top.
+    const currentQr = consultationFormHost.value?.extract();
+    const baseData = currentQr || liveRecord.value?.data || { item: [] };
+    const fieldValues = {};
+    if (s) fieldValues.soap_subjective = s;
+    if (o) fieldValues.soap_objective = o;
+    if (a) fieldValues.soap_assessment = a;
+    if (p) fieldValues.soap_plan = p;
+    liveRecord.value = { ...(liveRecord.value || { id: encounter.id }), data: withGroupFields(baseData, 'section_soap', fieldValues) };
     log('SOAP draft populated from dictation.', 'border-emerald-500');
   } catch (err) {
     log('Scribe request failed: ' + err.message, 'border-red-500');
@@ -160,21 +176,14 @@ async function generateSoapDraft() {
   }
 }
 
-function commitSoapNote() {
+function saveConsultation() {
   if (!encounter) return;
-  const qr = {
-    resourceType: 'QuestionnaireResponse', status: 'completed', authored: new Date().toISOString(),
-    item: [{ linkId: 'section_soap', item: [
-      { linkId: 'soap_encounter_ref', answer: [{ valueString: encounter.id }] },
-      { linkId: 'soap_subjective', answer: [{ valueString: soap.value.s }] },
-      { linkId: 'soap_objective', answer: [{ valueString: soap.value.o }] },
-      { linkId: 'soap_assessment', answer: [{ valueString: soap.value.a }] },
-      { linkId: 'soap_plan', answer: [{ valueString: soap.value.p }] },
-    ] }],
-  };
-  soapRecordId.value = saveDataRecord(SOAP_FORM_ID, activeVersionNumber(SOAP_FORM_ID), qr, soapRecordId.value);
+  const qr = consultationFormHost.value?.extract();
+  if (!qr) { log('Could not read the entered data.', 'border-red-500'); return; }
+  saveDataRecord(ENCOUNTER_FORM_ID, activeVersionNumber(ENCOUNTER_FORM_ID), qr, encounter.id);
+  liveRecord.value = { ...liveRecord.value, data: qr };
   dataVersion.value++;
-  log('SOAP note committed to record.', 'border-emerald-500');
+  log('Consultation record saved.', 'border-emerald-500');
 }
 
 function clinicProfile() {
@@ -189,7 +198,12 @@ const prescriptions = computed(() => {
 
 function generatePrescriptionPdf() {
   if (!encounter) return;
-  if (!soap.value.p || !soap.value.p.trim()) { log('Add a Plan before generating a prescription.', 'border-amber-500'); return; }
+  // Read the freshest SOAP values straight out of the live form (not just liveRecord's last
+  // save), so a plan typed but not yet saved still makes it onto the generated PDF.
+  const currentQr = consultationFormHost.value?.extract();
+  const soapAssessment = getAnswer(currentQr ? { data: currentQr } : liveRecord.value, 'soap_assessment');
+  const soapPlan = getAnswer(currentQr ? { data: currentQr } : liveRecord.value, 'soap_plan');
+  if (!soapPlan || !soapPlan.trim()) { log('Add a Plan before generating a prescription.', 'border-amber-500'); return; }
   isGeneratingRx.value = true;
   try {
     const clinic = clinicProfile();
@@ -231,11 +245,11 @@ function generatePrescriptionPdf() {
     y += 6;
 
     writeWrapped('Diagnosis', 9, 4.5, true);
-    writeWrapped(soap.value.a && soap.value.a.trim() ? soap.value.a : '—', 9.5, 4.6, false);
+    writeWrapped(soapAssessment && soapAssessment.trim() ? soapAssessment : '—', 9.5, 4.6, false);
 
     y += 3;
     writeWrapped('Rx / Plan (Treatment)', 9, 4.5, true);
-    writeWrapped(soap.value.p, 10, 5, false);
+    writeWrapped(soapPlan, 10, 5, false);
 
     y += 8;
     ensureSpace(10);
@@ -384,21 +398,20 @@ function removeTeamMember(staffId) {
         </div>
       </div>
 
-      <!-- RIGHT: SOAP note -->
+      <!-- RIGHT: the whole Consultation record (Encounter/Vitals/SOAP/Prescription/Billing) —
+           accepted tradeoff: every page shows the whole accumulating document, not just its own
+           slice, in exchange for not needing page-scoped subset rendering. -->
       <div class="flex-1 overflow-y-auto p-4 space-y-3">
         <div class="flex items-center justify-between">
-          <h2 class="font-bold text-lg" style="color:var(--cf-text-strong)">SOAP Note</h2>
+          <h2 class="font-bold text-lg" style="color:var(--cf-text-strong)">Consultation Record</h2>
           <button v-if="auth.currentUser?.tier === 'paid'" class="text-xs px-2 py-1 rounded bg-(--color-primary)/10 text-(--color-primary) font-bold flex items-center gap-1.5" :disabled="isGenerating" @click="generateSoapDraft()">
             <i class="fas fa-magic" :class="isGenerating ? 'fa-spin fa-spinner' : ''"></i>{{ isGenerating ? 'Parsing chat…' : 'Generate SOAP Draft from Chat' }}
           </button>
           <span v-else class="text-xs cf-text">AI SOAP drafting is a paid-tier feature.</span>
         </div>
-        <div v-for="key in ['s', 'o', 'a', 'p']" :key="key">
-          <label class="cf-label">{{ { s: 'Subjective', o: 'Objective', a: 'Assessment', p: 'Plan' }[key] }}</label>
-          <textarea v-model="soap[key]" class="cf-input" rows="3"></textarea>
-        </div>
+        <LhcFormHost ref="consultationFormHost" :questionnaire="consultationQuestionnaire" :record="liveRecord" container-id="consultationFormContainer" />
         <div class="flex items-center gap-2">
-          <button class="btn-teal" @click="commitSoapNote()">Commit SOAP Note</button>
+          <button class="btn-teal" @click="saveConsultation()">Save Consultation Record</button>
           <button class="btn-outline" :disabled="isGeneratingRx" @click="generatePrescriptionPdf()">{{ isGeneratingRx ? 'Generating…' : 'Generate Prescription PDF' }}</button>
         </div>
         <div v-if="prescriptions.length" class="pt-2">

@@ -3,7 +3,11 @@ import { ref } from 'vue';
 import { listDataRecords } from '../data/collections/formData.js';
 import { getCareTeam, addCareTeamMember, removeCareTeamMember } from '../data/collections/encounterDocs.js';
 
-const ENCOUNTER_FORM_ID = 'system-encounter-intake-v1';
+// The one merged Encounter-composition record per visit (Vitals/SOAP/Prescription/Billing all
+// live inside it now, as repeating/singular groups — see formData.js's getGroupInstances) rather
+// than each being a separately-keyed form. FrontDesk.vue/Checkout.vue import this constant
+// instead of each hardcoding the literal string themselves.
+const ENCOUNTER_FORM_ID = 'system-encounter-composition-v1';
 
 // Replaces Alpine.store('clinical') from clinixflow's store.js — the active-encounter pointer
 // shared across Front Desk → Consultation Desk (→ Checkout, once migrated). Just an id pointer,

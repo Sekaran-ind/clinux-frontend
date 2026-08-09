@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getAnswer, getAnswers, recordSummary } from './formData.js';
+import { getAnswer, getAnswers, recordSummary, getGroupInstances, withGroupFields } from './formData.js';
 
 // getAnswer/getAnswers/recordSummary are pure functions over a FHIR QuestionnaireResponse-shaped
 // record ({ data: { item: [...] } }) — tested directly with plain fixtures, no TanStack DB/
@@ -64,5 +64,51 @@ describe('recordSummary', () => {
 
     it('falls back to record.id when there are no non-empty answers', () => {
         expect(recordSummary(record([]))).toBe('rec-1');
+    });
+});
+
+describe('getGroupInstances', () => {
+    it('returns every sibling item sharing a repeating group\'s linkId', () => {
+        const r = record([
+            { linkId: 'section_vitals', item: [{ linkId: 'vitals_systolic', answer: [{ valueDecimal: 120 }] }] },
+            { linkId: 'section_vitals', item: [{ linkId: 'vitals_systolic', answer: [{ valueDecimal: 130 }] }] },
+            { linkId: 'section_soap', item: [{ linkId: 'soap_subjective', answer: [{ valueString: 'ok' }] }] },
+        ]);
+        const vitals = getGroupInstances(r, 'section_vitals');
+        expect(vitals).toHaveLength(2);
+        expect(getAnswer({ data: { item: vitals[0].item } }, 'vitals_systolic')).toBe(120);
+        expect(getAnswer({ data: { item: vitals[1].item } }, 'vitals_systolic')).toBe(130);
+    });
+
+    it('returns a single-element array for a singular group, and [] for no record/no match', () => {
+        const r = record([{ linkId: 'section_soap', item: [] }]);
+        expect(getGroupInstances(r, 'section_soap')).toHaveLength(1);
+        expect(getGroupInstances(r, 'section_billing')).toEqual([]);
+        expect(getGroupInstances(null, 'section_soap')).toEqual([]);
+    });
+});
+
+describe('withGroupFields', () => {
+    it('patches an existing singular group\'s fields without touching other groups', () => {
+        const data = {
+            item: [
+                { linkId: 'section_encounter', item: [{ linkId: 'encounter_status', answer: [{ valueString: 'arrived' }] }] },
+                { linkId: 'section_soap', item: [{ linkId: 'soap_subjective', answer: [{ valueString: 'old' }] }] },
+            ],
+        };
+        const result = withGroupFields(data, 'section_soap', { soap_subjective: 'new subjective', soap_plan: 'rest' });
+
+        expect(getAnswer({ data: result }, 'soap_subjective')).toBe('new subjective');
+        expect(getAnswer({ data: result }, 'soap_plan')).toBe('rest');
+        expect(getAnswer({ data: result }, 'encounter_status')).toBe('arrived'); // untouched
+
+        // Pure — the original object must not be mutated, and the result must be a new reference.
+        expect(getAnswer({ data }, 'soap_subjective')).toBe('old');
+        expect(result).not.toBe(data);
+    });
+
+    it('creates the group (and its fields) from scratch when absent', () => {
+        const result = withGroupFields({ item: [] }, 'section_billing', { billing_total: '500' });
+        expect(getAnswer({ data: result }, 'billing_total')).toBe('500');
     });
 });

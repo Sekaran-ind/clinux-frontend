@@ -9,16 +9,18 @@ import Cubo from '../components/Cubo.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import {
   listDataRecords, recordSummary, activeQuestionnaire, activeVersionNumber,
-  saveDataRecord, deleteDataRecord, getAnswer,
+  saveDataRecord, getGroupInstances,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
 
 const PATIENT_FORM_ID = 'system-patient-profile-v1';
-const ENCOUNTER_FORM_ID = 'system-encounter-intake-v1';
-const VITALS_FORM_ID = 'system-vitals-v1';
 
 const router = useRouter();
 const clinical = useClinicalStore();
+// Encounter/Vitals/Triage all now edit the SAME merged Encounter-composition record
+// (clinical.ENCOUNTER_FORM_ID) rather than three separately-keyed forms — see formData.js's
+// getGroupInstances for how repeating Vitals readings are read back out of it.
+const ENCOUNTER_FORM_ID = clinical.ENCOUNTER_FORM_ID;
 
 const steps = [
   { id: 'patient', label: 'Patient' },
@@ -108,20 +110,13 @@ function openStep(stepId) {
     drawerRecord.value = null;
     return;
   }
-  if (stepId === 'encounter') {
+  // Encounter/Vitals/Triage all open the SAME merged Encounter-composition document now —
+  // whichever step you're on, you see (and can fill in) the whole accumulating record, not just
+  // that step's slice. Accepted tradeoff: simpler than building page-scoped subset rendering.
+  if (stepId === 'encounter' || stepId === 'vitals' || stepId === 'triage') {
     drawerQuestionnaire.value = activeQuestionnaire(ENCOUNTER_FORM_ID);
     const rec = encounterRecordId.value ? listDataRecords(ENCOUNTER_FORM_ID).find((r) => r.id === encounterRecordId.value) : null;
     drawerRecord.value = rec || buildSeed(ENCOUNTER_FORM_ID, 'encounter_patient_ref', selectedPatientSummary.value);
-    return;
-  }
-  if (stepId === 'vitals') {
-    drawerQuestionnaire.value = activeQuestionnaire(VITALS_FORM_ID);
-    drawerRecord.value = buildSeed(VITALS_FORM_ID, 'vitals_encounter_ref', encounterRecordId.value);
-    return;
-  }
-  if (stepId === 'triage') {
-    drawerQuestionnaire.value = activeQuestionnaire(ENCOUNTER_FORM_ID);
-    drawerRecord.value = listDataRecords(ENCOUNTER_FORM_ID).find((r) => r.id === encounterRecordId.value) || null;
   }
 }
 
@@ -145,32 +140,21 @@ function saveDrawer() {
     showToast('Patient registered.');
     return;
   }
-  if (activeStepId.value === 'encounter' || activeStepId.value === 'triage') {
+  if (activeStepId.value === 'encounter' || activeStepId.value === 'vitals' || activeStepId.value === 'triage') {
     encounterRecordId.value = saveDataRecord(ENCOUNTER_FORM_ID, activeVersionNumber(ENCOUNTER_FORM_ID), qr, encounterRecordId.value);
     clinical.setActive(encounterRecordId.value);
     dataVersion.value++;
     closeDrawer();
     showToast('Encounter updated.');
-    return;
-  }
-  if (activeStepId.value === 'vitals') {
-    saveDataRecord(VITALS_FORM_ID, activeVersionNumber(VITALS_FORM_ID), qr);
-    dataVersion.value++;
-    drawerRecord.value = buildSeed(VITALS_FORM_ID, 'vitals_encounter_ref', encounterRecordId.value);
-    showToast('Vitals recorded.');
   }
 }
 
+// One instance per Vitals reading recorded — LForms' own repeating-group "+ Add another"/remove
+// controls (inside the drawer form itself) are what add/remove readings now, not app code.
 const vitalsRecords = computed(() => {
   dataVersion.value;
-  if (!encounterRecordId.value) return [];
-  return listDataRecords(VITALS_FORM_ID).filter((r) => getAnswer(r, 'vitals_encounter_ref') === encounterRecordId.value);
+  return getGroupInstances(clinical.getEncounter(), 'section_vitals');
 });
-
-function removeVitals(id) {
-  deleteDataRecord(id);
-  dataVersion.value++;
-}
 
 function sendToConsultation() {
   router.push('/consultation-desk');

@@ -5,16 +5,16 @@ import { computed, ref } from 'vue';
 import Cubo from '../components/Cubo.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import {
-  listDataRecords, recordSummary, activeQuestionnaire, activeVersionNumber,
-  saveDataRecord, deleteDataRecord, getAnswer,
+  activeQuestionnaire, activeVersionNumber,
+  saveDataRecord, getAnswer, getGroupInstances,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
 
-const PRESCRIPTION_FORM_ID = 'system-prescription-v1';
-const BILLING_FORM_ID = 'system-billing-v1';
-const ENCOUNTER_FORM_ID = 'system-encounter-intake-v1';
-
 const clinical = useClinicalStore();
+// Prescription/Billing live inside the same merged Encounter-composition record Front Desk and
+// Consultation Desk edit — this page opens/saves that one record too, rather than two
+// separately-keyed forms.
+const ENCOUNTER_FORM_ID = clinical.ENCOUNTER_FORM_ID;
 
 const screen = ref('steps'); // 'steps' | 'done'
 const currentStep = ref(0);
@@ -42,11 +42,6 @@ const formKey = ref(0);
 
 const encounterId = computed(() => clinical.activeEncounterId);
 
-const existingBilling = encounterId.value
-  ? listDataRecords(BILLING_FORM_ID).find((r) => getAnswer(r, 'billing_encounter_ref') === encounterId.value)
-  : null;
-const billingRecordId = ref(existingBilling?.id ?? null);
-
 const activeStepLabel = computed(() => ({ prescription: 'Add Medication', billing: 'Billing & Payment' }[activeStepId.value] || ''));
 
 function buildSeed(formId, linkId, value) {
@@ -60,20 +55,14 @@ function buildSeed(formId, linkId, value) {
   };
 }
 
+// Prescription/Billing both open the SAME merged Encounter-composition document — same
+// accepted tradeoff as Front Desk (whole document everywhere, not a page-scoped slice).
 function openStep(stepId) {
   activeStepId.value = stepId;
   drawerOpen.value = true;
-
-  if (stepId === 'prescription') {
-    drawerQuestionnaire.value = activeQuestionnaire(PRESCRIPTION_FORM_ID);
-    drawerRecord.value = buildSeed(PRESCRIPTION_FORM_ID, 'rx_encounter_ref', encounterId.value);
-    return;
-  }
-  if (stepId === 'billing') {
-    drawerQuestionnaire.value = activeQuestionnaire(BILLING_FORM_ID);
-    const existing = billingRecordId.value ? listDataRecords(BILLING_FORM_ID).find((r) => r.id === billingRecordId.value) : null;
-    drawerRecord.value = existing || buildSeed(BILLING_FORM_ID, 'billing_encounter_ref', encounterId.value);
-  }
+  drawerQuestionnaire.value = activeQuestionnaire(ENCOUNTER_FORM_ID);
+  const existing = encounterId.value ? clinical.getEncounter() : null;
+  drawerRecord.value = existing || buildSeed(ENCOUNTER_FORM_ID, 'encounter_patient_ref', '');
 }
 
 function closeDrawer() {
@@ -84,37 +73,33 @@ function saveDrawer() {
   const qr = lhcFormHost.value?.extract();
   if (!qr) { showToast('Could not read the entered data.'); return; }
 
+  saveDataRecord(ENCOUNTER_FORM_ID, activeVersionNumber(ENCOUNTER_FORM_ID), qr, encounterId.value);
+  dataVersion.value++;
+
   if (activeStepId.value === 'prescription') {
-    saveDataRecord(PRESCRIPTION_FORM_ID, activeVersionNumber(PRESCRIPTION_FORM_ID), qr);
-    dataVersion.value++;
-    drawerRecord.value = buildSeed(PRESCRIPTION_FORM_ID, 'rx_encounter_ref', encounterId.value);
+    // Stay open — LForms' own "+ Add another" control inside section_prescription is how
+    // multiple medications get added now, not a separate save-per-medication action.
+    drawerRecord.value = clinical.getEncounter();
     formKey.value++;
-    showToast('Medication added.');
+    showToast('Prescription saved.');
     return;
   }
   if (activeStepId.value === 'billing') {
-    billingRecordId.value = saveDataRecord(BILLING_FORM_ID, activeVersionNumber(BILLING_FORM_ID), qr, billingRecordId.value);
-    dataVersion.value++;
     closeDrawer();
     showToast('Billing saved.');
   }
 }
 
+// One instance per medication added — LForms' own repeating-group "+ Add another"/remove
+// controls (inside the drawer form itself) are what add/remove medications now, not app code.
 const prescriptionRecords = computed(() => {
   dataVersion.value;
-  if (!encounterId.value) return [];
-  return listDataRecords(PRESCRIPTION_FORM_ID).filter((r) => getAnswer(r, 'rx_encounter_ref') === encounterId.value);
+  return getGroupInstances(clinical.getEncounter(), 'section_prescription');
 });
-
-function removePrescription(id) {
-  deleteDataRecord(id);
-  dataVersion.value++;
-}
 
 const billingTotal = computed(() => {
   dataVersion.value;
-  const rec = listDataRecords(BILLING_FORM_ID).find((r) => r.id === billingRecordId.value);
-  return rec ? getAnswer(rec, 'billing_total') : '';
+  return getAnswer(clinical.getEncounter(), 'billing_total');
 });
 
 function closeEncounter() {
@@ -141,15 +126,6 @@ function closeEncounter() {
     </div>
     <div class="drawer-body">
       <div class="preview-panel"><LhcFormHost v-if="drawerOpen" :key="formKey" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" /></div>
-      <div v-if="activeStepId === 'prescription'" style="margin-top:1.25rem">
-        <p class="cf-label" style="margin-bottom:.6rem">Prescribed so far ({{ prescriptionRecords.length }})</p>
-        <div style="display:flex;flex-direction:column;gap:.5rem">
-          <div v-for="rec in prescriptionRecords" :key="rec.id" class="record-card">
-            <span style="font-size:.85rem;color:var(--cf-text-strong);font-weight:600">{{ recordSummary(rec) }}</span>
-            <button @click="removePrescription(rec.id)" style="background:transparent;border:none;cursor:pointer;color:#EF4444"><i class="fas fa-trash"></i></button>
-          </div>
-        </div>
-      </div>
     </div>
     <div class="drawer-footer">
       <button class="btn-teal" @click="saveDrawer()" style="display:flex;align-items:center;gap:.4rem">
@@ -188,7 +164,7 @@ function closeEncounter() {
             <div class="cf-card rounded-2xl p-5">
               <p class="text-sm mb-4" style="color:var(--cf-text)">Enter the visit total and payment method.</p>
               <button class="btn-teal" @click="openStep('billing')"><i class="fas fa-receipt"></i> Open Billing Form</button>
-              <div v-show="billingRecordId" class="mt-4">
+              <div v-show="billingTotal" class="mt-4">
                 <span class="badge badge-teal"><i class="fas fa-check mr-1"></i>Billing Saved</span>
                 <button class="btn-teal block mt-4" @click="currentStep = 2">Continue to Checkout <i class="fas fa-arrow-right ml-2"></i></button>
               </div>

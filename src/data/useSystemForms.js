@@ -17,6 +17,9 @@ export {
   deleteDataRecord,
   patchRecordField,
   recordSummary,
+  summarizeItems,
+  getGroupInstances,
+  withGroupFields,
   getAnswer,
   getAnswers,
 } from './collections/formData.js';
@@ -31,11 +34,7 @@ export const SYSTEM_FORM_IDS = [
   'system-appointments-profile-v1',
   'system-office-hours-profile-v1',
   'system-locations-profile-v1',
-  'system-encounter-intake-v1',
-  'system-vitals-v1',
-  'system-consultation-soap-v1',
-  'system-prescription-v1',
-  'system-billing-v1',
+  'system-encounter-composition-v1',
 ];
 
 // LForms only properly tracks one "live" form instance per page for extraction purposes —
