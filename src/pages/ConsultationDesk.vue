@@ -409,7 +409,11 @@ function removeTeamMember(staffId) {
           </button>
           <span v-else class="text-xs cf-text">AI SOAP drafting is a paid-tier feature.</span>
         </div>
-        <LhcFormHost ref="consultationFormHost" :questionnaire="consultationQuestionnaire" :record="liveRecord" container-id="consultationFormContainer" />
+        <LhcFormHost v-if="consultationQuestionnaire" ref="consultationFormHost" :questionnaire="consultationQuestionnaire" :record="liveRecord" container-id="consultationFormContainer" />
+        <p v-else class="text-sm" style="color:var(--cf-text)">
+          This form isn't available yet — clinuxflow-api may not be reachable to seed it.
+          Confirm it's running, then reload this page.
+        </p>
         <div class="flex items-center gap-2">
           <button class="btn-teal" @click="saveConsultation()">Save Consultation Record</button>
           <button class="btn-outline" :disabled="isGeneratingRx" @click="generatePrescriptionPdf()">{{ isGeneratingRx ? 'Generating…' : 'Generate Prescription PDF' }}</button>

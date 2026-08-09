@@ -125,7 +125,13 @@ function closeEncounter() {
       <button @click="closeDrawer()" style="background:transparent;border:none;cursor:pointer;color:var(--cf-text);font-size:1.1rem"><i class="fas fa-times"></i></button>
     </div>
     <div class="drawer-body">
-      <div class="preview-panel"><LhcFormHost v-if="drawerOpen" :key="formKey" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" /></div>
+      <div class="preview-panel">
+        <LhcFormHost v-if="drawerOpen && drawerQuestionnaire" :key="formKey" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" />
+        <p v-else-if="drawerOpen" class="text-sm" style="color:var(--cf-text)">
+          This form isn't available yet — clinuxflow-api may not be reachable to seed it.
+          Confirm it's running, then reopen this drawer.
+        </p>
+      </div>
     </div>
     <div class="drawer-footer">
       <button class="btn-teal" @click="saveDrawer()" style="display:flex;align-items:center;gap:.4rem">

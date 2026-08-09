@@ -267,7 +267,11 @@ function sendToConsultation() {
       <button @click="closeDrawer()" class="bg-transparent border-none cursor-pointer" style="color:var(--cf-text);font-size:1.1rem"><i class="fas fa-times"></i></button>
     </div>
     <div class="drawer-body">
-      <LhcFormHost v-if="drawerOpen" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" />
+      <LhcFormHost v-if="drawerOpen && drawerQuestionnaire" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" />
+      <p v-else-if="drawerOpen" class="text-sm" style="color:var(--cf-text)">
+        This form isn't available yet — clinuxflow-api may not be reachable to seed it.
+        Confirm it's running, then reopen this drawer.
+      </p>
     </div>
     <div class="drawer-footer">
       <button class="btn-ghost" @click="closeDrawer()">Cancel</button>
