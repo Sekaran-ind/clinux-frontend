@@ -17,6 +17,7 @@ import { aiEngineStaff } from './data/collections/aiEngineStaff.js';
 import { aiEngineEncounters } from './data/collections/aiEngineEncounters.js';
 import { API_BASE } from './config.js';
 import { useAuthStore } from './stores/auth.js';
+import { warmUp as warmUpFormSlotEngine } from './nlp/formSlotEngine.js';
 
 // TanStack DB collections load their persisted data asynchronously (even the localStorage-backed
 // ones — see collection.preload()'s own doc comment: "useful for preloading collections"), not
@@ -48,6 +49,11 @@ useAuthStore().refreshSession();
 // covering a full network failure (connection refused), not only a non-success response body.
 seedSystemForms(API_BASE).catch((err) => {
   console.warn('Could not reach clinuxflow-api to seed the system forms catalog:', err.message);
+}).finally(() => {
+  // Runs after the seed attempt settles either way — a previous session's already-seeded forms
+  // are enough to train against even if this network call itself failed. Fails soft on its own
+  // (see formSlotEngine.js's warmUp()) — never blocks app startup either way.
+  warmUpFormSlotEngine();
 });
 
 

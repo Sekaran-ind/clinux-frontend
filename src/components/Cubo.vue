@@ -11,6 +11,7 @@ import { useLiveQuery } from '@tanstack/vue-db';
 import { chatThreads } from '../data/collections/chatThreads.js';
 import { useCuboStore } from '../stores/cubo.js';
 import { classifyIntent } from '../nlp/intents.js';
+import { recognizeSlots, applyFills } from '../nlp/formSlotEngine.js';
 
 const props = defineProps({
   category: { type: String, default: 'general' },
@@ -75,6 +76,19 @@ async function sendPrompt() {
     cubo.addCuboMessage('assistant', 'Open the Profile panel (top-right) to pick a new speciality/role.');
     cubo.toggleProfileView();
     return;
+  }
+
+  // Form-field slot recognition — additive, alongside the command-shortcut check above. See
+  // nlp/formSlotEngine.js for scope/tradeoffs (recognizes against every system form's fields
+  // globally, not just this page's). A visual "please confirm" cue for filled fields is planned
+  // separately — for now, filled fields are called out in chat so the user knows to check them.
+  const slotCandidates = await recognizeSlots(prompt);
+  if (slotCandidates.length > 0) {
+    const { applied } = applyFills(slotCandidates);
+    if (applied.length > 0) {
+      cubo.addCuboMessage('assistant', `Filled ${applied.length} field(s) from that message on the active encounter — please review and confirm.`);
+      scrollChatToBottom();
+    }
   }
 
   const payload = {
