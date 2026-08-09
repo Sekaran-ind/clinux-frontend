@@ -773,12 +773,4 @@ onMounted(() => {
 .abdm-step-btn { font-size:.72rem;font-weight:600;font-family:'Poppins',sans-serif;padding:.4rem .75rem;border-radius:.5rem;border:1px solid var(--color-primary);color:var(--color-primary);background:transparent;cursor:pointer;display:inline-flex;align-items:center;gap:.35rem;transition:all .15s; }
 .abdm-step-btn:hover:not(:disabled) { background:var(--color-primary);color:var(--color-secondary); }
 .abdm-step-btn:disabled { opacity:.45;cursor:not-allowed; }
-
-/* ─── Cübo inline-embedding override — identical to consultation-desk.html's, not a fork. ─── */
-.cubo-inline-host { position: relative; display: flex; height: 100%; min-height: 420px; }
-.cubo-inline-host cubo-command-center { display: block; width: 100%; height: 100%; }
-.cubo-inline-host .cubo-wrapper { position: static !important; inset: auto !important; bottom: auto !important; right: auto !important; z-index: auto !important; width: 100% !important; height: 100%; }
-.cubo-inline-host .cubo-fab-container { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
-.cubo-inline-host .cubo-expanded-panel { max-width: 100% !important; width: 100% !important; height: 100%; }
-.cubo-inline-host .cubo-expanded-panel > div { height: 100% !important; }
 </style>

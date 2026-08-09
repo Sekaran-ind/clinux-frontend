@@ -204,7 +204,7 @@ function closeEncounter() {
     </div>
   </main>
 
-  <Cubo category="billing" page-context="Checkout — prescription, billing, payment and visit close-out." />
+  <Cubo category="billing" :encounter-id="encounterId" page-context="Checkout — prescription, billing, payment and visit close-out." />
 </template>
 
 <style>

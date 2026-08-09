@@ -6,7 +6,7 @@
 // entirely, this is just a normal component; the fetch-and-rehydrate step disappears.
 //
 // Same attribute/prop contract as before: category, encounterId, encounterTitle, pageContext.
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useLiveQuery } from '@tanstack/vue-db';
 import { chatThreads } from '../data/collections/chatThreads.js';
 import { useCuboStore } from '../stores/cubo.js';
@@ -33,10 +33,22 @@ const activeThread = computed(() =>
 // category gets its own persistent thread.
 onMounted(() => {
   if (props.encounterId) {
-    cubo.createNewThread('encounter', `Encounter: ${props.encounterTitle || props.encounterId}`, `enc-${props.encounterId}`);
+    cubo.createNewThread('encounter', `Encounter: ${props.encounterTitle || props.encounterId}`, `enc-${props.encounterId}`, props.encounterId);
   } else if (props.category && props.category !== 'general') {
     const meta = cubo.categoryMeta(props.category);
     cubo.createNewThread(props.category, meta.label, `cat-${props.category}`);
+  }
+});
+
+// Front Desk mounts Cubo before an encounter exists (Patient step comes before Encounter is
+// created) — the onMounted routing above only runs once, so without this, a Cubo instance
+// mounted pre-encounter never hands off to the enc-<id> thread once the encounter is created.
+// Always switches the instant an id appears, mirroring onMounted's own behavior exactly (no
+// "did the user manually switch away" tracking) — createNewThread() is idempotent (switches to
+// an existing thread rather than resetting it) via its own chatThreads.has() check.
+watch(() => props.encounterId, (newId, oldId) => {
+  if (newId && newId !== oldId) {
+    cubo.createNewThread('encounter', `Encounter: ${props.encounterTitle || newId}`, `enc-${newId}`, newId);
   }
 });
 

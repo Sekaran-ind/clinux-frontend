@@ -128,7 +128,12 @@ export const useCuboStore = defineStore('cubo', () => {
     profilePicker.value = { code: '', roleFile: '' };
   }
 
-  function createNewThread(category = 'general', title = 'New General Query', id = null) {
+  // encounterId is additive/optional — plain category threads (front-desk, billing, ai-engine,
+  // ...) simply omit it. Stored as a real field (not just baked into the id string as
+  // `enc-<id>`) so a thread can be looked up/queried by encounter identity later, rather than
+  // only by string-matching its id. Retention (enforceFifoLimits/cleanCuboHistory) is unchanged —
+  // encounter threads still share the same FIFO/expiry pool as category threads.
+  function createNewThread(category = 'general', title = 'New General Query', id = null, encounterId = null) {
     const threadId = id || `${category}-${Date.now()}`;
 
     if (chatThreads.has(threadId)) {
@@ -142,6 +147,7 @@ export const useCuboStore = defineStore('cubo', () => {
       title,
       pinned: false,
       timestamp: Date.now(),
+      encounterId,
       messages: [{ id: Date.now(), role: 'assistant', text: `Cübo Center active on context channel: "${title}". How can I assist?`, timestamp: Date.now() }],
     });
 

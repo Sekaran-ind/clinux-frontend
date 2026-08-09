@@ -167,10 +167,30 @@ function sendToConsultation() {
     <span>{{ toast.msg }}</span>
   </div>
 
-  <main class="flex-1 overflow-y-auto">
-    <div class="max-w-[1300px] mx-auto px-6 py-8 pb-16 flex gap-8">
-      <div class="flex-1 min-w-0">
+  <div class="flex-1 flex overflow-hidden">
+    <!-- LEFT: Cübo, threaded to this visit's encounter once one exists (see Cubo.vue's
+         watch(encounterId) — it starts on a plain front-desk thread during the Patient step,
+         then hands off the moment step 2 creates the encounter). -->
+    <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
+      <div class="cubo-inline-host flex-1" style="min-height:420px">
+        <Cubo category="front-desk" :encounter-id="encounterRecordId" page-context="Front Desk — patient onboarding, encounter intake, vitals and triage." />
+      </div>
+    </div>
 
+    <!-- RIGHT: wizard steps -->
+    <div class="flex-1 overflow-y-auto p-6 space-y-3">
+      <div class="flex items-center gap-6 flex-wrap mb-6">
+        <div v-for="(s, idx) in steps" :key="s.id" class="flex items-center gap-2 cursor-pointer" @click="currentStep = idx">
+          <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0"
+               :class="idx < currentStep ? 'bg-(--color-primary) text-(--color-secondary)' : idx === currentStep ? 'bg-(--color-secondary) text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'">
+            <i v-if="idx < currentStep" class="fas fa-check text-xs"></i>
+            <span v-else>{{ idx + 1 }}</span>
+          </div>
+          <span class="text-sm" :class="idx === currentStep ? 'font-bold' : ''" style="color:var(--cf-text)">{{ s.label }}</span>
+        </div>
+      </div>
+
+      <div class="max-w-[720px]">
         <!-- Step 0: Patient -->
         <div v-show="currentStep === 0">
           <span class="section-eyebrow block mb-1">Step 1 of 4</span>
@@ -234,22 +254,8 @@ function sendToConsultation() {
           </div>
         </div>
       </div>
-
-      <!-- Right: journey step rail -->
-      <aside class="w-48 shrink-0 space-y-2">
-        <div v-for="(s, idx) in steps" :key="s.id" class="flex items-center gap-2 cursor-pointer" @click="currentStep = idx">
-          <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0"
-               :class="idx < currentStep ? 'bg-(--color-primary) text-(--color-secondary)' : idx === currentStep ? 'bg-(--color-secondary) text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'">
-            <i v-if="idx < currentStep" class="fas fa-check text-xs"></i>
-            <span v-else>{{ idx + 1 }}</span>
-          </div>
-          <span class="text-sm" :class="idx === currentStep ? 'font-bold' : ''" style="color:var(--cf-text)">{{ s.label }}</span>
-        </div>
-      </aside>
     </div>
-  </main>
-
-  <Cubo category="front-desk" page-context="Front Desk — patient onboarding, encounter intake, vitals and triage." />
+  </div>
 
   <!-- Drawer -->
   <div class="drawer-backdrop" :class="drawerOpen ? 'open' : ''" @click="closeDrawer()"></div>
