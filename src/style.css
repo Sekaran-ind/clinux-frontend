@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Opt into class-based dark mode for Tailwind's dark: variant. Without this, Tailwind v4
+   defaults dark: to the OS-level `prefers-color-scheme` media query — completely decoupled from
+   theme.js's `.dark` class toggle on <html>, which is why dark: utilities in components like
+   Cubo.vue silently ignored the in-app dark-mode switch. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* ── Fonts, self-hosted via npm (was Google Fonts CDN in clinixflow) ── */
 @import "@fontsource/poppins/400.css";
 @import "@fontsource/poppins/600.css";
