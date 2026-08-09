@@ -40,7 +40,7 @@ const features = [
   { icon: 'fas fa-eye', title: 'Diagnostic Vision AI', desc: 'Processes imaging from PACS/DICOM systems, extracting spatial measurements and flagging anomalies for the Objective section of SOAP notes.' },
   { icon: 'fas fa-users', title: 'Multi-Specialty Collaboration', desc: 'Connects physicians, radiologists, physios, and labs on a shared, active timeline—eliminating documentation silos for truly collaborative diagnosis.' },
   { icon: 'fas fa-shield-alt', title: 'Safety & Privacy First', desc: 'Sensitive data never leaves your clinic network. Enterprise-grade security ensures 100% patient data isolation within a sovereign cloud environment.' },
-  { icon: 'fas fa-exchange-alt', title: 'EHR Interoperability', desc: 'Auto-generates C-CDA continuity of care documents compatible with Epic, Cerner, and other major platforms for seamless referral transfers.' },
+  { icon: 'fas fa-exchange-alt', title: 'EHR Interoperability', desc: 'Auto-generates FHIR compliant compositions compatible with major EHR platforms for seamless referral transfers.' },
 ];
 
 const steps = [
@@ -48,12 +48,12 @@ const steps = [
   { icon: 'fas fa-brain', label: 'Analyse', desc: 'AI engine extracts clinical intent, symptoms, findings, and plans. Raises critical findings based on established practices.' },
   { icon: 'fas fa-person-chalkboard', label: 'Structure', desc: 'Generate S-O-A-P note and map clinical terms to standardized codes using Snowmed-CT, IONIC & ICD-10 for internal use.' },
   { icon: 'fas fa-file-prescription', label: 'Physician Approval', desc: 'Clinician reviews, edits, and approves the prescrption. Dictates Care Plan (Medication dosages, Orders & Notes).' },
-  { icon: 'fas fa-coins', label: 'Billing & Integration', desc: 'Facilate QR Code based payment to Providers directly method and FHIR resources for native EHR intergration.' },
+  { icon: 'fas fa-coins', label: 'Billing & Integration', desc: 'Facilate QR Code based payment to Providers directly and provides FHIR resource composition for native EHR intergration.' },
 ];
 
 const plans = [
   { name: 'Free Plan', tagline: 'For small clinics getting started', price: '₹0.00', featured: false, features: ['Up to 3 care team members', '100 SOAP notes/month', 'Voice-to-text transcription', 'Email support', 'Basic analytics'] },
-  { name: 'Professional', tagline: 'Most chosen by multi-specialty clinics', price: '₹4,999', featured: true, features: ['Up to 15 care team members', 'Unlimited SOAP notes', 'Vision AI for imaging', 'Priority support', 'EHR export (C-CDA)'] },
+  { name: 'Professional', tagline: 'Most chosen by multi-specialty clinics', price: '₹4,999', featured: true, features: ['Up to 15 care team members', 'Unlimited SOAP notes', 'Vision AI for imaging', 'Priority support', 'EHR export (FHIR-R4)'] },
   { name: 'Enterprise', tagline: 'For hospital networks & chains', price: 'Custom', featured: false, features: ['Unlimited care team members', 'Unlimited SOAP notes', 'Full imaging AI suite', 'Dedicated account manager', 'On-premise deployment option', 'SLA-backed uptime guarantee'] },
 ];
 
