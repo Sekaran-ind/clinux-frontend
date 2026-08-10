@@ -65,6 +65,19 @@ describe('recordSummary', () => {
     it('falls back to record.id when there are no non-empty answers', () => {
         expect(recordSummary(record([]))).toBe('rec-1');
     });
+
+    // Regression test: a MultiSelect field (e.g. Office Hours' "Days of Week") produces multiple
+    // entries in one item's answer[] — recordSummary used to only ever read answer[0], so
+    // selecting Mon–Fri and saving silently summarized as just "mon", dropping every day after
+    // the first (reported as "breaks between the first section and last section").
+    it('joins every answer for a multi-answer field (MultiSelect), not just the first', () => {
+        const r = record([
+            { linkId: 'hours_days', answer: [{ valueCoding: { display: 'mon' } }, { valueCoding: { display: 'wed' } }, { valueCoding: { display: 'fri' } }] },
+            { linkId: 'hours_open', answer: [{ valueString: '08:00' }] },
+            { linkId: 'hours_close', answer: [{ valueString: '20:00' }] },
+        ]);
+        expect(recordSummary(r)).toBe('mon, wed, fri · 08:00 · 20:00');
+    });
 });
 
 describe('getGroupInstances', () => {

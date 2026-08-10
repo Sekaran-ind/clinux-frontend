@@ -4,6 +4,7 @@
 // new pages on. Same SystemForms/clinical/cubo calls; storage moved to TanStack DB collections,
 // component model moved to Vue.
 import { computed, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { jsPDF } from 'jspdf';
 import Cubo from '../components/Cubo.vue';
 import CornerstoneViewer from '../components/CornerstoneViewer.vue';
@@ -24,6 +25,7 @@ import { API_BASE, apiFetch } from '../config.js';
 
 const STAFF_FORM_ID = 'system-staff-profile-v1';
 
+const router = useRouter();
 const clinical = useClinicalStore();
 const cubo = useCuboStore();
 const auth = useAuthStore();
@@ -282,10 +284,23 @@ function generatePrescriptionPdf() {
   }
 }
 
-function viewPrescription(id) {
+async function viewPrescription(id) {
   const rx = prescriptions.value.find((r) => r.id === id);
   if (!rx) return;
-  window.open(rx.dataUrl, '_blank');
+  // rx.dataUrl is a base64 data: URL — kept that way in storage since it's what
+  // FileReader.readAsDataURL() produces and it's plain-JSON-serializable for the localStorage-
+  // backed rxCollection. Opening it directly (window.open(dataUrl)) puts the ENTIRE base64-
+  // encoded PDF in the browser's address bar. Convert to a short-lived blob: URL just for
+  // viewing instead — fetch() can decode a data: URL straight into a real Blob.
+  try {
+    const blob = await fetch(rx.dataUrl).then((r) => r.blob());
+    const blobUrl = URL.createObjectURL(blob);
+    window.open(blobUrl, '_blank');
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  } catch (err) {
+    log('Could not open the prescription PDF: ' + err.message, 'border-red-500');
+    return;
+  }
   log('Viewed prescription PDF.');
 }
 
@@ -330,6 +345,12 @@ function removeTeamMember(staffId) {
   clinical.removeCareTeamMember(encounter.id, staffId);
   dataVersion.value++;
 }
+
+// Was no way to reach Checkout from anywhere in the app (no nav entry, no button here) — Front
+// Desk's own sendToConsultation() is the pattern this mirrors.
+function sendToCheckout() {
+  router.push('/checkout');
+}
 </script>
 
 <template>
@@ -356,6 +377,7 @@ function removeTeamMember(staffId) {
         <button class="btn-ghost text-xs" @click="setEncounterStage('accepted')">Accept</button>
         <button class="btn-ghost text-xs" @click="setEncounterStage('rejected')">Reject</button>
         <button class="btn-ghost text-xs" @click="openConsentModal()">Consent: {{ consentStatus }}</button>
+        <button class="btn-primary text-xs inline-flex items-center gap-1.5" @click="sendToCheckout()"><i class="fas fa-arrow-right"></i>Send to Checkout</button>
       </div>
     </div>
 

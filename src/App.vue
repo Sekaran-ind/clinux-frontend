@@ -1,9 +1,11 @@
 <script setup>
 import { useRoute } from 'vue-router';
 import { useThemeStore } from './stores/theme.js';
+import { useClinicalStore } from './stores/clinical.js';
 
 const theme = useThemeStore();
 const route = useRoute();
+const clinical = useClinicalStore();
 
 const pageBadge = {
   'front-desk': 'FRONT DESK',
@@ -35,6 +37,12 @@ const pageBadge = {
           </RouterLink>
           <RouterLink to="/consultation-desk" class="btn-ghost no-underline flex items-center gap-1.5">
             <i class="fas fa-stethoscope text-xs"></i>Consultation Desk
+          </RouterLink>
+          <!-- Was previously unreachable from anywhere in the app except typing the URL
+               directly — only shown once there's an active encounter, matching Checkout.vue's
+               own "no active encounter" guard for its main content. -->
+          <RouterLink v-if="clinical.activeEncounterId" to="/checkout" class="btn-ghost no-underline flex items-center gap-1.5">
+            <i class="fas fa-receipt text-xs"></i>Checkout
           </RouterLink>
           <RouterLink to="/" class="btn-ghost no-underline flex items-center gap-1.5">
             <i class="fas fa-arrow-left text-xs"></i>Home

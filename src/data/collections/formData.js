@@ -68,7 +68,14 @@ export function summarizeItems(items, recordFallbackId) {
   const walk = (items) => {
     (items || []).forEach((item) => {
       if (item.item) walk(item.item);
-      else if (item.answer && item.answer[0]) values.push(extractAnswerValue(item.answer[0]));
+      else if (Array.isArray(item.answer) && item.answer.length > 0) {
+        // A MultiSelect field (e.g. Office Hours' "Days of Week") produces multiple entries in
+        // answer[], not just answer[0] — joining all of them (not just the first) is what fixes
+        // a repeatable Office Hours record silently summarizing as just "mon" when mon–fri were
+        // actually all selected and saved correctly.
+        const joined = item.answer.map(extractAnswerValue).filter((v) => v !== '').join(', ');
+        if (joined) values.push(joined);
+      }
     });
   };
   walk(items);

@@ -252,7 +252,7 @@ function sendMessage() {
 
   <section id="about" class="section section-alt">
     <div class="container">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:3rem;align-items:center">
+      <div class="two-col-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:3rem;align-items:center">
         <div>
           <span class="eyebrow">About Us</span>
           <div class="teal-line"></div>
@@ -354,7 +354,7 @@ function sendMessage() {
 
   <section id="hours" class="section">
     <div class="container">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:3rem">
+      <div class="two-col-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:3rem">
         <div>
           <span class="eyebrow">Opening Times</span>
           <div class="teal-line"></div>
@@ -489,7 +489,7 @@ a { text-decoration:none; color:inherit; }
 .section-header { text-align:center;margin-bottom:3rem; }
 @media (max-width:768px) {
   .nav-links { display:none }
-  .hero-grid { grid-template-columns:1fr!important }
+  .hero-grid,.two-col-grid { grid-template-columns:1fr!important }
   .staff-grid,.services-grid,.features-grid { grid-template-columns:1fr 1fr!important }
 }
 @media (max-width:480px) {
