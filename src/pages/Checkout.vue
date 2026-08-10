@@ -16,7 +16,7 @@ const clinical = useClinicalStore();
 // separately-keyed forms.
 const ENCOUNTER_FORM_ID = clinical.ENCOUNTER_FORM_ID;
 
-const screen = ref('steps'); // 'steps' | 'done'
+const screen = ref('sessions'); // 'sessions' | 'steps' | 'done'
 const currentStep = ref(0);
 const steps = [
   { id: 'prescription', label: 'Prescription' },
@@ -41,6 +41,23 @@ const drawerRecord = ref(null);
 const formKey = ref(0);
 
 const encounterId = computed(() => clinical.activeEncounterId);
+
+// The shared active-sessions list — Checkout never originates a session (no Add here), it only
+// picks up an existing one. dataVersion is the same reactivity trigger used elsewhere in this
+// file (bumped on every saveDrawer()/closeEncounter() call).
+const activeSessions = computed(() => {
+  dataVersion.value;
+  return clinical.listActiveSessions();
+});
+
+if (clinical.activeEncounterId) clinical.recordVisit(clinical.activeEncounterId, 'checkout');
+
+function resumeSession(session) {
+  clinical.setActive(session.id);
+  clinical.recordVisit(session.id, 'checkout');
+  currentStep.value = 0;
+  screen.value = 'steps';
+}
 
 const activeStepLabel = computed(() => ({ prescription: 'Add Medication', billing: 'Billing & Payment' }[activeStepId.value] || ''));
 
@@ -145,14 +162,27 @@ function closeEncounter() {
     <div class="journey-layout max-w-[1300px] mx-auto px-6 py-8 pb-16 flex gap-8">
       <div class="flex-1 min-w-0">
 
-        <div v-show="!encounterId" class="cf-card" style="border-radius:1rem;padding:2rem;text-align:center">
-          <i class="fas fa-user-clock" style="font-size:2rem;color:var(--cf-border);display:block;margin-bottom:.75rem"></i>
-          <p style="font-weight:700;color:var(--cf-text-strong);margin-bottom:.3rem">No active encounter</p>
-          <p style="font-size:.85rem;color:var(--cf-text);margin-bottom:1rem">Start a visit at the Front Desk before checking out.</p>
-          <RouterLink to="/front-desk" class="btn-primary">Go to Front Desk</RouterLink>
+        <div v-if="screen === 'sessions'">
+          <h2 class="text-2xl font-bold mb-4" style="color:var(--cf-text-strong)">Active Sessions</h2>
+          <div v-if="activeSessions.length === 0" class="cf-card" style="border-radius:1rem;padding:2rem;text-align:center">
+            <i class="fas fa-user-clock" style="font-size:2rem;color:var(--cf-border);display:block;margin-bottom:.75rem"></i>
+            <p style="font-weight:700;color:var(--cf-text-strong);margin-bottom:.3rem">No active encounter</p>
+            <p style="font-size:.85rem;color:var(--cf-text);margin-bottom:1rem">Start a visit at the Front Desk before checking out.</p>
+            <RouterLink to="/front-desk" class="btn-primary">Go to Front Desk</RouterLink>
+          </div>
+          <div v-else class="flex flex-col gap-2">
+            <div v-for="s in activeSessions" :key="s.id" class="record-card flex items-center justify-between p-3 cursor-pointer" @click="resumeSession(s)">
+              <div>
+                <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ s.patientRef || 'Unknown patient' }}</span>
+                <span class="text-xs ml-2" style="color:var(--cf-text)">{{ s.chiefComplaint }}</span>
+                <div class="text-xs mt-0.5"><span class="badge badge-teal">{{ s.status }}</span></div>
+              </div>
+              <button class="btn-outline text-xs px-3 py-1.5" @click.stop="resumeSession(s)">Checkout</button>
+            </div>
+          </div>
         </div>
 
-        <div v-if="encounterId && screen === 'steps'">
+        <div v-if="screen === 'steps'">
           <div v-show="currentStep === 0">
             <span class="section-eyebrow block mb-1">Step 1 of 3</span>
             <h2 class="text-2xl font-bold mb-4" style="color:var(--cf-text-strong)">Prescription</h2>
@@ -198,7 +228,7 @@ function closeEncounter() {
         </div>
       </div>
 
-      <aside class="journey-rail" v-show="encounterId && screen === 'steps'">
+      <aside class="journey-rail" v-show="screen === 'steps'">
         <div v-for="(s, idx) in steps" :key="s.id" class="rail-step" :class="idx === currentStep ? 'active' : ''" @click="currentStep = idx">
           <div class="step-dot" :class="idx < currentStep ? 'done' : idx === currentStep ? 'active' : 'pending'">
             <i v-if="idx < currentStep" class="fas fa-check text-xs"></i>

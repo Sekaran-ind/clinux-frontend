@@ -47,11 +47,30 @@ const selectedPatientId = ref(null);
 const encounterRecordId = ref(null);
 const lhcFormHost = ref(null);
 
-// Resume an in-flight encounter if one exists (e.g. the page was reloaded mid-visit).
-const existing = clinical.getEncounter();
-if (existing) {
-  encounterRecordId.value = existing.id;
-  currentStep.value = 2;
+// Landing view: the active-sessions list, not a silent single-encounter auto-resume (there can
+// be more than one open visit at once — staff pick which one, or start a new check-in).
+const screen = ref('sessions'); // 'sessions' | 'wizard'
+const activeSessions = computed(() => {
+  dataVersion.value;
+  return clinical.listActiveSessions();
+});
+
+if (clinical.activeEncounterId) clinical.recordVisit(clinical.activeEncounterId, 'front-desk');
+
+function startNewSession() {
+  encounterRecordId.value = null;
+  selectedPatientId.value = null;
+  clinical.clearActive();
+  currentStep.value = 0;
+  screen.value = 'wizard';
+}
+
+function resumeSession(session) {
+  encounterRecordId.value = session.id;
+  clinical.setActive(session.id);
+  clinical.recordVisit(session.id, 'front-desk');
+  currentStep.value = 1; // Encounter step — a predictable resume point regardless of progress.
+  screen.value = 'wizard';
 }
 
 function nextStep() {
@@ -177,9 +196,34 @@ function sendToConsultation() {
       </div>
     </div>
 
-    <!-- RIGHT: wizard steps -->
+    <!-- RIGHT: sessions list, or the wizard once a session's picked/started -->
     <div class="flex-1 overflow-y-auto p-6 space-y-3">
+      <div v-if="screen === 'sessions'" class="max-w-[720px]">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-2xl font-bold" style="color:var(--cf-text-strong)">Active Sessions</h2>
+          <button class="btn-teal whitespace-nowrap" @click="startNewSession()"><i class="fas fa-plus"></i> New Check-In</button>
+        </div>
+        <div v-if="activeSessions.length === 0" class="cf-card rounded-2xl p-5 text-sm" style="color:var(--cf-text)">
+          No active sessions right now. Start a new check-in above.
+        </div>
+        <div v-else class="flex flex-col gap-2">
+          <div v-for="s in activeSessions" :key="s.id" class="record-card flex items-center justify-between p-3">
+            <div>
+              <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ s.patientRef || 'Unknown patient' }}</span>
+              <span class="text-xs ml-2" style="color:var(--cf-text)">{{ s.chiefComplaint }}</span>
+              <div class="text-xs mt-0.5" style="color:var(--cf-text)">
+                <span class="badge badge-teal">{{ s.status }}</span>
+                <span v-if="s.priority === 'Emergency'" class="badge ml-1" style="background:#fee2e2;color:#b91c1c">Emergency</span>
+              </div>
+            </div>
+            <button class="btn-outline text-xs px-3 py-1.5" @click="resumeSession(s)">Resume</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-else>
       <div class="flex items-center gap-6 flex-wrap mb-6">
+        <button class="btn-ghost text-xs" @click="screen = 'sessions'"><i class="fas fa-arrow-left"></i> Sessions</button>
         <div v-for="(s, idx) in steps" :key="s.id" class="flex items-center gap-2 cursor-pointer" @click="currentStep = idx">
           <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0"
                :class="idx < currentStep ? 'bg-(--color-primary) text-(--color-secondary)' : idx === currentStep ? 'bg-(--color-secondary) text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'">
@@ -253,6 +297,7 @@ function sendToConsultation() {
             </div>
           </div>
         </div>
+      </div>
       </div>
     </div>
   </div>

@@ -5,12 +5,16 @@
 // other page uses) — kept as a scoped <style> block here for the same reason: nothing outside
 // this page should be affected by, e.g., its own .nav-link/.btn class definitions.
 import { computed, reactive, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useClinicalStore } from '../stores/clinical.js';
 import { publicAppointments } from '../data/collections/publicAppointments.js';
 
 const onboarding = useOnboardingStore();
 const auth = useAuthStore();
+const clinical = useClinicalStore();
+const router = useRouter();
 
 const DEMO_CLINIC = {
   name: 'Apollo Diagnostics', type: 'Diagnostic Centre', tagline: 'Your trusted diagnostic partner',
@@ -54,6 +58,38 @@ const isAdmin = computed(() => {
 
 if (clinic.value.brandColor) {
   document.documentElement.style.setProperty('--brand', clinic.value.brandColor);
+}
+
+// Admin-gated active-sessions strip — same shared foundation Front Desk/Checkout use, but this
+// route has no requiresAuth (confirmed in router/index.js), so isAdmin here is a cosmetic/
+// defense-in-depth gate only, not real access control. Cards deliberately show no patient name
+// or chief complaint (see template) — this can render on a nominally-public route.
+const activeSessions = computed(() => clinical.listActiveSessions());
+const showSessionsStrip = computed(() => isAdmin.value && activeSessions.value.length > 0);
+
+// .site-nav is position:fixed;top:0 by default — admin-bar/the sessions strip both sit in
+// normal flow above it, so nav's own top offset has to be nudged down by their exact stacked
+// height (same fragile-but-existing hardcoded-pixel convention as admin-bar's own 34px already
+// used below — see .admin-bar's rendered height). Kept as two named constants rather than
+// measuring the DOM so the offset stays deterministic across renders.
+const ADMIN_BAR_HEIGHT = 34;
+const SESSIONS_STRIP_HEIGHT = 40;
+const adminBarHeight = computed(() => (isAdmin.value ? ADMIN_BAR_HEIGHT : 0));
+const navTopOffset = computed(() => adminBarHeight.value + (showSessionsStrip.value ? SESSIONS_STRIP_HEIGHT : 0));
+
+function sessionRef(id) {
+  return id.slice(-4).toUpperCase();
+}
+
+function timeSince(savedAt) {
+  const mins = Math.max(1, Math.round((Date.now() - new Date(savedAt).getTime()) / 60000));
+  if (mins < 60) return mins + 'm ago';
+  return Math.round(mins / 60) + 'h ago';
+}
+
+function resumeToSession(session) {
+  clinical.setActive(session.id);
+  router.push(clinical.getLastVisitedPage(session.id) || '/front-desk');
 }
 
 const apptModal = ref(false);
@@ -174,7 +210,22 @@ function sendMessage() {
     </div>
   </div>
 
-  <nav class="site-nav" :style="isAdmin ? 'top:34px' : 'top:0'">
+  <!-- Admin-only, PII-masked — see resolved note in the active-encounter-cards backlog item:
+       no patient name or chief complaint rendered here, just a short session reference. Sits in
+       normal flow right after .admin-bar (also static) — fixed height in CSS (matching
+       SESSIONS_STRIP_HEIGHT below) is what keeps nav's fixed top-offset math exact. -->
+  <div class="active-sessions-strip" v-show="showSessionsStrip">
+    <span class="active-sessions-label"><i class="fas fa-user-clock"></i> Active Sessions</span>
+    <div class="active-sessions-row">
+      <div v-for="s in activeSessions" :key="s.id" class="active-session-card" @click="resumeToSession(s)">
+        <span class="badge badge-brand" style="font-size:.65rem">#{{ sessionRef(s.id) }}</span>
+        <span class="text-xs" style="font-weight:600">{{ s.status }}</span>
+        <span class="text-xs" style="opacity:.7">{{ timeSince(s.savedAt) }}</span>
+      </div>
+    </div>
+  </div>
+
+  <nav class="site-nav" :style="`top:${navTopOffset}px`">
     <div class="nav-inner">
       <div class="nav-logo">
         <div v-if="clinic.logoUrl" style="height:36px;width:auto"><img :src="clinic.logoUrl" style="height:36px;width:auto;border-radius:.375rem" @error="clinic.logoUrl = ''" /></div>
@@ -481,6 +532,14 @@ a { text-decoration:none; color:inherit; }
 :global(.dark) .cf-toast { background:var(--brand);color:var(--color-secondary); }
 .admin-bar { background:var(--color-secondary);padding:.4rem 1.5rem;display:flex;align-items:center;justify-content:space-between; }
 :global(.dark) .admin-bar { background:#0D2442;border-bottom:1px solid var(--border); }
+/* Fixed height (40px) intentionally — ClinicHome.vue's navTopOffset computed assumes this exact
+   value to keep the fixed .site-nav from overlapping this bar. */
+.active-sessions-strip { height:40px;background:var(--bg-alt,#f1f5f9);border-bottom:1px solid var(--border);padding:0 1.5rem;display:flex;align-items:center;gap:1rem;overflow:hidden; }
+:global(.dark) .active-sessions-strip { background:#0D2442;border-color:var(--border); }
+.active-sessions-label { font-size:.7rem;font-weight:700;color:var(--text);white-space:nowrap;font-family:'Poppins',sans-serif; }
+.active-sessions-row { display:flex;gap:.5rem;overflow-x:auto;flex:1; }
+.active-session-card { display:flex;align-items:center;gap:.5rem;padding:.3rem .75rem;border-radius:.5rem;border:1px solid var(--border);cursor:pointer;white-space:nowrap;flex-shrink:0;transition:transform .15s; }
+.active-session-card:hover { transform:translateY(-1px); }
 .modal-bg { position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(5px);z-index:60;display:flex;align-items:center;justify-content:center;padding:1rem; }
 .modal-panel { background:var(--bg);border:1px solid var(--border);border-radius:1.25rem;padding:2rem;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 30px 60px rgba(0,0,0,.3); }
 .grad-text { background:linear-gradient(135deg,#00D4B2 0%,#0A7A6E 50%,#00D4B2 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text; }
