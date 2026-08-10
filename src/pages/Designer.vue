@@ -39,6 +39,10 @@ cubo.currentLayout = 'EXPANDED';
 // its cubo-api-submit emit actually reaches is just a matter of which tab is showing.
 const primaryTab = ref('formsLibrary'); // 'formsLibrary' | 'sandbox'
 const aiEngineSandboxRef = ref(null);
+// Mobile/tablet chat-forms toggle (see .chat-forms-shell in style.css) — content (whichever
+// primaryTab is active) is the default view, chat is one tap away via .mobile-toggle-fab. No
+// effect above the 768px breakpoint.
+const mobileView = ref('forms'); // 'chat' | 'forms'
 function onCuboSubmit(payload) {
   aiEngineSandboxRef.value?.classifyAndExecute(payload);
 }
@@ -740,18 +744,22 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
     </div>
   </div>
 
-  <div class="flex-1 flex overflow-hidden">
+  <button class="mobile-toggle-fab" @click="mobileView = mobileView === 'chat' ? 'forms' : 'chat'" :title="mobileView === 'chat' ? 'Switch to forms' : 'Switch to chat'">
+    <i :class="mobileView === 'chat' ? 'fas fa-table-list' : 'fas fa-comment'"></i>
+  </button>
+
+  <div class="flex-1 flex overflow-hidden chat-forms-shell" :class="mobileView === 'chat' ? 'mobile-mode-chat' : 'mobile-mode-forms'">
     <!-- LEFT: Cübo, same confined-pane pattern as Front Desk/Consultation Desk/Checkout. One
          shared instance now serves both tabs — onCuboSubmit() forwards to whichever one is
          showing (only Sandbox Data actually consumes it; Forms Library ignores the emit). -->
-    <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
+    <div class="w-[380px] shrink-0 flex flex-col border-r chat-pane" style="border-color:var(--cf-border)">
       <div class="cubo-inline-host flex-1" style="min-height:420px">
         <Cubo category="ai-engine" page-context="ClinüxFlow Room Architect — form design/library on the Forms Library tab, natural-language sandbox patient/staff/encounter management on Sandbox Data." @cubo-api-submit="onCuboSubmit" />
       </div>
     </div>
 
     <!-- RIGHT: primary tabs + content -->
-    <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden" class="content-pane">
       <!-- z-index above .drawer-backdrop's 100 — otherwise a click here while either drawer is
            open lands on the fixed, full-viewport backdrop instead (it would just close the
            drawer rather than switch tabs) since these buttons sit at z-index:auto by default.

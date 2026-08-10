@@ -31,6 +31,9 @@ function showToast(msg) {
 const drawerOpen = ref(false);
 const activeStepId = ref(null);
 const dataVersion = ref(0);
+// Mobile/tablet chat-forms toggle (see .chat-forms-shell in style.css) — content is the default
+// view, chat is one tap away via .mobile-toggle-fab. No effect above the 768px breakpoint.
+const mobileView = ref('forms'); // 'chat' | 'forms'
 const lhcFormHost = ref(null);
 const drawerQuestionnaire = ref(null);
 const drawerRecord = ref(null);
@@ -154,17 +157,21 @@ function closeEncounter() {
     </div>
   </div>
 
-  <div class="flex-1 flex overflow-hidden">
+  <button class="mobile-toggle-fab" @click="mobileView = mobileView === 'chat' ? 'forms' : 'chat'" :title="mobileView === 'chat' ? 'Switch to forms' : 'Switch to chat'">
+    <i :class="mobileView === 'chat' ? 'fas fa-table-list' : 'fas fa-comment'"></i>
+  </button>
+
+  <div class="flex-1 flex overflow-hidden chat-forms-shell" :class="mobileView === 'chat' ? 'mobile-mode-chat' : 'mobile-mode-forms'">
     <!-- LEFT: Cübo, same confined-pane pattern as Front Desk/Consultation Desk. Stays mounted
          across every screen (sessions/steps/done), not just while a session is open. -->
-    <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
+    <div class="w-[380px] shrink-0 flex flex-col border-r chat-pane" style="border-color:var(--cf-border)">
       <div class="cubo-inline-host flex-1" style="min-height:420px">
         <Cubo category="billing" :encounter-id="encounterId" page-context="Checkout — prescription, billing, payment and visit close-out." />
       </div>
     </div>
 
     <!-- RIGHT: sessions list, or this session's own view once one's picked -->
-    <main class="flex-1 overflow-y-auto p-6">
+    <main class="flex-1 overflow-y-auto p-6 content-pane">
       <div class="max-w-[900px]">
 
         <div v-if="screen === 'sessions'">

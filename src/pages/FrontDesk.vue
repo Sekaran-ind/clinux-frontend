@@ -44,6 +44,10 @@ const drawerOpen = ref(false);
 const activeStepId = ref(null);
 const dataVersion = ref(0); // bumped on every collection write so the computeds below re-derive
 
+// Mobile/tablet chat-forms toggle (see .chat-forms-shell in style.css) — content is the default
+// view, chat is one tap away via .mobile-toggle-fab. No effect above the 768px breakpoint.
+const mobileView = ref('forms'); // 'chat' | 'forms'
+
 const patientSearch = ref('');
 const selectedPatientId = ref(null);
 const encounterRecordId = ref(null);
@@ -188,18 +192,22 @@ function sendToConsultation() {
     <span>{{ toast.msg }}</span>
   </div>
 
-  <div class="flex-1 flex overflow-hidden">
+  <button class="mobile-toggle-fab" @click="mobileView = mobileView === 'chat' ? 'forms' : 'chat'" :title="mobileView === 'chat' ? 'Switch to forms' : 'Switch to chat'">
+    <i :class="mobileView === 'chat' ? 'fas fa-table-list' : 'fas fa-comment'"></i>
+  </button>
+
+  <div class="flex-1 flex overflow-hidden chat-forms-shell" :class="mobileView === 'chat' ? 'mobile-mode-chat' : 'mobile-mode-forms'">
     <!-- LEFT: Cübo, threaded to this visit's encounter once one exists (see Cubo.vue's
          watch(encounterId) — it starts on a plain front-desk thread during the Patient step,
          then hands off the moment step 2 creates the encounter). -->
-    <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
+    <div class="w-[380px] shrink-0 flex flex-col border-r chat-pane" style="border-color:var(--cf-border)">
       <div class="cubo-inline-host flex-1" style="min-height:420px">
         <Cubo category="front-desk" :encounter-id="encounterRecordId" page-context="Front Desk — patient onboarding, encounter intake, vitals and triage." />
       </div>
     </div>
 
     <!-- RIGHT: sessions list, or the wizard once a session's picked/started -->
-    <div class="flex-1 overflow-y-auto p-6 space-y-3">
+    <div class="flex-1 overflow-y-auto p-6 space-y-3 content-pane">
       <div v-if="screen === 'sessions'" class="max-w-[720px]">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-2xl font-bold" style="color:var(--cf-text-strong)">Active Sessions</h2>

@@ -40,6 +40,9 @@ const encounter = clinical.getEncounter();
 if (encounter) clinical.recordVisit(encounter.id, 'consultation-desk');
 const priority = ref(encounter ? getAnswer(encounter, 'encounter_priority') || 'Normal' : 'Normal');
 const leftTab = ref('cubo');
+// Mobile/tablet chat-forms toggle (see .chat-forms-shell in style.css) — content is the default
+// view, chat is one tap away via .mobile-toggle-fab. No effect above the 768px breakpoint.
+const mobileView = ref('forms'); // 'chat' | 'forms'
 const isGenerating = ref(false);
 const isGeneratingRx = ref(false);
 const logsExpanded = ref(false);
@@ -364,6 +367,10 @@ function sendToCheckout() {
   </div>
 
   <template v-else>
+    <button class="mobile-toggle-fab" @click="mobileView = mobileView === 'chat' ? 'forms' : 'chat'" :title="mobileView === 'chat' ? 'Switch to forms' : 'Switch to chat'">
+      <i :class="mobileView === 'chat' ? 'fas fa-table-list' : 'fas fa-comment'"></i>
+    </button>
+
     <!-- Top bar -->
     <div class="flex items-center justify-between px-4 py-3 border-b" style="border-color:var(--cf-border)">
       <div>
@@ -384,9 +391,9 @@ function sendToCheckout() {
       </div>
     </div>
 
-    <div class="flex-1 flex overflow-hidden">
+    <div class="flex-1 flex overflow-hidden chat-forms-shell" :class="mobileView === 'chat' ? 'mobile-mode-chat' : 'mobile-mode-forms'">
       <!-- LEFT: tools -->
-      <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
+      <div class="w-[380px] shrink-0 flex flex-col border-r chat-pane" style="border-color:var(--cf-border)">
         <div class="flex border-b" style="border-color:var(--cf-border)">
           <button class="flex-1 text-xs font-bold py-2.5" :class="leftTab === 'cubo' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="leftTab = 'cubo'">Cübo Assistant</button>
           <button class="flex-1 text-xs font-bold py-2.5" :class="leftTab === 'imaging' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="leftTab = 'imaging'">Labs &amp; Imaging</button>
@@ -426,7 +433,7 @@ function sendToCheckout() {
       <!-- RIGHT: the whole Consultation record (Encounter/Vitals/SOAP/Prescription/Billing) —
            accepted tradeoff: every page shows the whole accumulating document, not just its own
            slice, in exchange for not needing page-scoped subset rendering. -->
-      <div class="flex-1 overflow-y-auto p-4 space-y-3">
+      <div class="flex-1 overflow-y-auto p-4 space-y-3 content-pane">
         <div class="flex items-center justify-between">
           <h2 class="font-bold text-lg" style="color:var(--cf-text-strong)">Consultation Record</h2>
           <button v-if="auth.currentUser?.tier === 'paid'" class="text-xs px-2 py-1 rounded bg-(--color-primary)/10 text-(--color-primary) font-bold flex items-center gap-1.5" :disabled="isGenerating" @click="generateSoapDraft()">
