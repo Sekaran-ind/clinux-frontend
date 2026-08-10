@@ -7,7 +7,6 @@ import ClinicHome from '../pages/ClinicHome.vue';
 import Checkout from '../pages/Checkout.vue';
 import AbdmOnboarding from '../pages/AbdmOnboarding.vue';
 import Designer from '../pages/Designer.vue';
-import AiEngine from '../pages/AiEngine.vue';
 import { useAuthStore } from '../stores/auth.js';
 import { resolveGuard } from './guardLogic.js';
 
@@ -26,7 +25,9 @@ const routes = [
   { path: '/checkout', name: 'checkout', component: Checkout, meta: { requiresAuth: true } },
   { path: '/onboarding-abdm', name: 'onboarding-abdm', component: AbdmOnboarding, meta: { requiresAuth: true } },
   { path: '/designer', name: 'designer', component: Designer, meta: { requiresAuth: true } },
-  { path: '/ai-engine', name: 'ai-engine', component: AiEngine, meta: { hideAppNav: true, requiresAuth: true } },
+  // AiEngine.vue merged into Designer.vue (see clinux-ai-engine-designer-merge-tanstack-table
+  // memory note) — old bookmarks/links to /ai-engine still land somewhere useful.
+  { path: '/ai-engine', redirect: '/designer' },
   { path: '/:catchAll(.*)', redirect: '/' },
 ];
 

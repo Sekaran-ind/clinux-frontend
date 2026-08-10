@@ -1,5 +1,7 @@
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
+import PrimeVue from 'primevue/config';
+import Aura from '@primevue/themes/aura';
 import './style.css';
 import App from './App.vue';
 import { router } from './router/index.js';
@@ -37,6 +39,9 @@ await Promise.all(collections.map((c) => c.preload()));
 const app = createApp(App);
 app.use(createPinia());
 app.use(router);
+// unstyled:false (the default) — the app doesn't have its own PrimeVue-specific design tokens
+// yet, so use PrimeVue's own Aura preset rather than fighting it with no theme at all.
+app.use(PrimeVue, { theme: { preset: Aura } });
 app.mount('#app');
 
 // Revalidates a stored session against the server on every app load — picks up a tier change
