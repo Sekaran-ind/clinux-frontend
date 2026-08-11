@@ -4,11 +4,12 @@
 // (--brand/--bg/--text CSS variables, distinct from the shared --cf-*/--color-* tokens every
 // other page uses) — kept as a scoped <style> block here for the same reason: nothing outside
 // this page should be affected by, e.g., its own .nav-link/.btn class definitions.
-import { computed, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useClinicalStore } from '../stores/clinical.js';
+import { useThemeStore } from '../stores/theme.js';
 import { publicAppointments } from '../data/collections/publicAppointments.js';
 import FrontDesk from './FrontDesk.vue';
 import ConsultationDesk from './ConsultationDesk.vue';
@@ -17,6 +18,7 @@ import Checkout from './Checkout.vue';
 const onboarding = useOnboardingStore();
 const auth = useAuthStore();
 const clinical = useClinicalStore();
+const theme = useThemeStore();
 const router = useRouter();
 
 // Front Desk/Consultation Desk/Checkout used to be their own routed pages — now mounted
@@ -91,15 +93,22 @@ if (clinic.value.brandColor) {
 const activeSessions = computed(() => clinical.listActiveSessions());
 const showSessionsStrip = computed(() => isAdmin.value && activeSessions.value.length > 0);
 
-// .site-nav is position:fixed;top:0 by default — admin-bar/the sessions strip both sit in
-// normal flow above it, so nav's own top offset has to be nudged down by their exact stacked
-// height (same fragile-but-existing hardcoded-pixel convention as admin-bar's own 34px already
-// used below — see .admin-bar's rendered height). Kept as two named constants rather than
-// measuring the DOM so the offset stays deterministic across renders.
-const ADMIN_BAR_HEIGHT = 34;
+// .site-nav is position:fixed;top:0 by default — the sessions strip sits in normal flow above
+// it, so nav's own top offset has to be nudged down by its exact height (same fragile-but-
+// existing hardcoded-pixel convention this file already used for the now-removed admin-bar).
 const SESSIONS_STRIP_HEIGHT = 40;
-const adminBarHeight = computed(() => (isAdmin.value ? ADMIN_BAR_HEIGHT : 0));
-const navTopOffset = computed(() => adminBarHeight.value + (showSessionsStrip.value ? SESSIONS_STRIP_HEIGHT : 0));
+const navTopOffset = computed(() => (showSessionsStrip.value ? SESSIONS_STRIP_HEIGHT : 0));
+
+// Profile dropdown — same pattern as Index.vue's own user-menu-anchor (see
+// clinux-unified-header-and-home-routing memory note), reusing a plain document listener for
+// outside-click close rather than Index.vue's vestigial (unregistered, no-op) v-click-outside
+// directive.
+const userMenuOpen = ref(false);
+function closeUserMenuOnOutsideClick(e) {
+  if (!e.target.closest('.user-menu-anchor')) userMenuOpen.value = false;
+}
+onMounted(() => document.addEventListener('click', closeUserMenuOnOutsideClick));
+onUnmounted(() => document.removeEventListener('click', closeUserMenuOnOutsideClick));
 
 function sessionRef(id) {
   return id.slice(-4).toUpperCase();
@@ -217,27 +226,13 @@ function sendMessage() {
     </div>
   </div>
 
-  <div class="admin-bar" v-show="isAdmin && clinicView === 'public'">
-    <div style="display:flex;align-items:center;gap:.75rem">
-      <i class="fas fa-shield-alt" style="color:var(--brand);font-size:.8rem"></i>
-      <span style="font-size:.75rem;color:rgba(255,255,255,.8)">Admin view — only you can see this bar</span>
-      <span class="badge badge-brand" style="font-size:.65rem">{{ 'clinixflow.ai/' + (clinic.slug || 'your-clinic') }}</span>
-    </div>
-    <div style="display:flex;align-items:center;gap:.5rem">
-      <button class="link-btn" style="font-size:.75rem;color:rgba(255,255,255,.7);font-family:'Poppins',sans-serif;font-weight:600;display:flex;align-items:center;gap:.35rem" @click="openClinicView('front-desk')"><i class="fas fa-user-clock text-xs"></i>Front Desk</button>
-      <span style="color:rgba(255,255,255,.3)">|</span>
-      <RouterLink to="/onboarding" style="font-size:.75rem;color:rgba(255,255,255,.7);font-family:'Poppins',sans-serif;font-weight:600;display:flex;align-items:center;gap:.35rem"><i class="fas fa-pen text-xs"></i>Edit Profile</RouterLink>
-      <span style="color:rgba(255,255,255,.3)">|</span>
-      <RouterLink to="/designer" style="font-size:.75rem;color:rgba(255,255,255,.7);font-family:'Poppins',sans-serif;font-weight:600;display:flex;align-items:center;gap:.35rem"><i class="fas fa-cog text-xs"></i>Settings</RouterLink>
-      <span style="color:rgba(255,255,255,.3)">|</span>
-      <RouterLink to="/ai-engine" style="font-size:.75rem;color:var(--brand);font-family:'Poppins',sans-serif;font-weight:700;display:flex;align-items:center;gap:.35rem"><i class="fas fa-brain text-xs"></i>AI Engine</RouterLink>
-    </div>
-  </div>
-
   <!-- Admin-only, PII-masked — see resolved note in the active-encounter-cards backlog item:
        no patient name or chief complaint rendered here, just a short session reference. Sits in
-       normal flow right after .admin-bar (also static) — fixed height in CSS (matching
-       SESSIONS_STRIP_HEIGHT below) is what keeps nav's fixed top-offset math exact. -->
+       normal flow above the fixed .site-nav — fixed height in CSS (matching
+       SESSIONS_STRIP_HEIGHT below) is what keeps nav's fixed top-offset math exact. The old
+       always-visible .admin-bar strip (Front Desk/Edit Profile/Settings/AI Engine links) is gone
+       — those now live in the profile dropdown instead, see clinux-unified-header-and-home-
+       routing memory note. -->
   <div class="active-sessions-strip" v-show="showSessionsStrip && clinicView === 'public'">
     <span class="active-sessions-label"><i class="fas fa-user-clock"></i> Active Sessions</span>
     <div class="active-sessions-row">
@@ -271,12 +266,39 @@ function sendMessage() {
       </div>
       <div class="nav-actions">
         <button class="btn btn-brand btn-sm" @click="apptModal = true" v-show="clinic.apptConfig?.onlineBooking !== false"><i class="fas fa-calendar-plus"></i>Book</button>
+        <button class="icon-btn-round" @click="theme.toggle()" :title="theme.isDark ? 'Switch to light mode' : 'Switch to dark mode'">
+          <i :class="theme.isDark ? 'fas fa-sun' : 'fas fa-moon'"></i>
+        </button>
+        <!-- Matches Index.vue's own header: Sign In/Register when signed out, a profile
+             dropdown when signed in — admin-only actions (Front Desk/Edit Profile/Settings/
+             AI Engine) fold in here instead of the old always-visible .admin-bar strip. -->
+        <div v-if="!auth.currentUser" style="display:flex;align-items:center;gap:.5rem">
+          <RouterLink to="/" class="btn btn-outline btn-xs">Sign In</RouterLink>
+        </div>
+        <div v-else class="relative user-menu-anchor" style="position:relative">
+          <button @click="userMenuOpen = !userMenuOpen" class="icon-btn-round" style="background:var(--brand);color:#fff;font-weight:700;font-family:'Poppins',sans-serif" :title="auth.currentUser.clinicName">
+            <span>{{ auth.currentUser.clinicName.charAt(0).toUpperCase() }}</span>
+          </button>
+          <div v-show="userMenuOpen" class="user-menu">
+            <div class="user-menu-header">
+              <p style="font-size:.75rem;font-weight:700;color:var(--text-strong)" class="truncate">{{ auth.currentUser.clinicName }}</p>
+              <p style="font-size:.7rem;color:var(--text)" class="truncate">{{ auth.currentUser.email }}</p>
+            </div>
+            <template v-if="isAdmin">
+              <button class="user-menu-item" @click="openClinicView('front-desk'); userMenuOpen = false"><i class="fas fa-user-clock" style="color:var(--brand)"></i>Front Desk</button>
+              <RouterLink to="/onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-pen" style="color:var(--brand)"></i>Edit Profile</RouterLink>
+              <RouterLink to="/designer" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-cog" style="color:var(--brand)"></i>Settings</RouterLink>
+              <RouterLink to="/ai-engine" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-brain" style="color:var(--brand)"></i>AI Engine</RouterLink>
+            </template>
+            <button class="user-menu-item" style="color:#EF4444" @click="auth.logout(); userMenuOpen = false"><i class="fas fa-sign-out-alt"></i>Sign Out</button>
+          </div>
+        </div>
         <RouterLink to="/" class="btn btn-outline btn-xs"><i class="fas fa-home"></i></RouterLink>
       </div>
     </div>
   </nav>
 
-  <section class="hero" :style="isAdmin ? 'padding-top:calc(64px + 34px)' : 'padding-top:64px'">
+  <section class="hero" :style="`padding-top:${navTopOffset + 64}px`">
     <div class="hero-bg">
       <div class="hero-ring" style="width:800px;height:800px;top:50%;left:55%;transform:translate(-50%,-50%)"></div>
       <div class="hero-ring" style="width:550px;height:550px;top:50%;left:55%;transform:translate(-50%,-50%);border-color:rgba(0,212,178,.16)"></div>
@@ -595,12 +617,12 @@ a { text-decoration:none; color:inherit; }
 :global(.dark) .badge-navy { background:rgba(255,255,255,.08);color:var(--text-strong);border-color:var(--border); }
 .cf-toast { position:fixed;bottom:1.5rem;right:1.5rem;z-index:99;padding:.75rem 1.5rem;border-radius:.75rem;background:var(--color-secondary);color:#fff;font-family:'Poppins',sans-serif;font-weight:600;font-size:.875rem;box-shadow:0 8px 24px rgba(0,0,0,.2);display:flex;align-items:center;gap:.5rem; }
 :global(.dark) .cf-toast { background:var(--brand);color:var(--color-secondary); }
-.admin-bar { background:var(--color-secondary);padding:.4rem 1.5rem;display:flex;align-items:center;justify-content:space-between; }
-:global(.dark) .admin-bar { background:#0D2442;border-bottom:1px solid var(--border); }
-/* A plain button styled to look like the text links around it — admin-bar's "Front Desk" entry
-   switches clinicView locally now instead of navigating, so it can no longer be a RouterLink. */
-.link-btn { background:transparent;border:none;cursor:pointer;font:inherit; }
-.link-btn:hover { color:var(--brand); }
+/* ─── Profile dropdown (matches Index.vue's own user-menu-anchor pattern) ─── */
+.icon-btn-round { width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);background:var(--bg-alt);color:var(--text);cursor:pointer;font-size:.85rem;flex-shrink:0; }
+.user-menu { position:absolute;right:0;top:calc(100% + .5rem);width:200px;background:var(--bg);border:1px solid var(--border);border-radius:.75rem;box-shadow:0 12px 30px rgba(0,0,0,.15);overflow:hidden;z-index:60; }
+.user-menu-header { padding:.7rem 1rem;border-bottom:1px solid var(--border); }
+.user-menu-item { display:flex;align-items:center;gap:.6rem;width:100%;text-align:left;padding:.6rem 1rem;font-size:.8rem;font-weight:600;color:var(--text-strong);background:none;border:none;cursor:pointer;text-decoration:none;font-family:'Inter',sans-serif; }
+.user-menu-item:hover { background:var(--bg-alt); }
 /* Fixed height (40px) intentionally — ClinicHome.vue's navTopOffset computed assumes this exact
    value to keep the fixed .site-nav from overlapping this bar. */
 .active-sessions-strip { height:40px;background:var(--bg-alt,#f1f5f9);border-bottom:1px solid var(--border);padding:0 1.5rem;display:flex;align-items:center;gap:1rem;overflow:hidden; }

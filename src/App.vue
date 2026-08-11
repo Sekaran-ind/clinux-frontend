@@ -1,9 +1,19 @@
 <script setup>
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useThemeStore } from './stores/theme.js';
+import { homeDestination } from './router/homeDestination.js';
 
 const theme = useThemeStore();
 const route = useRoute();
+const router = useRouter();
+
+// "Home" goes to the clinic's own published page once it's registered, matching Index.vue's own
+// goToClinic() check (cf_clinic_profile) — see clinux-unified-header-and-home-routing memory
+// note. A function (not a reactive :to binding) since cf_clinic_profile is plain localStorage,
+// not a reactive store — same "compute at click time" convention Index.vue's goToClinic() uses.
+function goHome() {
+  router.push(homeDestination(!!localStorage.getItem('cf_clinic_profile')));
+}
 
 // front-desk/consultation-desk keys removed — those pages are no longer their own routes, see
 // clinux-frontdesk-consultation-checkout-as-clinic-home-components memory note.
@@ -38,9 +48,9 @@ const pageBadge = {
           <RouterLink to="/clinic-home" class="btn-ghost no-underline flex items-center gap-1.5">
             <i class="fas fa-house text-xs"></i>Clinic Home
           </RouterLink>
-          <RouterLink to="/" class="btn-ghost no-underline flex items-center gap-1.5">
+          <button class="btn-ghost flex items-center gap-1.5" @click="goHome()">
             <i class="fas fa-arrow-left text-xs"></i>Home
-          </RouterLink>
+          </button>
         </div>
       </div>
     </nav>
