@@ -1,15 +1,13 @@
 <script setup>
 import { useRoute } from 'vue-router';
 import { useThemeStore } from './stores/theme.js';
-import { useClinicalStore } from './stores/clinical.js';
 
 const theme = useThemeStore();
 const route = useRoute();
-const clinical = useClinicalStore();
 
+// front-desk/consultation-desk keys removed — those pages are no longer their own routes, see
+// clinux-frontdesk-consultation-checkout-as-clinic-home-components memory note.
 const pageBadge = {
-  'front-desk': 'FRONT DESK',
-  'consultation-desk': 'AI ENCOUNTER WORKSPACE',
   'onboarding-abdm': 'ABDM ONBOARDING',
   'designer': 'ROOM ARCHITECT',
 };
@@ -32,17 +30,13 @@ const pageBadge = {
           <button @click="theme.toggle()" class="w-[34px] h-[34px] rounded-lg flex items-center justify-center cursor-pointer" style="border:1px solid var(--cf-border);background:var(--cf-bg-alt);color:var(--cf-text)">
             <i :class="theme.isDark ? 'fas fa-sun' : 'fas fa-moon'" style="font-size:.78rem"></i>
           </button>
-          <RouterLink to="/front-desk" class="btn-ghost no-underline flex items-center gap-1.5">
-            <i class="fas fa-house text-xs"></i>Front Desk
-          </RouterLink>
-          <RouterLink to="/consultation-desk" class="btn-ghost no-underline flex items-center gap-1.5">
-            <i class="fas fa-stethoscope text-xs"></i>Consultation Desk
-          </RouterLink>
-          <!-- Was previously unreachable from anywhere in the app except typing the URL
-               directly — only shown once there's an active encounter, matching Checkout.vue's
-               own "no active encounter" guard for its main content. -->
-          <RouterLink v-if="clinical.activeEncounterId" to="/checkout" class="btn-ghost no-underline flex items-center gap-1.5">
-            <i class="fas fa-receipt text-xs"></i>Checkout
+          <!-- Front Desk/Consultation Desk/Checkout are no longer their own routes — all three
+               are views inside Clinic Home now (see
+               clinux-frontdesk-consultation-checkout-as-clinic-home-components memory note).
+               One link stands in for the 3 that used to be here; full nav redesign is a separate,
+               later phase (see clinux-unified-header-and-home-routing). -->
+          <RouterLink to="/clinic-home" class="btn-ghost no-underline flex items-center gap-1.5">
+            <i class="fas fa-house text-xs"></i>Clinic Home
           </RouterLink>
           <RouterLink to="/" class="btn-ghost no-underline flex items-center gap-1.5">
             <i class="fas fa-arrow-left text-xs"></i>Home

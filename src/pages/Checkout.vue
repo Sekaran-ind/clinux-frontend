@@ -11,6 +11,11 @@ import {
 import { useClinicalStore } from '../stores/clinical.js';
 import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 
+// This used to be its own routed page reached via /checkout; now mounted directly inside
+// ClinicHome.vue (see clinux-frontdesk-consultation-checkout-as-clinic-home-components memory
+// note) — going back to Front Desk is an emitted event instead of a route push/RouterLink,
+// since there's no longer a route to push to.
+const emit = defineEmits(['navigate']);
 const clinical = useClinicalStore();
 const slotFillHighlights = useSlotFillHighlightsStore();
 // Prescription/Billing live inside the same merged Encounter-composition record Front Desk and
@@ -173,7 +178,7 @@ function closeEncounter() {
             <i class="fas fa-user-clock" style="font-size:2rem;color:var(--cf-border);display:block;margin-bottom:.75rem"></i>
             <p style="font-weight:700;color:var(--cf-text-strong);margin-bottom:.3rem">No active encounter</p>
             <p style="font-size:.85rem;color:var(--cf-text);margin-bottom:1rem">Start a visit at the Front Desk before checking out.</p>
-            <RouterLink to="/front-desk" class="btn-primary">Go to Front Desk</RouterLink>
+            <button class="btn-primary" @click="emit('navigate', 'front-desk')">Go to Front Desk</button>
           </div>
           <div v-else class="flex flex-col gap-2">
             <div v-for="s in activeSessions" :key="s.id" class="record-card flex items-center justify-between p-3 cursor-pointer" @click="resumeSession(s)">
@@ -224,7 +229,7 @@ function closeEncounter() {
           <div class="completion-ring"><i class="fas fa-check" style="color:var(--color-primary);font-size:2.5rem"></i></div>
           <h2 style="font-size:1.75rem;font-weight:800;color:var(--cf-text-strong);margin-bottom:.625rem">Visit Complete</h2>
           <p style="color:var(--cf-text);font-size:.95rem;margin-bottom:2rem">The encounter has been closed and logged.</p>
-          <RouterLink to="/front-desk" class="btn-teal inline-flex items-center gap-2"><i class="fas fa-plus"></i>Start Next Patient</RouterLink>
+          <button class="btn-teal inline-flex items-center gap-2" @click="emit('navigate', 'front-desk')"><i class="fas fa-plus"></i>Start Next Patient</button>
         </div>
       </div>
     </main>

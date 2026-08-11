@@ -10,11 +10,35 @@ import { useOnboardingStore } from '../stores/onboarding.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useClinicalStore } from '../stores/clinical.js';
 import { publicAppointments } from '../data/collections/publicAppointments.js';
+import FrontDesk from './FrontDesk.vue';
+import ConsultationDesk from './ConsultationDesk.vue';
+import Checkout from './Checkout.vue';
 
 const onboarding = useOnboardingStore();
 const auth = useAuthStore();
 const clinical = useClinicalStore();
 const router = useRouter();
+
+// Front Desk/Consultation Desk/Checkout used to be their own routed pages — now mounted
+// directly here as internally-switched views (see
+// clinux-frontdesk-consultation-checkout-as-clinic-home-components memory note): one persistent
+// /clinic-home URL, pure in-memory state, no query-param/hash deep-linking to a specific step —
+// confirmed with the user. Values reuse clinical.recordVisit()'s own page-key strings
+// ('front-desk' | 'consultation-desk' | 'checkout') so getLastVisitedPage()'s stored value can
+// drive this directly with no extra mapping. Each embedded view is v-if'd, not v-show'd — mounts/
+// unmounts on switch just like today's actual page navigation did, confirmed with the user, so
+// there's never more than one of them (and one Cubo instance) alive at a time, avoiding any risk
+// from LForms' documented "one live form instance per page" assumption.
+const clinicView = ref('public'); // 'public' | 'front-desk' | 'consultation-desk' | 'checkout'
+
+// Front Desk/Consultation Desk/Checkout kept requiresAuth:true on their own routes before this
+// merge — preserved as an explicit check now that there's no route boundary to enforce it
+// (confirmed with the user): a signed-out visitor clicking through lands on / instead of
+// silently reaching real clinic-operations UI.
+function openClinicView(view) {
+  if (!auth.currentUser) { router.push('/'); return; }
+  clinicView.value = view;
+}
 
 const DEMO_CLINIC = {
   name: 'Apollo Diagnostics', type: 'Diagnostic Centre', tagline: 'Your trusted diagnostic partner',
@@ -89,7 +113,7 @@ function timeSince(savedAt) {
 
 function resumeToSession(session) {
   clinical.setActive(session.id);
-  router.push(clinical.getLastVisitedPage(session.id) || '/front-desk');
+  openClinicView(clinical.getLastVisitedPage(session.id) || 'front-desk');
 }
 
 const apptModal = ref(false);
@@ -193,14 +217,14 @@ function sendMessage() {
     </div>
   </div>
 
-  <div class="admin-bar" v-show="isAdmin">
+  <div class="admin-bar" v-show="isAdmin && clinicView === 'public'">
     <div style="display:flex;align-items:center;gap:.75rem">
       <i class="fas fa-shield-alt" style="color:var(--brand);font-size:.8rem"></i>
       <span style="font-size:.75rem;color:rgba(255,255,255,.8)">Admin view — only you can see this bar</span>
       <span class="badge badge-brand" style="font-size:.65rem">{{ 'clinixflow.ai/' + (clinic.slug || 'your-clinic') }}</span>
     </div>
     <div style="display:flex;align-items:center;gap:.5rem">
-      <RouterLink to="/front-desk" style="font-size:.75rem;color:rgba(255,255,255,.7);font-family:'Poppins',sans-serif;font-weight:600;display:flex;align-items:center;gap:.35rem"><i class="fas fa-user-clock text-xs"></i>Front Desk</RouterLink>
+      <button class="link-btn" style="font-size:.75rem;color:rgba(255,255,255,.7);font-family:'Poppins',sans-serif;font-weight:600;display:flex;align-items:center;gap:.35rem" @click="openClinicView('front-desk')"><i class="fas fa-user-clock text-xs"></i>Front Desk</button>
       <span style="color:rgba(255,255,255,.3)">|</span>
       <RouterLink to="/onboarding" style="font-size:.75rem;color:rgba(255,255,255,.7);font-family:'Poppins',sans-serif;font-weight:600;display:flex;align-items:center;gap:.35rem"><i class="fas fa-pen text-xs"></i>Edit Profile</RouterLink>
       <span style="color:rgba(255,255,255,.3)">|</span>
@@ -214,7 +238,7 @@ function sendMessage() {
        no patient name or chief complaint rendered here, just a short session reference. Sits in
        normal flow right after .admin-bar (also static) — fixed height in CSS (matching
        SESSIONS_STRIP_HEIGHT below) is what keeps nav's fixed top-offset math exact. -->
-  <div class="active-sessions-strip" v-show="showSessionsStrip">
+  <div class="active-sessions-strip" v-show="showSessionsStrip && clinicView === 'public'">
     <span class="active-sessions-label"><i class="fas fa-user-clock"></i> Active Sessions</span>
     <div class="active-sessions-row">
       <div v-for="s in activeSessions" :key="s.id" class="active-session-card" @click="resumeToSession(s)">
@@ -225,6 +249,9 @@ function sendMessage() {
     </div>
   </div>
 
+  <!-- Public marketing content — hidden (not unmounted; nothing here has side effects worth
+       avoiding) while a clinic-operations view is active below. -->
+  <div v-show="clinicView === 'public'">
   <nav class="site-nav" :style="`top:${navTopOffset}px`">
     <div class="nav-inner">
       <div class="nav-logo">
@@ -270,7 +297,7 @@ function sendMessage() {
           </p>
           <div style="display:flex;flex-wrap:wrap;gap:.875rem">
             <button class="btn btn-brand" @click="apptModal = true" style="font-size:1rem;padding:.875rem 2rem"><i class="fas fa-calendar-plus"></i>Book Appointment</button>
-            <a href="/front-desk" class="btn btn-outline" style="font-size:.95rem;padding:.875rem 1.75rem"><i class="fas fa-stethoscope"></i>Front Desk</a>
+            <button class="btn btn-outline" style="font-size:.95rem;padding:.875rem 1.75rem" @click="openClinicView('front-desk')"><i class="fas fa-stethoscope"></i>Front Desk</button>
           </div>
           <div style="display:flex;gap:2.5rem;margin-top:2.5rem;padding-top:1.75rem;border-top:1px solid var(--border)" v-show="clinic.staff?.length || clinic.services?.length">
             <div v-show="clinic.staff?.length"><div class="stat-num">{{ clinic.staff?.length || 0 }}</div><p style="font-size:.8rem;color:var(--text);margin-top:.2rem">Care Team</p></div>
@@ -459,6 +486,44 @@ function sendMessage() {
       </div>
     </div>
   </footer>
+  </div>
+  <!-- ── end public marketing content ── -->
+
+  <!-- ── Clinic operations (Front Desk / Consultation Desk / Checkout) ──
+       Mounted/unmounted on switch (v-if), not kept alive as background tabs — confirmed with
+       the user. Mirrors App.vue's own min-h-screen flex-col + sticky-nav shell, since each of
+       these 3 components' own root assumes exactly that (a full-height flex ancestor), same as
+       when they were reached via their own routes under App.vue's <RouterView/>. -->
+  <div v-show="clinicView !== 'public'" style="min-height:100vh;display:flex;flex-direction:column">
+    <nav class="cf-nav ops-nav" style="position:sticky;top:0;z-index:40">
+      <div style="max-width:1300px;margin:0 auto;padding:0 1.5rem;height:56px;display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:.5rem">
+          <button class="btn-ghost" @click="clinicView = 'public'"><i class="fas fa-arrow-left" style="margin-right:.35rem"></i>Clinic Home</button>
+          <span style="width:1px;height:20px;background:var(--cf-border)"></span>
+          <button class="btn-outline" :class="clinicView === 'front-desk' ? 'btn-teal' : ''" @click="openClinicView('front-desk')"><i class="fas fa-house" style="margin-right:.35rem"></i>Front Desk</button>
+          <button class="btn-outline" :class="clinicView === 'consultation-desk' ? 'btn-teal' : ''" @click="openClinicView('consultation-desk')"><i class="fas fa-stethoscope" style="margin-right:.35rem"></i>Consultation Desk</button>
+          <button v-if="clinical.activeEncounterId" class="btn-outline" :class="clinicView === 'checkout' ? 'btn-teal' : ''" @click="openClinicView('checkout')"><i class="fas fa-receipt" style="margin-right:.35rem"></i>Checkout</button>
+        </div>
+      </div>
+    </nav>
+    <!-- flex-direction:column (not row) — matches App.vue's own min-h-screen flex-col shell
+         these 3 components' templates were originally rendered inside. Found during live
+         verification: ConsultationDesk.vue's template has multiple flow-participating top-level
+         siblings when its v-else branch is active (top bar + two-pane content + bottom bar, its
+         toast/drawer/modal siblings are all position:fixed so they don't count) — a plain
+         display:flex row squeezed all three into one horizontal strip instead of stacking them.
+         FrontDesk.vue/Checkout.vue only ever have ONE such sibling, so the same bug was invisible
+         there (a single flex item renders the same regardless of flex-direction). -->
+    <div v-if="clinicView === 'front-desk'" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <FrontDesk @navigate="clinicView = $event" />
+    </div>
+    <div v-if="clinicView === 'consultation-desk'" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <ConsultationDesk @navigate="clinicView = $event" />
+    </div>
+    <div v-if="clinicView === 'checkout'" style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+      <Checkout @navigate="clinicView = $event" />
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -532,6 +597,10 @@ a { text-decoration:none; color:inherit; }
 :global(.dark) .cf-toast { background:var(--brand);color:var(--color-secondary); }
 .admin-bar { background:var(--color-secondary);padding:.4rem 1.5rem;display:flex;align-items:center;justify-content:space-between; }
 :global(.dark) .admin-bar { background:#0D2442;border-bottom:1px solid var(--border); }
+/* A plain button styled to look like the text links around it — admin-bar's "Front Desk" entry
+   switches clinicView locally now instead of navigating, so it can no longer be a RouterLink. */
+.link-btn { background:transparent;border:none;cursor:pointer;font:inherit; }
+.link-btn:hover { color:var(--brand); }
 /* Fixed height (40px) intentionally — ClinicHome.vue's navTopOffset computed assumes this exact
    value to keep the fixed .site-nav from overlapping this bar. */
 .active-sessions-strip { height:40px;background:var(--bg-alt,#f1f5f9);border-bottom:1px solid var(--border);padding:0 1.5rem;display:flex;align-items:center;gap:1rem;overflow:hidden; }

@@ -4,7 +4,6 @@
 // new pages on. Same SystemForms/clinical/cubo calls; storage moved to TanStack DB collections,
 // component model moved to Vue.
 import { computed, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { jsPDF } from 'jspdf';
 import Cubo from '../components/Cubo.vue';
 import CornerstoneViewer from '../components/CornerstoneViewer.vue';
@@ -25,7 +24,11 @@ import {
 } from '../data/collections/encounterDocs.js';
 import { API_BASE, apiFetch } from '../config.js';
 
-const router = useRouter();
+// This used to be its own routed page reached via /consultation-desk; now mounted directly
+// inside ClinicHome.vue (see clinux-frontdesk-consultation-checkout-as-clinic-home-components
+// memory note) — navigating to/from Front Desk or Checkout is an emitted event instead of a
+// route push, since there's no longer a route to push to.
+const emit = defineEmits(['navigate']);
 const clinical = useClinicalStore();
 const cubo = useCuboStore();
 const auth = useAuthStore();
@@ -360,7 +363,7 @@ function removeTeamMember(staffId) {
 // Was no way to reach Checkout from anywhere in the app (no nav entry, no button here) — Front
 // Desk's own sendToConsultation() is the pattern this mirrors.
 function sendToCheckout() {
-  router.push('/checkout');
+  emit('navigate', 'checkout');
 }
 </script>
 
@@ -368,7 +371,7 @@ function sendToCheckout() {
   <div v-if="!encounter" class="w-full border rounded-xl p-8 text-center m-6" style="border-color:var(--cf-border)">
     <p class="font-bold mb-1" style="color:var(--cf-text-strong)">No active encounter</p>
     <p class="text-sm" style="color:var(--cf-text)">Start a visit from Front Desk first.</p>
-    <RouterLink to="/front-desk" class="btn-teal inline-block mt-4">Go to Front Desk</RouterLink>
+    <button class="btn-teal inline-block mt-4" @click="emit('navigate', 'front-desk')">Go to Front Desk</button>
   </div>
 
   <template v-else>

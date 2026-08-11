@@ -4,7 +4,6 @@
 // underneath (TanStack DB collections instead of raw localStorage) and the component model
 // (Vue instead of Alpine) changed.
 import { computed, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import Cubo from '../components/Cubo.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import {
@@ -16,7 +15,11 @@ import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 
 const PATIENT_FORM_ID = 'system-patient-profile-v1';
 
-const router = useRouter();
+// This used to be its own routed page reached via /front-desk; now mounted directly inside
+// ClinicHome.vue (see clinux-frontdesk-consultation-checkout-as-clinic-home-components memory
+// note) — "moving on" to the next stage of a visit is an emitted event instead of a route push,
+// since there's no longer a route to push to.
+const emit = defineEmits(['navigate']);
 const clinical = useClinicalStore();
 const slotFillHighlights = useSlotFillHighlightsStore();
 // Encounter/Vitals/Triage all now edit the SAME merged Encounter-composition record
@@ -178,7 +181,7 @@ const vitalsRecords = computed(() => {
 });
 
 function sendToConsultation() {
-  router.push('/consultation-desk');
+  emit('navigate', 'consultation-desk');
 }
 </script>
 
