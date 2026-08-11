@@ -14,8 +14,11 @@
 import { computed, defineExpose, nextTick, onMounted, reactive, ref } from 'vue';
 import { useLiveQuery } from '@tanstack/vue-db';
 import { debounce } from '@tanstack/pacer';
-import DataTable from 'primevue/datatable';
-import Column from 'primevue/column';
+import { AgGridVue } from 'ag-grid-vue3';
+import { themeQuartz } from 'ag-grid-community';
+import GridAvatarNameCell from '../components/grid/GridAvatarNameCell.vue';
+import GridBadgeCell from '../components/grid/GridBadgeCell.vue';
+import GridActionsCell from '../components/grid/GridActionsCell.vue';
 import { useCuboStore } from '../stores/cubo.js';
 import { getAnswer } from '../data/collections/formData.js';
 import { aiEnginePatients } from '../data/collections/aiEnginePatients.js';
@@ -24,6 +27,10 @@ import { aiEngineEncounters } from '../data/collections/aiEngineEncounters.js';
 import { classify, warmUp } from '../nlp/aiEngineNlp.js';
 
 const cubo = useCuboStore();
+const gridTheme = themeQuartz;
+const defaultColDef = { resizable: true, sortable: true, filter: true };
+const STAFF_ROLE_BADGE_CLASSES = { Doctor: 'badge-doctor', Nurse: 'badge-nurse', Administrator: 'badge-admin', 'Chief of Medicine': 'badge-doctor', Receptionist: 'badge-tech', Radiologist: 'badge-tech' };
+const ENCOUNTER_STATUS_BADGE_CLASSES = { arrived: 'badge-arrived', 'in-progress': 'badge-in-progress', finished: 'badge-finished', cancelled: 'badge-cancelled' };
 
 const accordion = reactive({ patients: true, staff: false, encounters: false });
 const dbSearchInput = ref('');
@@ -296,6 +303,36 @@ const filteredEncounters = computed(() => {
     (getAnswer(e, 'encounter_chief_complaint') || '').toLowerCase().includes(q) ||
     (getAnswer(e, 'encounter_status') || '').toLowerCase().includes(q));
 });
+
+/* ───────────────── AG Grid column defs — one valueGetter per column since every row is a bare
+   FHIR QuestionnaireResponse-shaped record (getAnswer(row, linkId)), not a flat object AG Grid
+   could just `field:` into directly. ───────────────── */
+const patientColumnDefs = computed(() => [
+  { headerName: 'Patient', valueGetter: (p) => getAnswer(p.data, 'patient_name'), cellRenderer: GridAvatarNameCell, flex: 1.2 },
+  { headerName: 'Gender', valueGetter: (p) => getAnswer(p.data, 'patient_gender') || '—', flex: 0.7 },
+  { headerName: 'Date of Birth', valueGetter: (p) => getAnswer(p.data, 'patient_birthdate') || '—', flex: 0.8 },
+  { headerName: 'Emergency Contact', valueGetter: (p) => [getAnswer(p.data, 'patient_emergency_contact_name'), getAnswer(p.data, 'patient_emergency_contact_phone')].filter(Boolean).join(' · ') || '—', flex: 1.3 },
+  { headerName: 'Actions', cellRenderer: GridActionsCell, cellRendererParams: { onEdit: openPatientModal, onDelete: (p) => askDelete('patient', p.id, getAnswer(p, 'patient_name')) }, flex: 0.7, sortable: false, filter: false },
+]);
+
+const staffColumnDefs = computed(() => [
+  { headerName: 'Name', valueGetter: (p) => getAnswer(p.data, 'staff_name'), cellRenderer: GridAvatarNameCell, flex: 1.1 },
+  { headerName: 'Role', valueGetter: (p) => getAnswer(p.data, 'staff_role'), cellRenderer: GridBadgeCell, cellRendererParams: { classMap: STAFF_ROLE_BADGE_CLASSES, fallbackClass: 'badge-tech' }, flex: 0.9 },
+  { headerName: 'Specialty', valueGetter: (p) => getAnswer(p.data, 'staff_specialty') || '—', flex: 0.9 },
+  { headerName: 'License', valueGetter: (p) => getAnswer(p.data, 'staff_license') || '—', flex: 0.8 },
+  { headerName: 'Email / Phone', valueGetter: (p) => [getAnswer(p.data, 'staff_email'), getAnswer(p.data, 'staff_phone')].filter(Boolean).join(' · ') || '—', flex: 1.1 },
+  { headerName: 'Status', valueGetter: (p) => (getAnswer(p.data, 'staff_status') === true ? 'Active' : 'Inactive'), cellRenderer: GridBadgeCell, cellRendererParams: { classMap: { Active: 'badge-active', Inactive: 'badge-inactive' } }, flex: 0.7 },
+  { headerName: 'Actions', cellRenderer: GridActionsCell, cellRendererParams: { onEdit: openStaffModal, onDelete: (p) => askDelete('staff', p.id, getAnswer(p, 'staff_name')) }, flex: 0.7, sortable: false, filter: false },
+]);
+
+const encounterColumnDefs = computed(() => [
+  { headerName: 'Patient', valueGetter: (p) => patientName(getAnswer(p.data, 'encounter_patient_ref')), flex: 1 },
+  { headerName: 'Chief Complaint', valueGetter: (p) => getAnswer(p.data, 'encounter_chief_complaint') || '—', flex: 1.3 },
+  { headerName: 'Status', valueGetter: (p) => getAnswer(p.data, 'encounter_status') || 'arrived', cellRenderer: GridBadgeCell, cellRendererParams: { classMap: ENCOUNTER_STATUS_BADGE_CLASSES, fallbackClass: 'badge-arrived' }, flex: 0.8 },
+  { headerName: 'Priority', valueGetter: (p) => getAnswer(p.data, 'encounter_priority') || 'Normal', cellRenderer: GridBadgeCell, cellRendererParams: { classMap: { Emergency: 'badge-priority-emergency', Normal: 'badge-priority-normal' } }, flex: 0.7 },
+  { headerName: 'Logged', valueGetter: (p) => new Date(p.data.savedAt).toLocaleString(), flex: 1 },
+  { headerName: 'Actions', cellRenderer: GridActionsCell, cellRendererParams: { onEdit: openEncounterModal, onDelete: (p) => askDelete('encounter', p.id, 'this encounter') }, flex: 0.7, sortable: false, filter: false },
+]);
 
 /* ───────────────── MODALS (manual add/edit) ───────────────── */
 function openPatientModal(p = null) {
@@ -591,30 +628,11 @@ function askDelete(type, id, label) {
           </div>
         </div>
         <div class="accord-body" :class="accordion.patients ? 'show' : ''">
-          <DataTable :value="filteredPatients" paginator :rows="10" size="small" data-key="id">
-            <template #empty>
-              <div class="empty-state"><i class="fas fa-user-injured"></i><p>No patient records.<br>Tell Cübo to add one, or click <strong style="color:var(--color-primary)">+ Add</strong> above.</p></div>
-            </template>
-            <Column header="Patient">
-              <template #body="{ data: p }">
-                <div style="display:flex;align-items:center;gap:.5rem">
-                  <div class="avatar" :style="`background:${p.color}22;color:${p.color}`">{{ (getAnswer(p, 'patient_name') || '?').charAt(0).toUpperCase() }}</div>
-                  <span class="td-name">{{ getAnswer(p, 'patient_name') }}</span>
-                </div>
-              </template>
-            </Column>
-            <Column header="Gender"><template #body="{ data: p }"><span class="muted" style="text-transform:capitalize">{{ getAnswer(p, 'patient_gender') || '—' }}</span></template></Column>
-            <Column header="Date of Birth"><template #body="{ data: p }"><span class="muted">{{ getAnswer(p, 'patient_birthdate') || '—' }}</span></template></Column>
-            <Column header="Emergency Contact"><template #body="{ data: p }"><span class="muted">{{ [getAnswer(p, 'patient_emergency_contact_name'), getAnswer(p, 'patient_emergency_contact_phone')].filter(Boolean).join(' · ') || '—' }}</span></template></Column>
-            <Column header="Actions">
-              <template #body="{ data: p }">
-                <div class="row-actions">
-                  <button class="btn-row btn-edit" @click="openPatientModal(p)"><i class="fas fa-pen"></i></button>
-                  <button class="btn-row btn-del" @click="askDelete('patient', p.id, getAnswer(p, 'patient_name'))"><i class="fas fa-trash"></i></button>
-                </div>
-              </template>
-            </Column>
-          </DataTable>
+          <AgGridVue
+            :theme="gridTheme" :rowData="filteredPatients" :columnDefs="patientColumnDefs" :defaultColDef="defaultColDef"
+            pagination :paginationPageSize="10" domLayout="autoHeight" :getRowId="(p) => p.data.id"
+            overlayNoRowsTemplate="No patient records. Tell Cübo to add one, or click + Add above."
+          />
         </div>
       </div>
 
@@ -632,38 +650,11 @@ function askDelete(type, id, label) {
           </div>
         </div>
         <div class="accord-body" :class="accordion.staff ? 'show' : ''">
-          <DataTable :value="filteredStaff" paginator :rows="10" size="small" data-key="id">
-            <template #empty><div class="empty-state"><i class="fas fa-user-md"></i><p>No staff records yet.</p></div></template>
-            <Column header="Name">
-              <template #body="{ data: s }">
-                <div style="display:flex;align-items:center;gap:.5rem">
-                  <div class="avatar" :style="`background:${s.color}22;color:${s.color}`">{{ (getAnswer(s, 'staff_name') || '?').charAt(0).toUpperCase() }}</div>
-                  <span class="td-name">{{ getAnswer(s, 'staff_name') }}</span>
-                </div>
-              </template>
-            </Column>
-            <Column header="Role">
-              <template #body="{ data: s }">
-                <span class="badge" :class="{Doctor:'badge-doctor',Nurse:'badge-nurse',Administrator:'badge-admin','Chief of Medicine':'badge-doctor',Receptionist:'badge-tech',Radiologist:'badge-tech'}[getAnswer(s, 'staff_role')] || 'badge-tech'">{{ getAnswer(s, 'staff_role') || '—' }}</span>
-              </template>
-            </Column>
-            <Column header="Specialty"><template #body="{ data: s }"><span class="muted">{{ getAnswer(s, 'staff_specialty') || '—' }}</span></template></Column>
-            <Column header="License"><template #body="{ data: s }"><span class="muted">{{ getAnswer(s, 'staff_license') || '—' }}</span></template></Column>
-            <Column header="Email / Phone"><template #body="{ data: s }"><span class="muted">{{ [getAnswer(s, 'staff_email'), getAnswer(s, 'staff_phone')].filter(Boolean).join(' · ') || '—' }}</span></template></Column>
-            <Column header="Status">
-              <template #body="{ data: s }">
-                <span class="badge" :class="getAnswer(s, 'staff_status') === true ? 'badge-active' : 'badge-inactive'">{{ getAnswer(s, 'staff_status') === true ? 'Active' : 'Inactive' }}</span>
-              </template>
-            </Column>
-            <Column header="Actions">
-              <template #body="{ data: s }">
-                <div class="row-actions">
-                  <button class="btn-row btn-edit" @click="openStaffModal(s)"><i class="fas fa-pen"></i></button>
-                  <button class="btn-row btn-del" @click="askDelete('staff', s.id, getAnswer(s, 'staff_name'))"><i class="fas fa-trash"></i></button>
-                </div>
-              </template>
-            </Column>
-          </DataTable>
+          <AgGridVue
+            :theme="gridTheme" :rowData="filteredStaff" :columnDefs="staffColumnDefs" :defaultColDef="defaultColDef"
+            pagination :paginationPageSize="10" domLayout="autoHeight" :getRowId="(p) => p.data.id"
+            overlayNoRowsTemplate="No staff records yet."
+          />
         </div>
       </div>
 
@@ -681,30 +672,11 @@ function askDelete(type, id, label) {
           </div>
         </div>
         <div class="accord-body" :class="accordion.encounters ? 'show' : ''">
-          <DataTable :value="filteredEncounters" paginator :rows="10" size="small" data-key="id">
-            <template #empty><div class="empty-state"><i class="fas fa-stethoscope"></i><p>No encounters logged yet.</p></div></template>
-            <Column header="Patient"><template #body="{ data: e }"><span class="td-name">{{ patientName(getAnswer(e, 'encounter_patient_ref')) }}</span></template></Column>
-            <Column header="Chief Complaint">
-              <template #body="{ data: e }">
-                <span class="muted" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block" :title="getAnswer(e, 'encounter_chief_complaint')">{{ getAnswer(e, 'encounter_chief_complaint') || '—' }}</span>
-              </template>
-            </Column>
-            <Column header="Status">
-              <template #body="{ data: e }"><span class="badge" :class="'badge-' + (getAnswer(e, 'encounter_status') || 'arrived')">{{ getAnswer(e, 'encounter_status') || 'arrived' }}</span></template>
-            </Column>
-            <Column header="Priority">
-              <template #body="{ data: e }"><span class="badge" :class="getAnswer(e, 'encounter_priority') === 'Emergency' ? 'badge-priority-emergency' : 'badge-priority-normal'">{{ getAnswer(e, 'encounter_priority') || 'Normal' }}</span></template>
-            </Column>
-            <Column header="Logged"><template #body="{ data: e }"><span class="muted" style="white-space:nowrap">{{ new Date(e.savedAt).toLocaleString() }}</span></template></Column>
-            <Column header="Actions">
-              <template #body="{ data: e }">
-                <div class="row-actions">
-                  <button class="btn-row btn-edit" @click="openEncounterModal(e)"><i class="fas fa-pen"></i></button>
-                  <button class="btn-row btn-del" @click="askDelete('encounter', e.id, 'this encounter')"><i class="fas fa-trash"></i></button>
-                </div>
-              </template>
-            </Column>
-          </DataTable>
+          <AgGridVue
+            :theme="gridTheme" :rowData="filteredEncounters" :columnDefs="encounterColumnDefs" :defaultColDef="defaultColDef"
+            pagination :paginationPageSize="10" domLayout="autoHeight" :getRowId="(p) => p.data.id"
+            overlayNoRowsTemplate="No encounters logged yet."
+          />
         </div>
       </div>
 

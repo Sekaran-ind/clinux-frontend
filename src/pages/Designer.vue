@@ -13,8 +13,9 @@ import 'ace-builds/src-noconflict/theme-tomorrow';
 import 'ace-builds/src-noconflict/theme-tomorrow_night';
 import { tinykeys } from 'tinykeys';
 import { debounce } from '@tanstack/pacer';
-import DataTable from 'primevue/datatable';
-import Column from 'primevue/column';
+import { AgGridVue } from 'ag-grid-vue3';
+import { themeQuartz } from 'ag-grid-community';
+import GridActionsCell from '../components/grid/GridActionsCell.vue';
 import Cubo from '../components/Cubo.vue';
 import AiEngineSandbox from './AiEngineSandbox.vue';
 import {
@@ -504,6 +505,15 @@ function currentFormDataRecords() {
   if (!blueprintJson.value) return [];
   return listDataRecords(blueprintJson.value.id);
 }
+
+const gridTheme = themeQuartz;
+const dataExplorerDefaultColDef = { resizable: true, sortable: true, filter: true };
+const dataExplorerColumnDefs = computed(() => [
+  { headerName: 'Record', valueGetter: (p) => recordSummary(p.data), flex: 1.4 },
+  { headerName: 'Form Version', valueGetter: (p) => (p.data.version ? 'v' + p.data.version : '—'), flex: 0.6 },
+  { headerName: 'Saved', valueGetter: (p) => new Date(p.data.savedAt).toLocaleString(), flex: 1 },
+  { headerName: 'Actions', cellRenderer: GridActionsCell, cellRendererParams: { onView: (r) => viewDataRecord(r.id) }, flex: 0.6, sortable: false, filter: false },
+]);
 
 // Opens the slide-over with a blank copy of the active form, ready for a new entry.
 function openNewDataEntry() {
@@ -1092,23 +1102,11 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
       </div>
 
       <div class="cf-card" style="border-radius:1rem;padding:0;overflow:hidden">
-        <DataTable :value="currentFormDataRecords()" paginator :rows="10" size="small" data-key="id">
-          <template #empty>
-            <p style="font-size:.82rem;color:var(--cf-text);text-align:center;padding:2rem 0">
-              No data saved for this form yet. Click <strong>New Entry</strong> to create one.
-            </p>
-          </template>
-          <Column header="Record"><template #body="{ data: record }"><span style="color:var(--cf-text-strong);font-weight:600">{{ recordSummary(record) }}</span></template></Column>
-          <Column header="Form Version"><template #body="{ data: record }"><span class="badge badge-muted">{{ record.version ? ('v' + record.version) : '—' }}</span></template></Column>
-          <Column header="Saved"><template #body="{ data: record }"><span style="color:var(--cf-text)">{{ new Date(record.savedAt).toLocaleString() }}</span></template></Column>
-          <Column header="Actions">
-            <template #body="{ data: record }">
-              <button class="btn-outline" style="font-size:.72rem;padding:.35rem .75rem" @click="viewDataRecord(record.id)">
-                <i class="fas fa-eye"></i> View
-              </button>
-            </template>
-          </Column>
-        </DataTable>
+        <AgGridVue
+          :theme="gridTheme" :rowData="currentFormDataRecords()" :columnDefs="dataExplorerColumnDefs" :defaultColDef="dataExplorerDefaultColDef"
+          pagination :paginationPageSize="10" domLayout="autoHeight" :getRowId="(p) => p.data.id"
+          overlayNoRowsTemplate="No data saved for this form yet. Click New Entry to create one."
+        />
       </div>
     </div>
 
