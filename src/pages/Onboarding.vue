@@ -2,14 +2,11 @@
 // Ported from clinixflow's public/onboarding.html — the clinic setup hub (hub → review →
 // published screens), each journey card backed by a real FHIR record via the same
 // SystemForms/LhcFormHost drawer pattern Front Desk uses.
-import { computed, reactive, ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
-import {
-  listDataRecords, recordSummary, activeQuestionnaire, deleteDataRecord, seedSystemForms,
-  saveDataRecord, activeVersionNumber,
-} from '../data/useSystemForms.js';
+import { activeQuestionnaire, seedSystemForms, getGroupInstances, getAnswer } from '../data/useSystemForms.js';
 import { API_BASE } from '../config.js';
 
 const router = useRouter();
@@ -24,8 +21,6 @@ function showToast(msg) {
   toastTimer = setTimeout(() => (toast.value.show = false), 3200);
 }
 
-const confirmDel = reactive({ show: false, msg: '', action: () => {} });
-
 const drawerOpen = ref(false);
 const activeForm = ref(null); // the journeyCards entry currently open in the drawer
 const drawerQuestionnaire = ref(null);
@@ -35,12 +30,16 @@ const formKey = ref(0); // bumped to force LhcFormHost to remount (guaranteed re
 // object reference the component's own prop watcher would pick up as "changed."
 const lhcFormHost = ref(null);
 
+// Every card now points at one groupLinkId inside the single, shared Provider-composition
+// record instead of its own separate formId (see clinux-provider-composition-merge memory
+// note) — Hospital's own card has no repeating count, its "status" is just whether the one
+// required field is filled in yet.
 const journeyCards = [
-  { formId: 'system-hospital-profile-v1', mode: 'single', icon: 'fas fa-hospital', color: '#3B82F6', bg: 'rgba(59,130,246,.1)', title: 'Hospital Profile', desc: 'Your clinic profile as a FHIR Organization resource.' },
-  { formId: 'system-staff-profile-v1', mode: 'repeatable', icon: 'fas fa-user-md', color: '#00D4B2', bg: 'rgba(0,212,178,.1)', title: 'Care Team', desc: 'Add physicians, nurses and staff as FHIR Practitioner records.' },
-  { formId: 'system-services-profile-v1', mode: 'repeatable', icon: 'fas fa-stethoscope', color: '#8B5CF6', bg: 'rgba(139,92,246,.1)', title: 'Services', desc: "List the services your clinic offers." },
-  { formId: 'system-office-hours-profile-v1', mode: 'repeatable', icon: 'fas fa-clock', color: '#F59E0B', bg: 'rgba(245,158,11,.1)', title: 'Office Hours', desc: 'Add operating hours, one day-range at a time.' },
-  { formId: 'system-consents-profile-v1', mode: 'repeatable', icon: 'fas fa-file-signature', color: '#EF4444', bg: 'rgba(239,68,68,.1)', title: 'Legal Consents', desc: 'Add the consent types your clinic collects from patients.' },
+  { groupLinkId: 'section_hospital', mode: 'single', icon: 'fas fa-hospital', color: '#3B82F6', bg: 'rgba(59,130,246,.1)', title: 'Hospital Profile', desc: 'Your clinic profile as a FHIR Organization resource.' },
+  { groupLinkId: 'section_staff', mode: 'repeatable', icon: 'fas fa-user-md', color: '#00D4B2', bg: 'rgba(0,212,178,.1)', title: 'Care Team', desc: 'Add physicians, nurses and staff as FHIR Practitioner records.' },
+  { groupLinkId: 'section_services_matrix', mode: 'repeatable', icon: 'fas fa-stethoscope', color: '#8B5CF6', bg: 'rgba(139,92,246,.1)', title: 'Services', desc: "List the services your clinic offers." },
+  { groupLinkId: 'section_hours', mode: 'repeatable', icon: 'fas fa-clock', color: '#F59E0B', bg: 'rgba(245,158,11,.1)', title: 'Office Hours', desc: 'Add operating hours, one day-range at a time.' },
+  { groupLinkId: 'section_consent', mode: 'repeatable', icon: 'fas fa-file-signature', color: '#EF4444', bg: 'rgba(239,68,68,.1)', title: 'Legal Consents', desc: 'Add the consent types your clinic collects from patients.' },
   { action: 'designer', icon: 'fas fa-layer-group', color: '#06B6D4', bg: 'rgba(6,182,212,.1)', title: 'Open Designer', desc: 'Manage versions, training and the full data grid for every form.' },
 ];
 
@@ -48,41 +47,36 @@ seedSystemForms(API_BASE).catch(() => {});
 
 const screenLabel = computed(() => ({ hub: 'Setup', review: 'Review', published: 'Published' }[screen.value] || 'Setup'));
 
-function listRecords(formId) {
+function groupInstances(groupLinkId) {
   onboarding.dataVersion; // register the reactive dependency
-  return listDataRecords(formId);
+  return getGroupInstances(onboarding.getProviderRecord(), groupLinkId);
 }
 
 function cardStatus(card) {
-  if (card.mode === 'single') return listRecords(card.formId).length > 0 ? 'Saved' : 'Not started';
-  const n = listRecords(card.formId).length;
+  if (card.mode === 'single') return getAnswer(onboarding.getProviderRecord(), 'hospital_name') ? 'Saved' : 'Not started';
+  const n = groupInstances(card.groupLinkId).length;
   return n > 0 ? `${n} added` : 'Not started';
 }
 
-function openDrawer(formId) {
-  const card = journeyCards.find((c) => c.formId === formId);
-  if (!card) return;
+// The drawer always renders the WHOLE Provider questionnaire regardless of which card was
+// clicked — same "whole accumulating document everywhere" tradeoff already accepted for Front
+// Desk/Checkout/Consultation Desk's Encounter composition, not a new pattern here.
+function openDrawer(card) {
   activeForm.value = card;
   drawerOpen.value = true;
 
-  const q = activeQuestionnaire(formId);
+  const q = activeQuestionnaire(onboarding.PROVIDER_FORM_ID);
   drawerQuestionnaire.value = q;
   if (!q) { drawerRecord.value = null; return; }
 
-  if (card.mode === 'single') {
-    // Falls back to a synthetic record built from the index.html registration account the very
-    // first time, so this card doesn't open blank when that info was already given at sign-up.
-    const existing = listDataRecords(formId)[0]
-      || (formId === onboarding.HOSPITAL_FORM_ID ? onboarding.buildSeedFromRegistration() : null);
-    drawerRecord.value = existing;
-  } else {
-    drawerRecord.value = null;
-  }
+  // Falls back to a synthetic record built from the index.html registration account the very
+  // first time, so this doesn't open blank when that info was already given at sign-up.
+  drawerRecord.value = onboarding.getProviderRecord() || onboarding.buildSeedFromRegistration();
 }
 
 function openCard(card) {
   if (card.action === 'designer') router.push('/designer');
-  else openDrawer(card.formId);
+  else openDrawer(card);
 }
 
 function closeDrawer() {
@@ -91,38 +85,26 @@ function closeDrawer() {
 
 function saveDrawerRecord() {
   if (!activeForm.value) return;
-  const formId = activeForm.value.formId;
+  const ok = onboarding.saveProviderRecord('drawerFormContainer');
+  if (!ok) { showToast('Could not read the entered data. Please try again.'); return; }
 
-  if (activeForm.value.mode === 'single') {
-    const ok = onboarding.saveHospitalRecord('drawerFormContainer');
-    if (ok) { showToast('Saved.'); closeDrawer(); }
-    else showToast('Could not read the entered data. Please try again.');
-    return;
+  if (activeForm.value.mode === 'repeatable') {
+    // Stay open — LForms' own "+ Add another" control is how multiple entries get added, not a
+    // separate save-per-entry action (same pattern Front Desk/Checkout already use for Vitals/
+    // Prescription/Billing). Re-fetch + remount so the just-saved entry is visible in the form.
+    drawerRecord.value = onboarding.getProviderRecord();
+    formKey.value++;
+    showToast('Added.');
+  } else {
+    showToast('Saved.');
+    closeDrawer();
   }
-
-  const qr = lhcFormHost.value?.extract();
-  if (!qr) { showToast('Could not read the entered data. Please try again.'); return; }
-  saveDataRecord(formId, activeVersionNumber(formId), qr);
-  onboarding.dataVersion++;
-  drawerRecord.value = null;
-  formKey.value++;
-  showToast('Added.');
-}
-
-function askRemoveDrawerRecord(recordId, label) {
-  confirmDel.show = true;
-  confirmDel.msg = `Remove "${label}"?`;
-  confirmDel.action = () => {
-    deleteDataRecord(recordId);
-    onboarding.dataVersion++;
-    showToast('Removed.');
-  };
 }
 
 function goToReview() {
-  if (listRecords(onboarding.HOSPITAL_FORM_ID).length === 0) {
+  if (!getAnswer(onboarding.getProviderRecord(), 'hospital_name')) {
     showToast('Please complete your Hospital Profile first.');
-    openDrawer(onboarding.HOSPITAL_FORM_ID);
+    openDrawer(journeyCards[0]);
     return;
   }
   screen.value = 'review';
@@ -137,16 +119,16 @@ function backToHub() {
 }
 
 const reviewStats = computed(() => [
-  { label: 'Staff Members', value: listRecords(onboarding.STAFF_FORM_ID).length },
-  { label: 'Services', value: listRecords(onboarding.SERVICES_FORM_ID).length },
-  { label: 'Consents Added', value: listRecords(onboarding.CONSENTS_FORM_ID).length },
-  { label: 'Hours Entries', value: listRecords(onboarding.HOURS_FORM_ID).length },
+  { label: 'Staff Members', value: groupInstances('section_staff').length },
+  { label: 'Services', value: groupInstances('section_services_matrix').length },
+  { label: 'Consents Added', value: groupInstances('section_consent').length },
+  { label: 'Hours Entries', value: groupInstances('section_hours').length },
 ]);
 
 const fhirPreview = computed(() => {
   onboarding.dataVersion;
-  const hospitalRec = listDataRecords(onboarding.HOSPITAL_FORM_ID)[0];
-  return hospitalRec ? JSON.stringify(hospitalRec.data, null, 2) : '// Complete the Hospital Profile card to see its FHIR QuestionnaireResponse here.';
+  const providerRec = onboarding.getProviderRecord();
+  return providerRec ? JSON.stringify(providerRec.data, null, 2) : '// Complete the Hospital Profile card to see the Provider record\'s FHIR QuestionnaireResponse here.';
 });
 
 function copyFhir() {
@@ -166,20 +148,6 @@ function publishClinic() {
 <template>
   <div class="cf-toast" v-show="toast.show"><i class="fas fa-check-circle" style="color:var(--color-primary)"></i><span>{{ toast.msg }}</span></div>
 
-  <div class="modal-backdrop" v-show="confirmDel.show" @click.self="confirmDel.show = false">
-    <div class="modal-box" style="max-width:380px" @click.stop>
-      <div style="text-align:center;padding-bottom:1rem">
-        <div style="width:52px;height:52px;border-radius:50%;background:rgba(239,68,68,.1);display:flex;align-items:center;justify-content:center;margin:0 auto .875rem"><i class="fas fa-trash text-red-500 text-lg"></i></div>
-        <h3 style="font-family:'Poppins',sans-serif;font-weight:700;color:var(--cf-text-strong);margin-bottom:.5rem">Remove Record?</h3>
-        <p style="font-size:.85rem;color:var(--cf-text)">{{ confirmDel.msg }}</p>
-      </div>
-      <div style="display:flex;gap:.625rem;justify-content:flex-end;margin-top:1.25rem">
-        <button class="btn-ghost" @click="confirmDel.show = false">Cancel</button>
-        <button style="background:#EF4444;color:#fff;font-family:'Poppins',sans-serif;font-weight:700;padding:.5rem 1.25rem;border-radius:.5rem;border:none;cursor:pointer;font-size:.85rem" @click="confirmDel.action(); confirmDel.show = false">Delete</button>
-      </div>
-    </div>
-  </div>
-
   <div class="drawer-backdrop" :class="drawerOpen ? 'open' : ''" @click="closeDrawer()"></div>
   <div class="drawer-panel" :class="drawerOpen ? 'open' : ''">
     <div class="drawer-header">
@@ -197,20 +165,15 @@ function publishClinic() {
         <LhcFormHost v-if="drawerOpen" :key="formKey" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" />
       </div>
 
-      <div v-if="activeForm && activeForm.mode === 'repeatable'" style="margin-top:1.25rem">
-        <p class="cf-label" style="margin-bottom:.6rem">Added so far ({{ listRecords(activeForm.formId).length }})</p>
-        <div v-show="listRecords(activeForm.formId).length === 0" style="font-size:.82rem;color:var(--cf-text);padding:.5rem 0">Nothing added yet.</div>
-        <div style="display:flex;flex-direction:column;gap:.5rem">
-          <div v-for="rec in listRecords(activeForm.formId)" :key="rec.id" class="record-card">
-            <span style="font-size:.85rem;color:var(--cf-text-strong);font-weight:600">{{ recordSummary(rec) }}</span>
-            <button @click="askRemoveDrawerRecord(rec.id, recordSummary(rec))" style="background:transparent;border:none;cursor:pointer;color:#EF4444;font-size:.85rem"><i class="fas fa-trash"></i></button>
-          </div>
-        </div>
-      </div>
     </div>
+    <!-- Repeating-group add/remove is LForms' own native "+ Add another" control inside the
+         form now, not a separate app-level list — same precedent as Front Desk/Checkout's
+         Vitals/Prescription/Billing sections. -->
     <div class="drawer-footer">
-      <button v-if="activeForm && activeForm.mode === 'single'" class="btn-teal" @click="saveDrawerRecord()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-save"></i>Save</button>
-      <button v-if="activeForm && activeForm.mode === 'repeatable'" class="btn-teal" @click="saveDrawerRecord()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-plus"></i>Add</button>
+      <button class="btn-teal" @click="saveDrawerRecord()" style="display:flex;align-items:center;gap:.4rem">
+        <i class="fas" :class="activeForm && activeForm.mode === 'single' ? 'fa-save' : 'fa-plus'"></i>
+        <span>{{ activeForm && activeForm.mode === 'single' ? 'Save' : 'Add' }}</span>
+      </button>
     </div>
   </div>
 
@@ -238,14 +201,14 @@ function publishClinic() {
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
-          <button v-for="card in journeyCards" :key="card.formId || card.title" class="entry-card" @click="openCard(card)">
+          <button v-for="card in journeyCards" :key="card.groupLinkId || card.title" class="entry-card" @click="openCard(card)">
             <div style="width:36px;height:36px;border-radius:.625rem;display:flex;align-items:center;justify-content:center;margin-bottom:.75rem" :style="`background:${card.bg}`">
               <i :class="card.icon" :style="`color:${card.color};font-size:.9rem`"></i>
             </div>
             <p style="font-weight:700;font-size:.85rem;color:var(--cf-text-strong);font-family:'Poppins',sans-serif;margin-bottom:.3rem">{{ card.title }}</p>
             <p style="font-size:.75rem;color:var(--cf-text);line-height:1.45;margin-bottom:.5rem">{{ card.desc }}</p>
             <span v-show="card.action === 'designer'" style="font-size:.72rem;color:var(--color-primary);font-weight:600;font-family:'Poppins',sans-serif"><i class="fas fa-arrow-right" style="margin-right:.3rem"></i>Open Designer</span>
-            <span v-show="card.formId" class="badge" :class="card.formId && listRecords(card.formId).length > 0 ? 'badge-teal' : 'badge-muted'">{{ cardStatus(card) }}</span>
+            <span v-show="card.groupLinkId" class="badge" :class="cardStatus(card) !== 'Not started' ? 'badge-teal' : 'badge-muted'">{{ cardStatus(card) }}</span>
           </button>
         </div>
       </div>
@@ -298,7 +261,7 @@ function publishClinic() {
       </div>
       <div class="cf-card" style="border-radius:1rem;padding:1.25rem;margin-bottom:1.5rem">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.875rem">
-          <h4 style="font-size:.85rem;font-weight:700;color:var(--cf-text-strong);font-family:'Poppins',sans-serif"><i class="fas fa-code mr-2" style="color:var(--color-primary)"></i>FHIR QuestionnaireResponse Preview (Hospital)</h4>
+          <h4 style="font-size:.85rem;font-weight:700;color:var(--cf-text-strong);font-family:'Poppins',sans-serif"><i class="fas fa-code mr-2" style="color:var(--color-primary)"></i>FHIR QuestionnaireResponse Preview (Provider)</h4>
           <button class="btn-ghost" @click="copyFhir()" style="font-size:.75rem"><i class="fas fa-copy mr-1.5"></i>Copy JSON</button>
         </div>
         <pre style="font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--color-primary);background:var(--cf-bg);border:1px solid var(--cf-border);border-radius:.5rem;padding:1rem;overflow-x:auto;max-height:220px;white-space:pre-wrap">{{ fhirPreview }}</pre>

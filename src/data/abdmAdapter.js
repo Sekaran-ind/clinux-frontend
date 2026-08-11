@@ -1,5 +1,6 @@
-// Adapter layer between ClinixFlow's FHIR-native records (system-hospital-profile-v1 =
-// Organization, system-staff-profile-v1 = Practitioner/PractitionerRole) and the bespoke,
+// Adapter layer between ClinixFlow's FHIR-native records (section_hospital = Organization,
+// section_staff = Practitioner, both groups inside the single system-provider-composition-v1
+// record post-merge — see clinux-provider-composition-merge memory note) and the bespoke,
 // non-FHIR request/response shapes the clinuxflow-abdm-gateway Worker's HPR/HFR routes expect.
 //
 // Plain functions, ported verbatim from clinixflow's public/js/abdm-adapter.js — only the
@@ -10,9 +11,14 @@
 // this file follows that exactly rather than "cleaning it up," since the gateway is what
 // actually receives these.
 //
+// Every function here still just calls getAnswer(record, linkId) on whatever full-record-shaped
+// object the caller passes in — unaffected by the Provider-composition merge; callers are
+// responsible for wrapping bare repeating-group instances as { data: instance } first (see
+// AbdmOnboarding.vue's staffRecord()).
+//
 // Aadhaar/OTP/password are never read from a persisted record here — they are NOT fields on
-// system-staff-profile-v1 and are always passed in as plain arguments from the caller's
-// transient page state.
+// section_staff and are always passed in as plain arguments from the caller's transient page
+// state.
 import { getAnswer } from './collections/formData.js';
 
 // ─────────────────────────────── HPR (Health Professional Registry) ───────────────────────
@@ -44,9 +50,9 @@ export function buildHprVerifyMobileOtpBody(txnId, otp) {
   return { txnId, otp };
 }
 
-// staffRecord = a system-staff-profile-v1 record. txnId/selectedHpId/password are transient,
-// supplied by the caller — password is typed by the user in the moment and must never be
-// stored back onto the record.
+// staffRecord = one section_staff group instance, wrapped as { data: instance } by the caller.
+// txnId/selectedHpId/password are transient, supplied by the caller — password is typed by the
+// user in the moment and must never be stored back onto the record.
 export function buildHprCreateBody(staffRecord, { txnId, selectedHpId, password }) {
   return {
     txnId,

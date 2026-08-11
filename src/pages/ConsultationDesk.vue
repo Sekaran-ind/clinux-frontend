@@ -13,9 +13,10 @@ import { useClinicalStore } from '../stores/clinical.js';
 import { useCuboStore } from '../stores/cubo.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
+import { useOnboardingStore } from '../stores/onboarding.js';
 import {
-  listDataRecords, activeQuestionnaire, activeVersionNumber, saveDataRecord,
-  getAnswer, patchRecordField, withGroupFields,
+  activeQuestionnaire, activeVersionNumber, saveDataRecord,
+  getAnswer, patchRecordField, withGroupFields, getGroupInstances,
 } from '../data/useSystemForms.js';
 import {
   getEncounterLogs, logEvent, encounterStage as stageCollection,
@@ -24,13 +25,14 @@ import {
 } from '../data/collections/encounterDocs.js';
 import { API_BASE, apiFetch } from '../config.js';
 
-const STAFF_FORM_ID = 'system-staff-profile-v1';
-
 const router = useRouter();
 const clinical = useClinicalStore();
 const cubo = useCuboStore();
 const auth = useAuthStore();
 const slotFillHighlights = useSlotFillHighlightsStore();
+// Care team picks staff out of the ONE shared Provider record's section_staff repeating group
+// post-merge (see clinux-provider-composition-merge memory note), not its own separate form.
+const onboarding = useOnboardingStore();
 // Vitals/SOAP/Prescription/Billing all live inside this one merged Encounter-composition
 // record now — the right pane below renders the whole thing via LhcFormHost rather than a
 // SOAP-only textarea set.
@@ -320,19 +322,25 @@ function openDocument(doc) {
   else if (doc.kind === 'prescription') viewPrescription(doc.ref);
 }
 
+// Staff has no id of its own now (see getGroupInstances doc comment) — array position is the
+// identity, same as every other post-merge staff reference in this migration (AbdmOnboarding.vue).
+// careTeamCollection's staffIds now hold staff INDEXES, not record ids.
 const staffOptions = computed(() => {
-  dataVersion.value;
-  return listDataRecords(STAFF_FORM_ID).map((rec) => ({ id: rec.id, label: getAnswer(rec, 'staff_name') + (getAnswer(rec, 'staff_role') ? ' — ' + getAnswer(rec, 'staff_role') : '') }));
+  dataVersion.value; onboarding.dataVersion;
+  return getGroupInstances(onboarding.getProviderRecord(), 'section_staff').map((instance, index) => {
+    const rec = { data: instance };
+    return { id: index, label: getAnswer(rec, 'staff_name') + (getAnswer(rec, 'staff_role') ? ' — ' + getAnswer(rec, 'staff_role') : '') };
+  });
 });
 
 const careTeamMembers = computed(() => {
-  dataVersion.value;
+  dataVersion.value; onboarding.dataVersion;
   if (!encounter) return [];
   const ids = careTeamCollection.get(encounter.id)?.staffIds ?? [];
-  const staffRecs = listDataRecords(STAFF_FORM_ID);
+  const staffInstances = getGroupInstances(onboarding.getProviderRecord(), 'section_staff');
   return ids.map((id) => {
-    const rec = staffRecs.find((r) => r.id === id);
-    return { id, name: rec ? getAnswer(rec, 'staff_name') : id };
+    const instance = staffInstances[id];
+    return { id, name: instance ? getAnswer({ data: instance }, 'staff_name') : id };
   });
 });
 

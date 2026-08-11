@@ -16,6 +16,7 @@ export {
   saveDataRecord,
   deleteDataRecord,
   patchRecordField,
+  patchGroupInstanceField,
   recordSummary,
   summarizeItems,
   getGroupInstances,
@@ -26,14 +27,8 @@ export {
 
 // Fixed sidebar/onboarding display order — must match clinuxflow-api's data/system-forms-library.json.
 export const SYSTEM_FORM_IDS = [
-  'system-hospital-profile-v1',
+  'system-provider-composition-v1',
   'system-patient-profile-v1',
-  'system-staff-profile-v1',
-  'system-services-profile-v1',
-  'system-consents-profile-v1',
-  'system-appointments-profile-v1',
-  'system-office-hours-profile-v1',
-  'system-locations-profile-v1',
   'system-encounter-composition-v1',
 ];
 
