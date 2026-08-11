@@ -8,11 +8,11 @@ import Cubo from '../components/Cubo.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import {
   listDataRecords, recordSummary, activeQuestionnaire, activeVersionNumber,
-  saveDataRecord, getGroupInstances, journeyFormIds,
+  saveDataRecord, getGroupInstances, formsLibrary,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
-import { getEncounterCustomFormRecordIds, attachCustomFormRecord } from '../data/collections/encounterDocs.js';
+import { getEncounterCustomFormLinks, attachCustomFormRecord } from '../data/collections/encounterDocs.js';
 
 const PATIENT_FORM_ID = 'system-patient-profile-v1';
 
@@ -135,25 +135,37 @@ const drawerRecord = ref(null);
 // target, but "Additional Forms" hosts an arbitrary number of different custom forms.
 const activeCustomFormId = ref(null);
 
-// Every custom form tagged journey: patient, with just this encounter's own attached records
-// (see encounterDocs.js's getEncounterCustomFormRecordIds — same "documents attached to an
-// encounter" pattern prescriptions/images already use).
-const patientJourneyForms = computed(() => {
+// No restriction on which forms can be added here — any form in the library (system or
+// custom, whatever the user wants), not just ones tagged for the Patient journey. Sorted by
+// title purely for a predictable dropdown order.
+const availableForms = computed(() => {
   dataVersion.value;
-  return journeyFormIds('patient').map((formId) => {
-    const recordIds = encounterRecordId.value ? getEncounterCustomFormRecordIds(encounterRecordId.value, formId) : [];
-    const allRecords = listDataRecords(formId);
+  return formsLibrary.toArray
+    .map((r) => ({ formId: r.formId, title: activeQuestionnaire(r.formId)?.title || r.formId }))
+    .sort((a, b) => a.title.localeCompare(b.title));
+});
+const selectedAdditionalFormId = ref('');
+
+// Every form record attached to this encounter (see encounterDocs.js's
+// getEncounterCustomFormLinks — same "documents attached to an encounter" pattern
+// prescriptions/images already use), with the audit trail (who/when) it was added.
+const attachedRecords = computed(() => {
+  dataVersion.value;
+  if (!encounterRecordId.value) return [];
+  return getEncounterCustomFormLinks(encounterRecordId.value).map((link) => {
+    const rec = listDataRecords(link.formId).find((r) => r.id === link.recordId);
     return {
-      formId,
-      title: activeQuestionnaire(formId)?.title || formId,
-      records: recordIds.map((id) => allRecords.find((r) => r.id === id)).filter(Boolean),
+      id: link.id, formId: link.formId, recordId: link.recordId,
+      title: activeQuestionnaire(link.formId)?.title || link.formId,
+      summary: rec ? recordSummary(rec) : link.recordId,
+      attachedBy: link.attachedBy, attachedAt: link.attachedAt,
     };
   });
 });
 
 const drawerTitle = computed(() => {
   if (activeStepId.value === 'additional') {
-    return patientJourneyForms.value.find((f) => f.formId === activeCustomFormId.value)?.title || 'Additional Form';
+    return availableForms.value.find((f) => f.formId === activeCustomFormId.value)?.title || 'Additional Form';
   }
   return { patient: 'Register Patient', encounter: 'Encounter Intake', vitals: 'Record Vitals', triage: 'Triage Priority' }[activeStepId.value] || '';
 });
@@ -355,29 +367,39 @@ function sendToConsultation() {
           </div>
         </div>
 
-        <!-- Step 4: Additional Forms — custom forms tagged journey: patient in Designer (see
-             clinux-custom-forms-in-patient-hospital-journeys memory note). Optional/supplementary,
-             so this is where "Send to Consultation Desk" now lives — the wrap-up step regardless
-             of whether any custom forms are actually filled in. -->
+        <!-- Step 4: Additional Forms — any form in the library, not just ones tagged for the
+             Patient journey (no restriction on what can be added here — see
+             clinux-custom-forms-in-patient-hospital-journeys memory note). Optional/
+             supplementary, so this is where "Send to Consultation Desk" now lives — the wrap-up
+             step regardless of whether anything's actually added. -->
         <div v-show="currentStep === 4">
           <span class="section-eyebrow block mb-1">{{ 'Step 5 of ' + steps.length }}</span>
           <h2 class="text-2xl font-bold mb-4" style="color:var(--cf-text-strong)">Additional Forms</h2>
-          <div v-if="patientJourneyForms.length === 0" class="cf-card rounded-2xl p-5 text-sm" style="color:var(--cf-text)">
-            No custom forms are tagged for the Patient journey yet — tag one as "Patient" from Designer's "+ New Form" drawer.
-          </div>
-          <div v-for="form in patientJourneyForms" :key="form.formId" class="cf-card rounded-2xl p-5 mb-4">
-            <div class="flex items-center justify-between mb-3">
-              <h3 class="font-bold" style="color:var(--cf-text-strong)">{{ form.title }}</h3>
-              <button class="btn-teal text-xs px-3 py-1.5" @click="openCustomFormDrawer(form.formId)"><i class="fas fa-plus"></i> Add</button>
+          <div class="cf-card rounded-2xl p-5 mb-5">
+            <p class="text-sm mb-4" style="color:var(--cf-text)">Add any form from the library to this visit.</p>
+            <div class="flex gap-2.5">
+              <select class="cf-input" v-model="selectedAdditionalFormId">
+                <option value="">Select a form…</option>
+                <option v-for="f in availableForms" :key="f.formId" :value="f.formId">{{ f.title }}</option>
+              </select>
+              <button class="btn-teal whitespace-nowrap" :disabled="!selectedAdditionalFormId" @click="openCustomFormDrawer(selectedAdditionalFormId)"><i class="fas fa-plus"></i> Add</button>
             </div>
-            <p v-if="form.records.length === 0" class="text-sm" style="color:var(--cf-text)">Nothing added yet for this visit.</p>
+          </div>
+
+          <div class="cf-card rounded-2xl p-5 mb-5">
+            <p class="text-sm font-bold mb-3" style="color:var(--cf-text-strong)">Added to this visit</p>
+            <p v-if="attachedRecords.length === 0" class="text-sm" style="color:var(--cf-text)">Nothing added yet for this visit.</p>
             <div v-else class="flex flex-col gap-2">
-              <div v-for="rec in form.records" :key="rec.id" class="record-card flex items-center justify-between p-2">
-                <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ recordSummary(rec) }}</span>
-                <button class="btn-outline text-xs px-3 py-1.5" @click="openCustomFormDrawer(form.formId, rec.id)">View / Edit</button>
+              <div v-for="entry in attachedRecords" :key="entry.id" class="record-card flex items-center justify-between p-2">
+                <div>
+                  <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ entry.title }} — {{ entry.summary }}</span>
+                  <div class="text-xs mt-0.5" style="color:var(--cf-text)">Added by {{ entry.attachedBy }} · {{ new Date(entry.attachedAt).toLocaleString() }}</div>
+                </div>
+                <button class="btn-outline text-xs px-3 py-1.5" @click="openCustomFormDrawer(entry.formId, entry.recordId)">View / Edit</button>
               </div>
             </div>
           </div>
+
           <div class="cf-card rounded-2xl p-5" v-show="encounterRecordId">
             <button class="btn-primary inline-flex items-center gap-2" @click="sendToConsultation()"><i class="fas fa-arrow-right"></i>Send to Consultation Desk</button>
           </div>

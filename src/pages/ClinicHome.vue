@@ -321,11 +321,6 @@ function sendMessage() {
             <button class="btn btn-brand" @click="apptModal = true" style="font-size:1rem;padding:.875rem 2rem"><i class="fas fa-calendar-plus"></i>Book Appointment</button>
             <button class="btn btn-outline" style="font-size:.95rem;padding:.875rem 1.75rem" @click="openClinicView('front-desk')"><i class="fas fa-stethoscope"></i>Front Desk</button>
           </div>
-          <div style="display:flex;gap:2.5rem;margin-top:2.5rem;padding-top:1.75rem;border-top:1px solid var(--border)" v-show="clinic.staff?.length || clinic.services?.length">
-            <div v-show="clinic.staff?.length"><div class="stat-num">{{ clinic.staff?.length || 0 }}</div><p style="font-size:.8rem;color:var(--text);margin-top:.2rem">Care Team</p></div>
-            <div v-show="clinic.services?.length"><div class="stat-num">{{ clinic.services?.length || 0 }}</div><p style="font-size:.8rem;color:var(--text);margin-top:.2rem">Services</p></div>
-            <div><div class="stat-num">{{ clinic.consents?.filter((c) => c.enabled).length || 0 }}</div><p style="font-size:.8rem;color:var(--text);margin-top:.2rem">Consents</p></div>
-          </div>
         </div>
         <div>
           <div class="cf-card" style="border-radius:1.25rem;padding:1.75rem;box-shadow:0 20px 50px rgba(0,0,0,.08)">
@@ -345,6 +340,32 @@ function sendMessage() {
               <div v-show="clinic.whatsapp" style="display:flex;align-items:center;gap:.625rem"><i class="fab fa-whatsapp" style="color:#25D366;font-size:.9rem"></i><a :href="`https://wa.me/${clinic.whatsapp?.replace(/\\D/g, '')}`" target="_blank" style="font-size:.85rem;font-weight:600;color:var(--text-strong)">{{ clinic.whatsapp }}</a></div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Admin-only, PII-masked — same rationale as the top active-sessions-strip (no patient name
+       or chief complaint rendered), just a richer horizontally-scrollable card layout instead of
+       a thin strip. This route has no requiresAuth, so isAdmin/showSessionsStrip are
+       cosmetic/defense-in-depth gates only, not real access control. -->
+  <section id="sessions" class="section section-alt" v-show="showSessionsStrip">
+    <div class="container">
+      <div class="section-header">
+        <span class="eyebrow">Live Now</span>
+        <div class="teal-line" style="margin:0 auto .75rem"></div>
+        <h2 class="section-title">Active Sessions</h2>
+        <p class="section-sub" style="max-width:520px;margin:0 auto">Resume any visit already in progress.</p>
+      </div>
+      <div class="sessions-scroll">
+        <div v-for="s in activeSessions" :key="s.id" class="session-card" @click="resumeToSession(s)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+            <span class="badge badge-brand">#{{ sessionRef(s.id) }}</span>
+            <span v-if="s.priority === 'Emergency'" class="badge" style="background:#fee2e2;color:#b91c1c">Emergency</span>
+          </div>
+          <p style="font-weight:700;font-size:.95rem;color:var(--text-strong);font-family:'Poppins',sans-serif;margin-bottom:.3rem">{{ s.status }}</p>
+          <p style="font-size:.78rem;color:var(--text)"><i class="fas fa-clock mr-1.5"></i>{{ timeSince(s.savedAt) }}</p>
+          <button class="btn btn-outline btn-xs" style="margin-top:1rem;width:100%;justify-content:center">Resume</button>
         </div>
       </div>
     </div>
@@ -634,9 +655,12 @@ a { text-decoration:none; color:inherit; }
 .modal-bg { position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(5px);z-index:60;display:flex;align-items:center;justify-content:center;padding:1rem; }
 .modal-panel { background:var(--bg);border:1px solid var(--border);border-radius:1.25rem;padding:2rem;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 30px 60px rgba(0,0,0,.3); }
 .grad-text { background:linear-gradient(135deg,#00D4B2 0%,#0A7A6E 50%,#00D4B2 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text; }
-.stat-num { font-family:'Poppins',sans-serif;font-weight:800;font-size:2.5rem;color:var(--color-secondary);line-height:1; }
-:global(.dark) .stat-num { color:var(--brand); }
 .section-header { text-align:center;margin-bottom:3rem; }
+/* Active Sessions — horizontally-scrollable cards below the hero (replaces the old
+   Care Team/Services/Consents counts). */
+.sessions-scroll { display:flex;gap:1.125rem;overflow-x:auto;padding-bottom:.5rem;scroll-snap-type:x proximity; }
+.session-card { flex:0 0 220px;scroll-snap-align:start;background:var(--bg);border:1px solid var(--border);border-radius:1rem;padding:1.25rem;cursor:pointer;transition:all .2s; }
+.session-card:hover { transform:translateY(-3px);box-shadow:0 12px 30px rgba(0,212,178,.12);border-color:var(--brand); }
 @media (max-width:768px) {
   .nav-links { display:none }
   .hero-grid,.two-col-grid { grid-template-columns:1fr!important }
