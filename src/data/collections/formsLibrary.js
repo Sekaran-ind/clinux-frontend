@@ -42,3 +42,14 @@ export function activeQuestionnaire(formId) {
   const v = entry.versions.find((v) => v.version === version);
   return v ? v.questionnaire : null;
 }
+
+// Custom forms tagged journey: 'patient'|'hospital' in their YAML (compiled through onto the
+// active version's Questionnaire by clinuxflow-api's yaml-to-questionnaire.js) — lets Front
+// Desk surface exactly the forms meant for it instead of every custom form only ever being
+// reachable from Designer's own Data Explorer. See
+// clinux-custom-forms-in-patient-hospital-journeys memory note.
+export function journeyFormIds(journey) {
+  return formsLibrary.toArray
+    .filter((r) => activeQuestionnaire(r.formId)?.journey === journey)
+    .map((r) => r.formId);
+}

@@ -102,7 +102,10 @@ const currentVersionNumber = ref(null);
 // starts a new formId at v1 — see confirmNewForm()/saveToLibrary().
 const pendingStartVersion = ref(null);
 const newFormDrawerOpen = ref(false);
-const newFormDraft = reactive({ formId: 'new-form-v1', title: 'New Form', version: 1 });
+// journey: '' | 'patient' | 'hospital' — see clinux-custom-forms-in-patient-hospital-journeys
+// memory note. Written into the generated YAML template's own journey: line, same field
+// clinuxflow-api's compiler now passes through onto the compiled Questionnaire.
+const newFormDraft = reactive({ formId: 'new-form-v1', title: 'New Form', version: 1, journey: '' });
 
 // Both drawers are page-level overlays (not scoped inside the Forms Library tab's own v-show
 // block), so leaving one open while switching to Sandbox Data would float over that tab's
@@ -517,16 +520,16 @@ function setActiveVersion(formId, version) {
 // Add: opens the '+ New Form' slide-over to capture formId/title/starting version before
 // dropping a minimal valid scaffold into the editor — see confirmNewForm().
 function startNewForm() {
-  Object.assign(newFormDraft, { formId: 'new-form-v1', title: 'New Form', version: 1 });
+  Object.assign(newFormDraft, { formId: 'new-form-v1', title: 'New Form', version: 1, journey: '' });
   previewDrawerOpen.value = false; // avoid stacking two drawer-backdrops at once
   newFormDrawerOpen.value = true;
 }
 
-function buildBlankFormTemplate(formId, title) {
+function buildBlankFormTemplate(formId, title, journey) {
   const safeTitle = String(title).replace(/"/g, '\\"');
   return `formId: ${formId}
 title: "${safeTitle}"
-composition:
+${journey ? `journey: ${journey}\n` : ''}composition:
   - resourceType: Patient
     id: section_1
     label: "Section 1"
@@ -546,7 +549,7 @@ function confirmNewForm() {
     showToast('Form ID, Title, and a valid starting Version (1 or higher) are all required.');
     return;
   }
-  yamlInput.value = buildBlankFormTemplate(formId, title);
+  yamlInput.value = buildBlankFormTemplate(formId, title, newFormDraft.journey);
   pendingStartVersion.value = version;
   currentVersionNumber.value = null;
   currentStep.value = 0;
@@ -880,7 +883,14 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
       <input type="text" v-model="newFormDraft.title" class="cf-input" style="margin-bottom:1.1rem;width:100%" placeholder="e.g. My Clinic Intake" />
 
       <label class="cf-label" style="display:block;margin-bottom:.3rem">Starting Version #</label>
-      <input type="number" min="1" step="1" v-model.number="newFormDraft.version" class="cf-input" style="width:100%" />
+      <input type="number" min="1" step="1" v-model.number="newFormDraft.version" class="cf-input" style="width:100%;margin-bottom:1.1rem" />
+
+      <label class="cf-label" style="display:block;margin-bottom:.3rem">Journey (optional)</label>
+      <select v-model="newFormDraft.journey" class="cf-input" style="width:100%">
+        <option value="">None — only reachable from Designer's own Data Explorer</option>
+        <option value="patient">Patient — surfaces in Front Desk's "Additional Forms" step</option>
+        <option value="hospital">Hospital — clinic-management workflow</option>
+      </select>
     </div>
     <div class="drawer-footer">
       <button class="btn-ghost" @click="cancelNewForm()">Cancel</button>

@@ -16,11 +16,12 @@ import { useOnboardingStore } from '../stores/onboarding.js';
 import {
   activeQuestionnaire, activeVersionNumber, saveDataRecord,
   getAnswer, patchRecordField, withGroupFields, getGroupInstances,
+  listDataRecords, recordSummary,
 } from '../data/useSystemForms.js';
 import {
   getEncounterLogs, logEvent, encounterStage as stageCollection,
   encounterConsent as consentCollection, prescriptions as rxCollection,
-  getEncounterImages, careTeam as careTeamCollection,
+  getEncounterImages, careTeam as careTeamCollection, getEncounterCustomFormLinks,
 } from '../data/collections/encounterDocs.js';
 import { API_BASE, apiFetch } from '../config.js';
 
@@ -312,17 +313,31 @@ async function viewPrescription(id) {
   log('Viewed prescription PDF.');
 }
 
-// Aggregates lab images + prescriptions into one encounter-scoped Documents list.
+// Aggregates lab images + prescriptions + custom-form entries (added from Front Desk's
+// "Additional Forms" step — see clinux-custom-forms-in-patient-hospital-journeys memory note)
+// into one encounter-scoped Documents list.
 const allDocuments = computed(() => {
   dataVersion.value;
   const imgs = (encounter ? getEncounterImages(encounter.id) : []).map((d) => ({ id: d.id, kind: 'image', label: d.filename, timestamp: d.addedAt, ref: d.id, thumb: d.dataUrl, source: d.source || 'imaging' }));
   const rx = prescriptions.value.map((d) => ({ id: d.id, kind: 'prescription', label: 'Prescription — ' + new Date(d.createdAt).toLocaleDateString(), timestamp: d.createdAt, ref: d.id }));
-  return [...imgs, ...rx].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  const custom = (encounter ? getEncounterCustomFormLinks(encounter.id) : []).map((link) => {
+    const rec = listDataRecords(link.formId).find((r) => r.id === link.recordId);
+    return {
+      id: link.id, kind: 'customForm', ref: link.recordId,
+      label: (activeQuestionnaire(link.formId)?.title || link.formId) + ' — ' + (rec ? recordSummary(rec) : link.recordId),
+      timestamp: link.attachedAt,
+    };
+  });
+  return [...imgs, ...rx, ...custom].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 });
 
+// Custom-form entries are view-only here — add/edit lives in Front Desk's "Additional Forms"
+// step (this file has no generic drawer for an arbitrary custom form's shape), so opening one
+// just confirms what's there via a log entry rather than a dead click.
 function openDocument(doc) {
   if (doc.kind === 'image') leftTab.value = 'imaging';
   else if (doc.kind === 'prescription') viewPrescription(doc.ref);
+  else if (doc.kind === 'customForm') log('Viewed: ' + doc.label);
 }
 
 // Staff has no id of its own now (see getGroupInstances doc comment) — array position is the
