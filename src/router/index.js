@@ -24,7 +24,12 @@ const routes = [
   { path: '/clinic-home', name: 'clinic-home', component: ClinicHome, meta: { hideAppNav: true } },
   { path: '/checkout', name: 'checkout', component: Checkout, meta: { requiresAuth: true } },
   { path: '/onboarding-abdm', name: 'onboarding-abdm', component: AbdmOnboarding, meta: { requiresAuth: true } },
-  { path: '/designer', name: 'designer', component: Designer, meta: { requiresAuth: true } },
+  // Unauthenticated visitors can still reach this page, constrained to Sandbox Data — see
+  // clinux-authenticated-vs-sandbox-mode memory note. The real Forms Library tab (Provider-
+  // composition data) is gated inside Designer.vue itself instead of at the router level, since
+  // the sandbox half of this page is a deliberately isolated demo (see
+  // clinux-ai-engine-designer-merge-tanstack-table) that's safe to expose either way.
+  { path: '/designer', name: 'designer', component: Designer },
   // AiEngine.vue merged into Designer.vue (see clinux-ai-engine-designer-merge-tanstack-table
   // memory note) — old bookmarks/links to /ai-engine still land somewhere useful.
   { path: '/ai-engine', redirect: '/designer' },
