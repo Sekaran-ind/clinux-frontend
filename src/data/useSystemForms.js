@@ -8,6 +8,7 @@ export {
   seedSystemForms,
   activeVersionNumber,
   activeQuestionnaire,
+  journeyFormIds,
 } from './collections/formsLibrary.js';
 
 export {

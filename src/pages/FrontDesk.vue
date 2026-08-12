@@ -8,10 +8,11 @@ import Cubo from '../components/Cubo.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import {
   listDataRecords, recordSummary, activeQuestionnaire, activeVersionNumber,
-  saveDataRecord, getGroupInstances,
+  saveDataRecord, getGroupInstances, journeyFormIds,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
+import { getEncounterCustomFormRecordIds, attachCustomFormRecord } from '../data/collections/encounterDocs.js';
 
 const PATIENT_FORM_ID = 'system-patient-profile-v1';
 
@@ -32,6 +33,11 @@ const steps = [
   { id: 'encounter', label: 'Encounter' },
   { id: 'vitals', label: 'Vitals' },
   { id: 'triage', label: 'Triage' },
+  // Custom forms tagged journey: patient in Designer (see
+  // clinux-custom-forms-in-patient-hospital-journeys memory note) — a final, optional step
+  // rather than folded into an existing one, since there's no existing step a form of unknown
+  // shape naturally belongs to.
+  { id: 'additional', label: 'Additional Forms' },
 ];
 const currentStep = ref(0);
 
@@ -124,6 +130,43 @@ function buildSeed(formId, linkId, value) {
 
 const drawerQuestionnaire = ref(null);
 const drawerRecord = ref(null);
+// Which custom form the drawer is currently editing, only meaningful while
+// activeStepId === 'additional' — the 4 core steps each have exactly one fixed form/record
+// target, but "Additional Forms" hosts an arbitrary number of different custom forms.
+const activeCustomFormId = ref(null);
+
+// Every custom form tagged journey: patient, with just this encounter's own attached records
+// (see encounterDocs.js's getEncounterCustomFormRecordIds — same "documents attached to an
+// encounter" pattern prescriptions/images already use).
+const patientJourneyForms = computed(() => {
+  dataVersion.value;
+  return journeyFormIds('patient').map((formId) => {
+    const recordIds = encounterRecordId.value ? getEncounterCustomFormRecordIds(encounterRecordId.value, formId) : [];
+    const allRecords = listDataRecords(formId);
+    return {
+      formId,
+      title: activeQuestionnaire(formId)?.title || formId,
+      records: recordIds.map((id) => allRecords.find((r) => r.id === id)).filter(Boolean),
+    };
+  });
+});
+
+const drawerTitle = computed(() => {
+  if (activeStepId.value === 'additional') {
+    return patientJourneyForms.value.find((f) => f.formId === activeCustomFormId.value)?.title || 'Additional Form';
+  }
+  return { patient: 'Register Patient', encounter: 'Encounter Intake', vitals: 'Record Vitals', triage: 'Triage Priority' }[activeStepId.value] || '';
+});
+
+// recordId only when editing an existing entry — omitted (null), this opens a blank instance,
+// matching Designer's Data Explorer's own openNewDataEntry()/viewDataRecord() split.
+function openCustomFormDrawer(formId, recordId = null) {
+  activeStepId.value = 'additional';
+  activeCustomFormId.value = formId;
+  drawerOpen.value = true;
+  drawerQuestionnaire.value = activeQuestionnaire(formId);
+  drawerRecord.value = recordId ? listDataRecords(formId).find((r) => r.id === recordId) : null;
+}
 
 function openStep(stepId) {
   activeStepId.value = stepId;
@@ -170,6 +213,15 @@ function saveDrawer() {
     dataVersion.value++;
     closeDrawer();
     showToast('Encounter updated.');
+    return;
+  }
+  if (activeStepId.value === 'additional') {
+    const formId = activeCustomFormId.value;
+    const recordId = saveDataRecord(formId, activeVersionNumber(formId), qr, drawerRecord.value?.id || null);
+    if (encounterRecordId.value) attachCustomFormRecord(encounterRecordId.value, formId, recordId);
+    dataVersion.value++;
+    closeDrawer();
+    showToast('Saved.');
   }
 }
 
@@ -242,7 +294,7 @@ function sendToConsultation() {
       <div class="max-w-[720px]">
         <!-- Step 0: Patient -->
         <div v-show="currentStep === 0">
-          <span class="section-eyebrow block mb-1">Step 1 of 4</span>
+          <span class="section-eyebrow block mb-1">{{ 'Step 1 of ' + steps.length }}</span>
           <h2 class="text-2xl font-bold mb-4" style="color:var(--cf-text-strong)">Patient</h2>
           <div class="cf-card rounded-2xl p-5 mb-5">
             <div class="flex gap-2.5 mb-4">
@@ -266,7 +318,7 @@ function sendToConsultation() {
 
         <!-- Step 1: Encounter -->
         <div v-show="currentStep === 1">
-          <span class="section-eyebrow block mb-1">Step 2 of 4</span>
+          <span class="section-eyebrow block mb-1">{{ 'Step 2 of ' + steps.length }}</span>
           <h2 class="text-2xl font-bold mb-4" style="color:var(--cf-text-strong)">Encounter</h2>
           <div class="cf-card rounded-2xl p-5">
             <p class="text-sm mb-4" style="color:var(--cf-text)">Log the chief complaint to open this visit's encounter record.</p>
@@ -280,7 +332,7 @@ function sendToConsultation() {
 
         <!-- Step 2: Vitals -->
         <div v-show="currentStep === 2">
-          <span class="section-eyebrow block mb-1">Step 3 of 4</span>
+          <span class="section-eyebrow block mb-1">{{ 'Step 3 of ' + steps.length }}</span>
           <h2 class="text-2xl font-bold mb-4" style="color:var(--cf-text-strong)">Vitals</h2>
           <div class="cf-card rounded-2xl p-5">
             <p class="text-sm mb-4" style="color:var(--cf-text)">Record one or more vitals readings for this visit.</p>
@@ -292,14 +344,42 @@ function sendToConsultation() {
 
         <!-- Step 3: Triage -->
         <div v-show="currentStep === 3">
-          <span class="section-eyebrow block mb-1">Step 4 of 4</span>
+          <span class="section-eyebrow block mb-1">{{ 'Step 4 of ' + steps.length }}</span>
           <h2 class="text-2xl font-bold mb-4" style="color:var(--cf-text-strong)">Triage</h2>
           <div class="cf-card rounded-2xl p-5">
             <p class="text-sm mb-4" style="color:var(--cf-text)">Set the case priority before sending the patient through to consultation.</p>
             <button class="btn-teal" @click="openStep('triage')"><i class="fas fa-stethoscope"></i> Set Triage Priority</button>
             <div v-show="encounterRecordId" class="mt-6 pt-6" style="border-top:1px solid var(--cf-border)">
-              <button class="btn-primary inline-flex items-center gap-2" @click="sendToConsultation()"><i class="fas fa-arrow-right"></i>Send to Consultation Desk</button>
+              <button class="btn-teal" @click="nextStep()">Continue to Additional Forms <i class="fas fa-arrow-right ml-2"></i></button>
             </div>
+          </div>
+        </div>
+
+        <!-- Step 4: Additional Forms — custom forms tagged journey: patient in Designer (see
+             clinux-custom-forms-in-patient-hospital-journeys memory note). Optional/supplementary,
+             so this is where "Send to Consultation Desk" now lives — the wrap-up step regardless
+             of whether any custom forms are actually filled in. -->
+        <div v-show="currentStep === 4">
+          <span class="section-eyebrow block mb-1">{{ 'Step 5 of ' + steps.length }}</span>
+          <h2 class="text-2xl font-bold mb-4" style="color:var(--cf-text-strong)">Additional Forms</h2>
+          <div v-if="patientJourneyForms.length === 0" class="cf-card rounded-2xl p-5 text-sm" style="color:var(--cf-text)">
+            No custom forms are tagged for the Patient journey yet — tag one as "Patient" from Designer's "+ New Form" drawer.
+          </div>
+          <div v-for="form in patientJourneyForms" :key="form.formId" class="cf-card rounded-2xl p-5 mb-4">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="font-bold" style="color:var(--cf-text-strong)">{{ form.title }}</h3>
+              <button class="btn-teal text-xs px-3 py-1.5" @click="openCustomFormDrawer(form.formId)"><i class="fas fa-plus"></i> Add</button>
+            </div>
+            <p v-if="form.records.length === 0" class="text-sm" style="color:var(--cf-text)">Nothing added yet for this visit.</p>
+            <div v-else class="flex flex-col gap-2">
+              <div v-for="rec in form.records" :key="rec.id" class="record-card flex items-center justify-between p-2">
+                <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ recordSummary(rec) }}</span>
+                <button class="btn-outline text-xs px-3 py-1.5" @click="openCustomFormDrawer(form.formId, rec.id)">View / Edit</button>
+              </div>
+            </div>
+          </div>
+          <div class="cf-card rounded-2xl p-5" v-show="encounterRecordId">
+            <button class="btn-primary inline-flex items-center gap-2" @click="sendToConsultation()"><i class="fas fa-arrow-right"></i>Send to Consultation Desk</button>
           </div>
         </div>
       </div>
@@ -311,9 +391,7 @@ function sendToConsultation() {
   <div class="drawer-backdrop" :class="drawerOpen ? 'open' : ''" @click="closeDrawer()"></div>
   <div class="drawer-panel" :class="drawerOpen ? 'open' : ''">
     <div class="drawer-header">
-      <h3 class="font-bold text-sm" style="color:var(--cf-text-strong)">
-        {{ { patient: 'Register Patient', encounter: 'Encounter Intake', vitals: 'Record Vitals', triage: 'Triage Priority' }[activeStepId] || '' }}
-      </h3>
+      <h3 class="font-bold text-sm" style="color:var(--cf-text-strong)">{{ drawerTitle }}</h3>
       <button @click="closeDrawer()" class="bg-transparent border-none cursor-pointer" style="color:var(--cf-text);font-size:1.1rem"><i class="fas fa-times"></i></button>
     </div>
     <div class="drawer-body">
