@@ -38,4 +38,9 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Needed for the QR-based session-transfer feature (Phase C) -- plain getUserMedia() from
+         the WebView, not a native camera plugin (avoids adding a Capacitor plugin for this at
+         all, matching the iOS side's own approach). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 </manifest>

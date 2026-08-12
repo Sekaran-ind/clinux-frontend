@@ -262,7 +262,7 @@ onUnmounted(stopAutoplay);
           <button @click="userMenuOpen = !userMenuOpen" class="w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm" style="background:var(--color-primary);color:var(--color-secondary)" :title="auth.currentUser.clinicName">
             <span>{{ auth.currentUser.clinicName.charAt(0).toUpperCase() }}</span>
           </button>
-          <div v-show="userMenuOpen" v-click-outside="() => (userMenuOpen = false)" class="absolute right-0 mt-2 w-48 cf-card rounded-xl shadow-xl overflow-hidden py-1">
+          <div v-show="userMenuOpen" class="absolute right-0 mt-2 w-48 cf-card rounded-xl shadow-xl overflow-hidden py-1">
             <div class="px-4 py-2 border-b" style="border-color:var(--cf-border)">
               <p class="text-xs font-bold cf-text-strong truncate">{{ auth.currentUser.clinicName }}</p>
               <p class="text-xs cf-text truncate">{{ auth.currentUser.email }}</p>
