@@ -390,12 +390,12 @@ function sendToConsultation() {
             <p class="text-sm font-bold mb-3" style="color:var(--cf-text-strong)">Added to this visit</p>
             <p v-if="attachedRecords.length === 0" class="text-sm" style="color:var(--cf-text)">Nothing added yet for this visit.</p>
             <div v-else class="flex flex-col gap-2">
-              <div v-for="entry in attachedRecords" :key="entry.id" class="record-card flex items-center justify-between p-2">
+              <div v-for="entry in attachedRecords" :key="entry.id" class="record-card flex items-center justify-between p-2 cursor-pointer" @click="openCustomFormDrawer(entry.formId, entry.recordId)">
                 <div>
                   <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ entry.title }} — {{ entry.summary }}</span>
                   <div class="text-xs mt-0.5" style="color:var(--cf-text)">Added by {{ entry.attachedBy }} · {{ new Date(entry.attachedAt).toLocaleString() }}</div>
                 </div>
-                <button class="btn-outline text-xs px-3 py-1.5" @click="openCustomFormDrawer(entry.formId, entry.recordId)">View / Edit</button>
+                <button class="btn-outline text-xs px-3 py-1.5" @click.stop="openCustomFormDrawer(entry.formId, entry.recordId)">View / Edit</button>
               </div>
             </div>
           </div>

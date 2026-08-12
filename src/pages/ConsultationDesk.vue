@@ -19,9 +19,9 @@ import {
   listDataRecords, recordSummary,
 } from '../data/useSystemForms.js';
 import {
-  getEncounterLogs, logEvent, encounterStage as stageCollection,
-  encounterConsent as consentCollection, prescriptions as rxCollection,
+  getEncounterLogs, logEvent, prescriptions as rxCollection,
   getEncounterImages, careTeam as careTeamCollection, getEncounterCustomFormLinks,
+  attachCustomFormRecord,
 } from '../data/collections/encounterDocs.js';
 import { API_BASE, apiFetch } from '../config.js';
 
@@ -51,9 +51,41 @@ const rightTab = ref('record');
 const isGenerating = ref(false);
 const isGeneratingRx = ref(false);
 const logsExpanded = ref(false);
-const consentModalOpen = ref(false);
-const consentCheckboxChecked = ref(false);
 const dataVersion = ref(0);
+
+// Custom-form drawer — view/edit an already-attached document's own form, prefilled with its
+// data. Mirrors Front Desk's own openCustomFormDrawer()/saveDrawer() 'additional' branch exactly
+// (same drawer-panel/backdrop CSS, same LhcFormHost usage), since that's the one other place a
+// custom form's own drawer is opened in this app.
+const customFormDrawerOpen = ref(false);
+const customFormDrawerFormId = ref(null);
+const customFormDrawerRecord = ref(null);
+const customFormDrawerQuestionnaire = ref(null);
+const customFormDrawerHost = ref(null);
+
+function openCustomFormDrawer(formId, recordId) {
+  customFormDrawerFormId.value = formId;
+  customFormDrawerQuestionnaire.value = activeQuestionnaire(formId);
+  customFormDrawerRecord.value = recordId ? listDataRecords(formId).find((r) => r.id === recordId) : null;
+  customFormDrawerOpen.value = true;
+}
+
+function closeCustomFormDrawer() {
+  customFormDrawerOpen.value = false;
+}
+
+function saveCustomFormDrawer() {
+  const qr = customFormDrawerHost.value?.extract();
+  if (!qr) { log('Could not read the entered data.', 'border-red-500'); return; }
+  const formId = customFormDrawerFormId.value;
+  const recordId = saveDataRecord(formId, activeVersionNumber(formId), qr, customFormDrawerRecord.value?.id || null);
+  if (encounter) attachCustomFormRecord(encounter.id, formId, recordId);
+  dataVersion.value++;
+  closeCustomFormDrawer();
+  log('Saved: ' + (activeQuestionnaire(formId)?.title || formId) + '.');
+}
+
+const customFormDrawerTitle = computed(() => activeQuestionnaire(customFormDrawerFormId.value)?.title || 'Document');
 
 const consultationQuestionnaire = computed(() => activeQuestionnaire(ENCOUNTER_FORM_ID));
 const liveRecord = ref(encounter);
@@ -74,53 +106,6 @@ function log(msg, color = 'border-slate-700') {
   if (!encounter) return;
   logEvent(encounter.id, msg, color);
   dataVersion.value++;
-}
-
-const encounterStage = computed(() => {
-  dataVersion.value;
-  if (!encounter) return 'draft';
-  return stageCollection.get(encounter.id)?.stage || 'draft';
-});
-
-function setEncounterStage(stage) {
-  if (!encounter) return;
-  if (stageCollection.has(encounter.id)) stageCollection.update(encounter.id, (d) => { d.stage = stage; });
-  else stageCollection.insert({ id: encounter.id, stage });
-  dataVersion.value++;
-  const labels = { draft: 'Draft', review_complete: 'Review Complete', accepted: 'Accepted', rejected: 'Rejected' };
-  const colors = { draft: 'border-amber-500', review_complete: 'border-blue-500', accepted: 'border-emerald-500', rejected: 'border-red-500' };
-  log(`Encounter stage changed to ${labels[stage]}.`, colors[stage]);
-}
-
-const consentStatus = computed(() => {
-  dataVersion.value;
-  if (!encounter) return 'pending';
-  return consentCollection.get(encounter.id)?.status || 'pending';
-});
-
-function openConsentModal() {
-  consentCheckboxChecked.value = false;
-  consentModalOpen.value = true;
-}
-
-function setConsent(status) {
-  if (!encounter) return;
-  const rec = { id: encounter.id, status, decidedAt: new Date().toISOString() };
-  if (consentCollection.has(encounter.id)) consentCollection.update(encounter.id, (d) => Object.assign(d, rec));
-  else consentCollection.insert(rec);
-  dataVersion.value++;
-  consentModalOpen.value = false;
-}
-
-function agreeConsent() {
-  if (!consentCheckboxChecked.value) return;
-  setConsent('obtained');
-  log('Data sharing consent obtained from patient.', 'border-emerald-500');
-}
-
-function declineConsent() {
-  setConsent('declined');
-  log('Data sharing consent declined by patient.', 'border-red-500');
 }
 
 function savePriority() {
@@ -325,7 +310,7 @@ const allDocuments = computed(() => {
   const custom = (encounter ? getEncounterCustomFormLinks(encounter.id) : []).map((link) => {
     const rec = listDataRecords(link.formId).find((r) => r.id === link.recordId);
     return {
-      id: link.id, kind: 'customForm', ref: link.recordId,
+      id: link.id, kind: 'customForm', ref: link.recordId, formId: link.formId,
       label: (activeQuestionnaire(link.formId)?.title || link.formId) + ' — ' + (rec ? recordSummary(rec) : link.recordId),
       timestamp: link.attachedAt,
     };
@@ -333,13 +318,12 @@ const allDocuments = computed(() => {
   return [...imgs, ...rx, ...custom].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 });
 
-// Custom-form entries are view-only here — add/edit lives in Front Desk's "Additional Forms"
-// step (this file has no generic drawer for an arbitrary custom form's shape), so opening one
-// just confirms what's there via a log entry rather than a dead click.
+// Custom-form entries open the same drawer/form Front Desk's "Additional Forms" step uses,
+// prefilled with the already-saved record, so a click here can both view AND edit it in place.
 function openDocument(doc) {
   if (doc.kind === 'image') rightTab.value = 'imaging';
   else if (doc.kind === 'prescription') viewPrescription(doc.ref);
-  else if (doc.kind === 'customForm') log('Viewed: ' + doc.label);
+  else if (doc.kind === 'customForm') openCustomFormDrawer(doc.formId, doc.ref);
 }
 
 // Staff has no id of its own now (see getGroupInstances doc comment) — array position is the
@@ -404,10 +388,6 @@ function sendToCheckout() {
           <option>Urgent</option>
           <option>Emergency</option>
         </select>
-        <button class="btn-ghost text-xs" @click="setEncounterStage('review_complete')">Review Complete</button>
-        <button class="btn-ghost text-xs" @click="setEncounterStage('accepted')">Accept</button>
-        <button class="btn-ghost text-xs" @click="setEncounterStage('rejected')">Reject</button>
-        <button class="btn-ghost text-xs" @click="openConsentModal()">Consent: {{ consentStatus }}</button>
         <button class="btn-primary text-xs inline-flex items-center gap-1.5" @click="sendToCheckout()"><i class="fas fa-arrow-right"></i>Send to Checkout</button>
       </div>
     </div>
@@ -490,18 +470,24 @@ function sendToCheckout() {
       </div>
     </div>
 
-    <!-- Consent modal -->
-    <div class="modal-backdrop" v-show="consentModalOpen" @click.self="consentModalOpen = false">
-      <div class="modal-box">
-        <h3 class="font-bold mb-3" style="color:var(--cf-text-strong)">Data Sharing Consent</h3>
-        <label class="flex items-center gap-2 text-sm mb-4" style="color:var(--cf-text)">
-          <input type="checkbox" v-model="consentCheckboxChecked" />
-          Patient agrees to share encounter data between app users.
-        </label>
-        <div class="flex justify-end gap-2">
-          <button class="btn-ghost" @click="declineConsent()">Decline</button>
-          <button class="btn-teal" :disabled="!consentCheckboxChecked" @click="agreeConsent()">Agree</button>
-        </div>
+    <!-- Custom-form document drawer — opened from the Documents tab, same drawer-panel/backdrop
+         pattern Front Desk/Checkout/Onboarding already use. -->
+    <div class="drawer-backdrop" :class="customFormDrawerOpen ? 'open' : ''" @click="closeCustomFormDrawer()"></div>
+    <div class="drawer-panel" :class="customFormDrawerOpen ? 'open' : ''">
+      <div class="drawer-header">
+        <h3 class="font-bold text-sm" style="color:var(--cf-text-strong)">{{ customFormDrawerTitle }}</h3>
+        <button @click="closeCustomFormDrawer()" class="bg-transparent border-none cursor-pointer" style="color:var(--cf-text);font-size:1.1rem"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="drawer-body">
+        <LhcFormHost v-if="customFormDrawerOpen && customFormDrawerQuestionnaire" ref="customFormDrawerHost" :questionnaire="customFormDrawerQuestionnaire" :record="customFormDrawerRecord" container-id="consultationCustomFormDrawerContainer" :highlight-link-ids="slotFillHighlights.recentlyFilled.map((f) => f.linkId)" />
+        <p v-else-if="customFormDrawerOpen" class="text-sm" style="color:var(--cf-text)">
+          This form isn't available yet — clinuxflow-api may not be reachable to seed it.
+          Confirm it's running, then reopen this drawer.
+        </p>
+      </div>
+      <div class="drawer-footer">
+        <button class="btn-ghost" @click="closeCustomFormDrawer()">Cancel</button>
+        <button class="btn-teal" @click="saveCustomFormDrawer()">Save</button>
       </div>
     </div>
   </template>
