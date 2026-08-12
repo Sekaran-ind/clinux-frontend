@@ -3,7 +3,7 @@
 // (left tools tabs / right data pane / bottom unified audit log) this whole migration models
 // new pages on. Same SystemForms/clinical/cubo calls; storage moved to TanStack DB collections,
 // component model moved to Vue.
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { jsPDF } from 'jspdf';
 import Cubo from '../components/Cubo.vue';
 import CornerstoneViewer from '../components/CornerstoneViewer.vue';
@@ -42,9 +42,16 @@ const onboarding = useOnboardingStore();
 // SOAP-only textarea set.
 const ENCOUNTER_FORM_ID = clinical.ENCOUNTER_FORM_ID;
 
-const encounter = clinical.getEncounter();
-if (encounter) clinical.recordVisit(encounter.id, 'consultation-desk');
-const priority = ref(encounter ? getAnswer(encounter, 'encounter_priority') || 'Normal' : 'Normal');
+// A computed, NOT a one-time snapshot — clinical.getEncounter() itself is reactive (see
+// clinical.js's useLiveQuery over formData), but a plain `const encounter = clinical.getEncounter()`
+// read once at setup freezes whatever it returned at that exact instant for the component's
+// whole lifetime, never re-reading even if the real answer changes a moment later. That's
+// exactly the bug behind "No active encounter" appearing right after Front Desk hands off here
+// (works fine after F5, which forces a fresh setup/read) — the encounter record can still be a
+// beat behind activeEncounterId at the instant this component mounts; a computed self-corrects
+// on the very next reactive flush instead of freezing on a possibly-premature null.
+const encounter = computed(() => clinical.getEncounter());
+const priority = ref('Normal');
 // Left pane is just Cübo now, like every other page — Labs & Imaging/Documents moved to the
 // right pane's own tab bar alongside Consultation Record.
 const rightTab = ref('record');
@@ -52,6 +59,16 @@ const isGenerating = ref(false);
 const isGeneratingRx = ref(false);
 const logsExpanded = ref(false);
 const dataVersion = ref(0);
+const liveRecord = ref(null);
+
+// Runs once immediately (covers the normal case, encounter already present at mount) and again
+// any time `encounter` resolves/changes (covers the race above, and switching encounters).
+watch(encounter, (enc) => {
+  if (!enc) return;
+  clinical.recordVisit(enc.id, 'consultation-desk');
+  priority.value = getAnswer(enc, 'encounter_priority') || 'Normal';
+  liveRecord.value = enc;
+}, { immediate: true });
 
 // Custom-form drawer — view/edit an already-attached document's own form, prefilled with its
 // data. Mirrors Front Desk's own openCustomFormDrawer()/saveDrawer() 'additional' branch exactly
@@ -79,7 +96,7 @@ function saveCustomFormDrawer() {
   if (!qr) { log('Could not read the entered data.', 'border-red-500'); return; }
   const formId = customFormDrawerFormId.value;
   const recordId = saveDataRecord(formId, activeVersionNumber(formId), qr, customFormDrawerRecord.value?.id || null);
-  if (encounter) attachCustomFormRecord(encounter.id, formId, recordId);
+  if (encounter.value) attachCustomFormRecord(encounter.value.id, formId, recordId);
   dataVersion.value++;
   closeCustomFormDrawer();
   log('Saved: ' + (activeQuestionnaire(formId)?.title || formId) + '.');
@@ -88,29 +105,28 @@ function saveCustomFormDrawer() {
 const customFormDrawerTitle = computed(() => activeQuestionnaire(customFormDrawerFormId.value)?.title || 'Document');
 
 const consultationQuestionnaire = computed(() => activeQuestionnaire(ENCOUNTER_FORM_ID));
-const liveRecord = ref(encounter);
 const consultationFormHost = ref(null);
 
 // This tab exists to host Cübo full-time, so start expanded rather than the collapsed FAB badge.
 cubo.currentLayout = 'EXPANDED';
 
-const patientName = computed(() => (encounter ? getAnswer(encounter, 'encounter_patient_ref') : ''));
-const chiefComplaint = computed(() => (encounter ? getAnswer(encounter, 'encounter_chief_complaint') : ''));
+const patientName = computed(() => (encounter.value ? getAnswer(encounter.value, 'encounter_patient_ref') : ''));
+const chiefComplaint = computed(() => (encounter.value ? getAnswer(encounter.value, 'encounter_chief_complaint') : ''));
 
 const systemLog = computed(() => {
   dataVersion.value;
-  return encounter ? getEncounterLogs(encounter.id) : [];
+  return encounter.value ? getEncounterLogs(encounter.value.id) : [];
 });
 
 function log(msg, color = 'border-slate-700') {
-  if (!encounter) return;
-  logEvent(encounter.id, msg, color);
+  if (!encounter.value) return;
+  logEvent(encounter.value.id, msg, color);
   dataVersion.value++;
 }
 
 function savePriority() {
-  if (!encounter) return;
-  patchRecordField(encounter.id, 'encounter_priority', priority.value);
+  if (!encounter.value) return;
+  patchRecordField(encounter.value.id, 'encounter_priority', priority.value);
   log(`Triage priority set to ${priority.value}.`, priority.value === 'Emergency' ? 'border-red-500' : 'border-emerald-500');
 }
 
@@ -165,7 +181,7 @@ async function generateSoapDraft() {
     if (o) fieldValues.soap_objective = o;
     if (a) fieldValues.soap_assessment = a;
     if (p) fieldValues.soap_plan = p;
-    liveRecord.value = { ...(liveRecord.value || { id: encounter.id }), data: withGroupFields(baseData, 'section_soap', fieldValues) };
+    liveRecord.value = { ...(liveRecord.value || { id: encounter.value.id }), data: withGroupFields(baseData, 'section_soap', fieldValues) };
     log('SOAP draft populated from dictation.', 'border-emerald-500');
   } catch (err) {
     log('Scribe request failed: ' + err.message, 'border-red-500');
@@ -175,11 +191,16 @@ async function generateSoapDraft() {
 }
 
 function saveConsultation() {
-  if (!encounter) return;
+  if (!encounter.value) return;
   const qr = consultationFormHost.value?.extract();
   if (!qr) { log('Could not read the entered data.', 'border-red-500'); return; }
-  saveDataRecord(ENCOUNTER_FORM_ID, activeVersionNumber(ENCOUNTER_FORM_ID), qr, encounter.id);
-  liveRecord.value = { ...liveRecord.value, data: qr };
+  saveDataRecord(ENCOUNTER_FORM_ID, activeVersionNumber(ENCOUNTER_FORM_ID), qr, encounter.value.id);
+  // Deliberately NOT reassigning liveRecord.value here (unlike generateSoapDraft() above, which
+  // has to — it's pushing in content the form doesn't have yet). qr was just extracted FROM the
+  // on-screen form, so the form already shows exactly this; reassigning liveRecord would only
+  // re-trigger LhcFormHost's watcher into a full destroy-and-rebuild of the LForms widget for
+  // data that hasn't actually changed on screen — the visible cause of the field-shift glitch
+  // right after clicking Save.
   dataVersion.value++;
   log('Consultation record saved.', 'border-emerald-500');
 }
@@ -190,12 +211,12 @@ function clinicProfile() {
 
 const prescriptions = computed(() => {
   dataVersion.value;
-  if (!encounter) return [];
-  return rxCollection.toArray.filter((r) => r.encounterId === encounter.id);
+  if (!encounter.value) return [];
+  return rxCollection.toArray.filter((r) => r.encounterId === encounter.value.id);
 });
 
 function generatePrescriptionPdf() {
-  if (!encounter) return;
+  if (!encounter.value) return;
   // Read the freshest SOAP values straight out of the live form (not just liveRecord's last
   // save), so a plan typed but not yet saved still makes it onto the generated PDF.
   const currentQr = consultationFormHost.value?.extract();
@@ -264,7 +285,7 @@ function generatePrescriptionPdf() {
     const blob = doc.output('blob');
     const reader = new FileReader();
     reader.onload = () => {
-      rxCollection.insert({ id: rxId, encounterId: encounter.id, createdAt: new Date().toISOString(), dataUrl: reader.result });
+      rxCollection.insert({ id: rxId, encounterId: encounter.value.id, createdAt: new Date().toISOString(), dataUrl: reader.result });
       dataVersion.value++;
       isGeneratingRx.value = false;
       log('Prescription PDF generated and attached to encounter.', 'border-emerald-500');
@@ -305,9 +326,9 @@ async function viewPrescription(id) {
 // into one encounter-scoped Documents list.
 const allDocuments = computed(() => {
   dataVersion.value;
-  const imgs = (encounter ? getEncounterImages(encounter.id) : []).map((d) => ({ id: d.id, kind: 'image', label: d.filename, timestamp: d.addedAt, ref: d.id, thumb: d.dataUrl, source: d.source || 'imaging' }));
+  const imgs = (encounter.value ? getEncounterImages(encounter.value.id) : []).map((d) => ({ id: d.id, kind: 'image', label: d.filename, timestamp: d.addedAt, ref: d.id, thumb: d.dataUrl, source: d.source || 'imaging' }));
   const rx = prescriptions.value.map((d) => ({ id: d.id, kind: 'prescription', label: 'Prescription — ' + new Date(d.createdAt).toLocaleDateString(), timestamp: d.createdAt, ref: d.id }));
-  const custom = (encounter ? getEncounterCustomFormLinks(encounter.id) : []).map((link) => {
+  const custom = (encounter.value ? getEncounterCustomFormLinks(encounter.value.id) : []).map((link) => {
     const rec = listDataRecords(link.formId).find((r) => r.id === link.recordId);
     return {
       id: link.id, kind: 'customForm', ref: link.recordId, formId: link.formId,
@@ -339,8 +360,8 @@ const staffOptions = computed(() => {
 
 const careTeamMembers = computed(() => {
   dataVersion.value; onboarding.dataVersion;
-  if (!encounter) return [];
-  const ids = careTeamCollection.get(encounter.id)?.staffIds ?? [];
+  if (!encounter.value) return [];
+  const ids = careTeamCollection.get(encounter.value.id)?.staffIds ?? [];
   const staffInstances = getGroupInstances(onboarding.getProviderRecord(), 'section_staff');
   return ids.map((id) => {
     const instance = staffInstances[id];
@@ -349,15 +370,15 @@ const careTeamMembers = computed(() => {
 });
 
 function addTeamMember(staffId) {
-  if (!staffId || !encounter) return;
-  clinical.addCareTeamMember(encounter.id, staffId);
+  if (!staffId || !encounter.value) return;
+  clinical.addCareTeamMember(encounter.value.id, staffId);
   dataVersion.value++;
   log('Staff member added to care team.');
 }
 
 function removeTeamMember(staffId) {
-  if (!encounter) return;
-  clinical.removeCareTeamMember(encounter.id, staffId);
+  if (!encounter.value) return;
+  clinical.removeCareTeamMember(encounter.value.id, staffId);
   dataVersion.value++;
 }
 

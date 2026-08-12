@@ -11,6 +11,7 @@ import {
   saveDataRecord, getGroupInstances, formsLibrary,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
+import { useCuboStore } from '../stores/cubo.js';
 import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 import { getEncounterCustomFormLinks, attachCustomFormRecord } from '../data/collections/encounterDocs.js';
 
@@ -22,7 +23,13 @@ const PATIENT_FORM_ID = 'system-patient-profile-v1';
 // since there's no longer a route to push to.
 const emit = defineEmits(['navigate']);
 const clinical = useClinicalStore();
+const cubo = useCuboStore();
 const slotFillHighlights = useSlotFillHighlightsStore();
+// This tab hosts Cübo full-time in its own confined pane (below), same as Consultation
+// Desk/Checkout — start expanded rather than the collapsed FAB badge. Missing here before: a
+// session that opened Front Desk first (the normal, expected order) saw the FAB instead of the
+// chat window until it happened to visit Consultation Desk, which is the only page that set this.
+cubo.currentLayout = 'EXPANDED';
 // Encounter/Vitals/Triage all now edit the SAME merged Encounter-composition record
 // (clinical.ENCOUNTER_FORM_ID) rather than three separately-keyed forms — see formData.js's
 // getGroupInstances for how repeating Vitals readings are read back out of it.
@@ -84,8 +91,18 @@ function resumeSession(session) {
   screen.value = 'wizard';
 }
 
-function nextStep() {
-  if (currentStep.value < steps.length - 1) currentStep.value++;
+// Single entry point for EVERY step transition — the breadcrumb's own click and every
+// "Continue to X" button both call this now, instead of a bare `currentStep = idx` assignment.
+// Step navigation itself is never gated on prior steps' data anymore (no more "0 readings
+// recorded" blocking Vitals -> Triage) — landing on a step instead auto-opens its drawer, so the
+// fields are always put in front of the user to review; they can close without changing anything
+// and still move on freely. Patient/Additional Forms keep their own search/dropdown-driven UI
+// (there's no single "the" record to auto-open for either), so only encounter/vitals/triage
+// trigger an auto-open here.
+function goToStep(idx) {
+  currentStep.value = idx;
+  const stepId = steps[idx]?.id;
+  if (stepId === 'encounter' || stepId === 'vitals' || stepId === 'triage') openStep(stepId);
 }
 
 const patientSearchResults = computed(() => {
@@ -169,6 +186,13 @@ const drawerTitle = computed(() => {
   }
   return { patient: 'Register Patient', encounter: 'Encounter Intake', vitals: 'Record Vitals', triage: 'Triage Priority' }[activeStepId.value] || '';
 });
+
+// Encounter/Vitals/Triage all share ONE drawer over the same whole merged document (see
+// openStep() below) — without this, "Record Vitals" opens the drawer scrolled to the very top
+// (Encounter Details), with the actual Vitals fields pushed below the fold. Easy to miss, fill
+// the already-filled Encounter fields again instead, and see "0 reading(s) recorded" even
+// though something WAS just saved. Scroll straight to the step's own first field instead.
+const drawerScrollToLinkId = computed(() => ({ vitals: 'vitals_systolic', triage: 'encounter_priority' }[activeStepId.value] || null));
 
 // recordId only when editing an existing entry — omitted (null), this opens a blank instance,
 // matching Designer's Data Explorer's own openNewDataEntry()/viewDataRecord() split.
@@ -293,7 +317,7 @@ function sendToConsultation() {
       <div v-else>
       <div class="flex items-center gap-6 flex-wrap mb-6">
         <button class="btn-ghost text-xs" @click="screen = 'sessions'"><i class="fas fa-arrow-left"></i> Sessions</button>
-        <div v-for="(s, idx) in steps" :key="s.id" class="flex items-center gap-2 cursor-pointer" @click="currentStep = idx">
+        <div v-for="(s, idx) in steps" :key="s.id" class="flex items-center gap-2 cursor-pointer" @click="goToStep(idx)">
           <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0"
                :class="idx < currentStep ? 'bg-(--color-primary) text-(--color-secondary)' : idx === currentStep ? 'bg-(--color-secondary) text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'">
             <i v-if="idx < currentStep" class="fas fa-check text-xs"></i>
@@ -321,10 +345,13 @@ function sendToConsultation() {
               </div>
             </div>
           </div>
-          <div class="cf-card rounded-2xl p-5" v-show="selectedPatientId">
-            <p class="cf-label">Selected Patient</p>
-            <p class="text-base font-bold" style="color:var(--color-primary)">{{ selectedPatientSummary }}</p>
-            <button class="btn-teal mt-4" @click="nextStep()">Continue to Encounter <i class="fas fa-arrow-right ml-2"></i></button>
+          <div class="cf-card rounded-2xl p-5">
+            <div v-show="selectedPatientId" class="mb-4">
+              <p class="cf-label">Selected Patient</p>
+              <p class="text-base font-bold" style="color:var(--color-primary)">{{ selectedPatientSummary }}</p>
+            </div>
+            <p v-show="!selectedPatientId" class="text-sm mb-4" style="color:var(--cf-text)">No patient selected yet — you can still continue; the Patient field on the Encounter form will just start blank.</p>
+            <button class="btn-teal" @click="goToStep(1)">Continue to Encounter <i class="fas fa-arrow-right ml-2"></i></button>
           </div>
         </div>
 
@@ -335,9 +362,9 @@ function sendToConsultation() {
           <div class="cf-card rounded-2xl p-5">
             <p class="text-sm mb-4" style="color:var(--cf-text)">Log the chief complaint to open this visit's encounter record.</p>
             <button class="btn-teal" @click="openStep('encounter')"><i class="fas fa-notes-medical"></i> Open Encounter Form</button>
-            <div v-show="encounterRecordId" class="mt-4">
-              <span class="badge badge-teal"><i class="fas fa-check mr-1"></i>Encounter Opened</span>
-              <button class="btn-teal block mt-4" @click="nextStep()">Continue to Vitals <i class="fas fa-arrow-right ml-2"></i></button>
+            <div class="mt-4">
+              <span v-show="encounterRecordId" class="badge badge-teal"><i class="fas fa-check mr-1"></i>Encounter Opened</span>
+              <button class="btn-teal block mt-4" @click="goToStep(2)">Continue to Vitals <i class="fas fa-arrow-right ml-2"></i></button>
             </div>
           </div>
         </div>
@@ -350,7 +377,7 @@ function sendToConsultation() {
             <p class="text-sm mb-4" style="color:var(--cf-text)">Record one or more vitals readings for this visit.</p>
             <button class="btn-teal" @click="openStep('vitals')"><i class="fas fa-heartbeat"></i> Record Vitals</button>
             <p class="text-sm mt-3" style="color:var(--cf-text)">{{ vitalsRecords.length }} reading(s) recorded</p>
-            <button class="btn-teal mt-4" v-show="vitalsRecords.length > 0" @click="nextStep()">Continue to Triage <i class="fas fa-arrow-right ml-2"></i></button>
+            <button class="btn-teal mt-4" @click="goToStep(3)">Continue to Triage <i class="fas fa-arrow-right ml-2"></i></button>
           </div>
         </div>
 
@@ -361,8 +388,8 @@ function sendToConsultation() {
           <div class="cf-card rounded-2xl p-5">
             <p class="text-sm mb-4" style="color:var(--cf-text)">Set the case priority before sending the patient through to consultation.</p>
             <button class="btn-teal" @click="openStep('triage')"><i class="fas fa-stethoscope"></i> Set Triage Priority</button>
-            <div v-show="encounterRecordId" class="mt-6 pt-6" style="border-top:1px solid var(--cf-border)">
-              <button class="btn-teal" @click="nextStep()">Continue to Additional Forms <i class="fas fa-arrow-right ml-2"></i></button>
+            <div class="mt-6 pt-6" style="border-top:1px solid var(--cf-border)">
+              <button class="btn-teal" @click="goToStep(4)">Continue to Additional Forms <i class="fas fa-arrow-right ml-2"></i></button>
             </div>
           </div>
         </div>
@@ -417,7 +444,7 @@ function sendToConsultation() {
       <button @click="closeDrawer()" class="bg-transparent border-none cursor-pointer" style="color:var(--cf-text);font-size:1.1rem"><i class="fas fa-times"></i></button>
     </div>
     <div class="drawer-body">
-      <LhcFormHost v-if="drawerOpen && drawerQuestionnaire" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" :highlight-link-ids="slotFillHighlights.recentlyFilled.map((f) => f.linkId)" />
+      <LhcFormHost v-if="drawerOpen && drawerQuestionnaire" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" :highlight-link-ids="slotFillHighlights.recentlyFilled.map((f) => f.linkId)" :scroll-to-link-id="drawerScrollToLinkId" />
       <p v-else-if="drawerOpen" class="text-sm" style="color:var(--cf-text)">
         This form isn't available yet — clinuxflow-api may not be reachable to seed it.
         Confirm it's running, then reopen this drawer.
