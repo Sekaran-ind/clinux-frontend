@@ -29,11 +29,22 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     Object.assign(branding, JSON.parse(localStorage.getItem('cf_onboarding_branding') || '{}'));
   } catch (e) { /* keep defaults */ }
 
-  const publishedClinic = ref({});
-  try {
-    const saved = localStorage.getItem('cf_clinic_profile');
-    if (saved) publishedClinic.value = JSON.parse(saved);
-  } catch (e) { /* keep default */ }
+  // Whether this clinic has EVER gone through Publish at least once — the deliberate "go live"
+  // gate (ClinicHome shows a demo placeholder until this happens), tracked separately from the
+  // profile CONTENT itself. Proxied off cf_clinic_profile's mere existence, same signal
+  // Index.vue's own routing check already uses.
+  const everPublished = ref(!!localStorage.getItem('cf_clinic_profile'));
+
+  // A computed, NOT a plain ref that publish() assigns once and nothing else ever touches again.
+  // buildClinicProfile() already re-derives from the live Provider record on every call (it reads
+  // dataVersion as a reactive dependency, bumped by every saveProviderRecord()) — the bug was
+  // never in buildClinicProfile() itself, it was that nothing called it again after the FIRST
+  // publish. Editing Hospital/Staff/etc. via "Manage Settings" post-publish went through
+  // saveProviderRecord() (bumping dataVersion) same as always, but ClinicHome.vue reads
+  // publishedClinic, which stayed frozen at whatever publish() last assigned — any edit made
+  // after the first publish silently never showed up until the user re-clicked "Publish Clinic
+  // Page" again, which nothing in the "Manage Settings" edit flow prompts them to do.
+  const publishedClinic = computed(() => (everPublished.value ? buildClinicProfile() : {}));
 
   const providerRecordId = ref(listDataRecords(PROVIDER_FORM_ID)[0]?.id ?? null);
 
@@ -203,9 +214,13 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     const profile = buildClinicProfile();
     if (!profile.name) return null;
     profile.published = true;
+    // Still written for Index.vue's own "has this account ever published?" existence check and
+    // as a one-time snapshot for anything reading cf_clinic_profile directly (e.g.
+    // ConsultationDesk.vue's prescription-PDF header) -- ClinicHome.vue itself no longer depends
+    // on this being fresh, since publishedClinic is now a live computed (see above).
     localStorage.setItem('cf_clinic_profile', JSON.stringify(profile));
     localStorage.setItem('cf_onboarding_clinic', JSON.stringify(profile));
-    publishedClinic.value = profile;
+    everPublished.value = true;
     syncRegisteredUser(profile);
     return profile;
   }

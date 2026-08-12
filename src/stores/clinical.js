@@ -39,9 +39,22 @@ export const useClinicalStore = defineStore('clinical', () => {
   // clinux-frontdesk-consultation-checkout-as-clinic-home-components memory note) — a session
   // created in one no longer implies a fresh page load (and thus a fresh, correct read) for
   // ClinicHome's own view of it.
+  // Reads allFormData.value directly (not formData.js's own listDataRecords()) to stay reactive
+  // via useLiveQuery — but that means it also has to redo listDataRecords()' own clinicId scoping
+  // itself, rather than inheriting it for free. Without this, every clinic sharing this browser
+  // would see the same "active" encounters regardless of who's actually logged in (see
+  // formData.js's own currentClinicId() comment for the full story).
+  const CLINIC_USER_KEY = 'cf_user';
+  const currentClinicId = () => {
+    try { return JSON.parse(localStorage.getItem(CLINIC_USER_KEY) || 'null')?.clinicId || null; } catch (e) { return null; }
+  };
   const { data: allFormData } = useLiveQuery((q) => q.from({ r: formData }));
-  const encounterRecords = () =>
-    allFormData.value.filter((r) => r.formId === ENCOUNTER_FORM_ID).sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+  const encounterRecords = () => {
+    const clinicId = currentClinicId();
+    return allFormData.value
+      .filter((r) => r.formId === ENCOUNTER_FORM_ID && r.clinicId === clinicId)
+      .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+  };
 
   function setActive(id) {
     activeEncounterId.value = id;

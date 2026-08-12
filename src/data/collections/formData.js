@@ -7,17 +7,39 @@ import { createLocalCollection } from '../collectionFactory.js';
 // Consultation Desk: patients, encounters, vitals, triage, SOAP notes, care-team lookups, etc.
 export const formData = createLocalCollection('cf_form_data_v2');
 
+// Real server-side auth (accounts + clinics in D1, see auth.js) was added on top of this
+// originally single-tenant, local-first collection without ever threading clinicId through it —
+// listDataRecords()/saveDataRecord() had no concept of "whose" a record was, so on any browser
+// where more than one clinic has ever been registered, EVERY consumer (getProviderRecord(),
+// patient search, encounter lookups, ...) just saw whichever record happened to be first/most
+// recent across ALL clinics, not the current one. auth.js persists the logged-in account
+// (including clinicId) as plain JSON at USER_KEY — reading it directly here (rather than
+// importing useAuthStore()) avoids this plain data-layer module depending on Pinia being active,
+// matching the same "read localStorage directly" pattern several pages already use for
+// cf_clinic_profile.
+const USER_KEY = 'cf_user';
+function currentClinicId() {
+  try {
+    return JSON.parse(localStorage.getItem(USER_KEY) || 'null')?.clinicId || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Scoped to the CURRENT clinicId — a record from a different clinic (or one saved before this
+// scoping existed, so it has no clinicId at all) never matches, even if its formId is right.
 export function listDataRecords(formId) {
+  const clinicId = currentClinicId();
   return formData
     .toArray
-    .filter((r) => r.formId === formId)
+    .filter((r) => r.formId === formId && r.clinicId === clinicId)
     .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }
 
 // Upserts one record. Pass existingRecordId to update in place; omit to always insert a new one.
 export function saveDataRecord(formId, version, questionnaireResponse, existingRecordId) {
   const id = existingRecordId || 'rec-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
-  const record = { id, formId, version, data: questionnaireResponse, savedAt: new Date().toISOString() };
+  const record = { id, formId, version, clinicId: currentClinicId(), data: questionnaireResponse, savedAt: new Date().toISOString() };
 
   if (formData.has(id)) {
     formData.update(id, (draft) => Object.assign(draft, record));
