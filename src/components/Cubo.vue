@@ -6,12 +6,16 @@
 // entirely, this is just a normal component; the fetch-and-rehydrate step disappears.
 //
 // Same attribute/prop contract as before: category, encounterId, encounterTitle, pageContext.
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { useLiveQuery } from '@tanstack/vue-db';
+import { throttle } from '@tanstack/pacer';
 import { chatThreads } from '../data/collections/chatThreads.js';
 import { useCuboStore } from '../stores/cubo.js';
+import { useClinicalStore } from '../stores/clinical.js';
+import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 import { classifyIntent } from '../nlp/intents.js';
 import { recognizeSlots, applyFills } from '../nlp/formSlotEngine.js';
+import { matchShortcuts, resolveShortcutMessage } from '../nlp/fieldShortcuts.js';
 
 const props = defineProps({
   category: { type: String, default: 'general' },
@@ -23,6 +27,7 @@ const props = defineProps({
 const emit = defineEmits(['cubo-api-submit']);
 
 const cubo = useCuboStore();
+const slotFillHighlights = useSlotFillHighlightsStore();
 const { data: threads } = useLiveQuery((q) => q.from({ t: chatThreads }));
 
 const activeThread = computed(() =>
@@ -60,13 +65,118 @@ function scrollChatToBottom() {
   }, 50);
 }
 
+// --- Pacer: rate-limit sending so a rapid double-click/double-Enter can't fire two overlapping
+// requests. leading:true fires the first call immediately; trailing:false deliberately drops (as
+// opposed to silently queuing) any call made while throttled — isThrottled below is what visibly
+// disables the Send affordance for that window instead, rather than letting a click appear to do
+// nothing.
+const SEND_THROTTLE_MS = 800;
+const isThrottled = ref(false);
+const throttledDispatch = throttle((fn) => fn(), { wait: SEND_THROTTLE_MS, leading: true, trailing: false });
+
+// --- Progress indicator: cycles while a message is being processed. There's no real multi-stage
+// backend pipeline behind this today (the existing setTimeout-canned-reply below is the only
+// "processing" there is) — this labels that same wait with the requested stage names rather than
+// leaving it unlabeled.
+const PROGRESS_STAGES = ['Thinking', 'Planning', 'Doing', 'Verifying'];
+const isProcessing = ref(false);
+const progressStage = ref(0);
+let progressTimer = null;
+function startProgress() {
+  progressStage.value = 0;
+  isProcessing.value = true;
+  progressTimer = setInterval(() => { progressStage.value = (progressStage.value + 1) % PROGRESS_STAGES.length; }, 900);
+}
+function stopProgress() {
+  isProcessing.value = false;
+  clearInterval(progressTimer);
+}
+onBeforeUnmount(() => clearInterval(progressTimer));
+
+// --- /shortcut autocomplete dropdown state.
+const slashOpen = ref(false);
+const slashActiveIndex = ref(0);
+const slashMatches = computed(() => {
+  const text = cubo.promptText;
+  if (!text.startsWith('/') || text.includes(' ')) return [];
+  return matchShortcuts(text.slice(1)).slice(0, 8);
+});
+watch(() => cubo.promptText, (text) => {
+  slashOpen.value = text.startsWith('/') && !text.includes(' ');
+  slashActiveIndex.value = 0;
+});
+function pickSlashMatch(m) {
+  cubo.promptText = `/${m.key} `;
+  slashOpen.value = false;
+}
+// Single entry point for every keydown on the textarea — handles slash-dropdown navigation when
+// it's open, otherwise Shift+Enter inserts a newline and plain Enter sends. Kept as one function
+// (rather than a separate @keydown.enter modifier alongside a generic @keydown) so Enter is never
+// evaluated by two competing handlers on the same keypress.
+function onTextareaKeydown(e) {
+  if (slashOpen.value && slashMatches.value.length > 0) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); slashActiveIndex.value = (slashActiveIndex.value + 1) % slashMatches.value.length; return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); slashActiveIndex.value = (slashActiveIndex.value - 1 + slashMatches.value.length) % slashMatches.value.length; return; }
+    if (e.key === 'Enter') { e.preventDefault(); pickSlashMatch(slashMatches.value[slashActiveIndex.value]); return; }
+    if (e.key === 'Escape') { e.preventDefault(); slashOpen.value = false; return; }
+  }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendPrompt();
+  }
+}
+
+// Shared by both the NLP path (recognizeSlots/applyFills) and the /shortcut path below — same
+// "please confirm" chat callout plus the visual highlight cue on whatever actually got applied.
+function announceFills(applied) {
+  if (applied.length === 0) return;
+  slotFillHighlights.markFilled(applied.map((a) => a.linkId));
+  cubo.addCuboMessage('assistant', `Filled ${applied.length} field(s) from that message on the active encounter — please review and confirm.`);
+  scrollChatToBottom();
+}
+
 async function sendPrompt() {
   const prompt = cubo.promptText.trim();
-  if (!prompt) return;
+  if (!prompt || isThrottled.value) return;
 
+  isThrottled.value = true;
+  setTimeout(() => { isThrottled.value = false; }, SEND_THROTTLE_MS);
+  throttledDispatch(() => dispatchPrompt(prompt));
+}
+
+async function dispatchPrompt(prompt) {
   cubo.addCuboMessage('user', prompt);
   cubo.promptText = '';
+  slashOpen.value = false;
   scrollChatToBottom();
+  startProgress();
+
+  // Deterministic /shortcut path — bypasses NLP ambiguity entirely. Checked first and, when it
+  // resolves, returns early rather than also running the probabilistic paths below.
+  if (prompt.startsWith('/')) {
+    const resolved = resolveShortcutMessage(prompt);
+    if (resolved?.field && resolved.value) {
+      const clinical = useClinicalStore();
+      const { applied } = applyFills([{ formId: clinical.ENCOUNTER_FORM_ID, groupLinkId: resolved.field.groupLinkId, linkId: resolved.field.linkId, value: resolved.value }]);
+      if (applied.length > 0) announceFills(applied);
+      else cubo.addCuboMessage('assistant', `Couldn't apply /${resolved.field.label} — is there an active encounter?`);
+      stopProgress();
+      return;
+    }
+    if (resolved?.incomplete) {
+      cubo.addCuboMessage('assistant', `Type a value after /${prompt.slice(1).trim()} — that's "${resolved.field.label}".`);
+      stopProgress();
+      return;
+    }
+    if (resolved?.ambiguous) {
+      cubo.addCuboMessage('assistant', `That shortcut matches more than one field: ${resolved.ambiguous.map((c) => `/${c.key} (${c.field.label})`).join(', ')}.`);
+      stopProgress();
+      return;
+    }
+    cubo.addCuboMessage('assistant', "Unrecognized shortcut — type / to see the available fields.");
+    stopProgress();
+    return;
+  }
 
   // nlp.js intent classification runs first — additive, not a replacement for the LLM scribe
   // call. A recognized command gets a canned local reply; everything else (including
@@ -75,20 +185,17 @@ async function sendPrompt() {
   if (intent === 'switch_room') {
     cubo.addCuboMessage('assistant', 'Open the Profile panel (top-right) to pick a new speciality/role.');
     cubo.toggleProfileView();
+    stopProgress();
     return;
   }
 
   // Form-field slot recognition — additive, alongside the command-shortcut check above. See
   // nlp/formSlotEngine.js for scope/tradeoffs (recognizes against every system form's fields
-  // globally, not just this page's). A visual "please confirm" cue for filled fields is planned
-  // separately — for now, filled fields are called out in chat so the user knows to check them.
+  // globally, not just this page's).
   const slotCandidates = await recognizeSlots(prompt);
   if (slotCandidates.length > 0) {
     const { applied } = applyFills(slotCandidates);
-    if (applied.length > 0) {
-      cubo.addCuboMessage('assistant', `Filled ${applied.length} field(s) from that message on the active encounter — please review and confirm.`);
-      scrollChatToBottom();
-    }
+    announceFills(applied);
   }
 
   const payload = {
@@ -102,6 +209,7 @@ async function sendPrompt() {
   setTimeout(() => {
     cubo.addCuboMessage('assistant', 'Command acknowledged under active workspace thread index. Instruction maps appended cleanly.');
     scrollChatToBottom();
+    stopProgress();
   }, 450);
 
   emit('cubo-api-submit', payload);
@@ -270,17 +378,34 @@ const isDock = computed(() => cubo.currentLayout === 'MODAL_DOCK');
             </div>
           </div>
 
-          <div :class="isDock ? 'p-4 border-t border-gray-200 dark:border-slate-800 bg-gray-50/50 dark:bg-slate-900/10' : 'p-3 border-t border-gray-100 dark:border-slate-800 bg-gray-50/50 dark:bg-slate-900/20'">
-            <textarea v-model="cubo.promptText" @keydown.enter.prevent="!$event.shiftKey && sendPrompt()"
+          <div :class="isDock ? 'p-4 border-t border-gray-200 dark:border-slate-800 bg-gray-50/50 dark:bg-slate-900/10' : 'p-3 border-t border-gray-100 dark:border-slate-800 bg-gray-50/50 dark:bg-slate-900/20'" style="position:relative">
+            <!-- /shortcut autocomplete — standard slash-palette pattern, arrow-key navigable -->
+            <div v-if="slashOpen && slashMatches.length" class="cubo-slash-dropdown">
+              <div v-for="(m, idx) in slashMatches" :key="m.key"
+                   class="cubo-slash-option" :class="idx === slashActiveIndex ? 'active' : ''"
+                   @mousedown.prevent="pickSlashMatch(m)" @mouseenter="slashActiveIndex = idx">
+                <span class="font-mono font-bold">/{{ m.key }}</span>
+                <span class="text-gray-400 ml-1.5">{{ m.field.label }}</span>
+              </div>
+            </div>
+
+            <!-- Progress indicator — no loading state existed here before this. -->
+            <div v-if="isProcessing" class="cubo-progress-pill">
+              <span class="cubo-progress-dots"><span></span><span></span><span></span></span>
+              <span>{{ PROGRESS_STAGES[progressStage] }}…</span>
+            </div>
+
+            <textarea v-model="cubo.promptText"
+                      @keydown="onTextareaKeydown"
                       class="w-full p-2.5 resize-none rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-white mb-2"
-                      :rows="isDock ? 3 : 2" :placeholder="isDock ? 'Enter instructions here...' : 'Ask Cübo command center...'"></textarea>
+                      :rows="isDock ? 3 : 2" :placeholder="isDock ? 'Enter instructions here... (/ for field shortcuts)' : 'Ask Cübo command center...'"></textarea>
             <div class="flex w-full items-center justify-between">
               <div class="flex items-center gap-2">
                 <button @click="cubo.toggleVoiceInput()" class="cubo-mic-btn w-8 h-8 rounded-lg hover:bg-gray-200 dark:hover:bg-slate-800 flex items-center justify-center transition" :class="cubo.isListening ? 'text-red-500 animate-pulse' : 'text-gray-500 dark:text-gray-400'" :title="cubo.isListening ? 'Listening… click to stop' : 'Voice input'"><i class="fas fa-microphone text-xs"></i></button>
                 <button class="cubo-camera-btn w-8 h-8 rounded-lg hover:bg-gray-200 dark:hover:bg-slate-800 text-gray-500 dark:text-gray-400 flex items-center justify-center transition"><i class="fas fa-camera text-xs"></i></button>
                 <button class="cubo-attach-image-btn w-8 h-8 rounded-lg hover:bg-gray-200 dark:hover:bg-slate-800 text-gray-500 dark:text-gray-400 flex items-center justify-center transition"><i class="fas fa-image text-xs"></i></button>
               </div>
-              <button @click="sendPrompt()" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition shadow-sm">{{ isDock ? 'Send Command' : 'Send' }}</button>
+              <button @click="sendPrompt()" :disabled="isThrottled" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-semibold transition shadow-sm">{{ isDock ? 'Send Command' : 'Send' }}</button>
             </div>
           </div>
         </div>

@@ -9,8 +9,10 @@ import {
   saveDataRecord, getAnswer, getGroupInstances,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
+import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 
 const clinical = useClinicalStore();
+const slotFillHighlights = useSlotFillHighlightsStore();
 // Prescription/Billing live inside the same merged Encounter-composition record Front Desk and
 // Consultation Desk edit — this page opens/saves that one record too, rather than two
 // separately-keyed forms.
@@ -137,7 +139,7 @@ function closeEncounter() {
     </div>
     <div class="drawer-body">
       <div class="preview-panel">
-        <LhcFormHost v-if="drawerOpen && drawerQuestionnaire" :key="formKey" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" />
+        <LhcFormHost v-if="drawerOpen && drawerQuestionnaire" :key="formKey" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" :highlight-link-ids="slotFillHighlights.recentlyFilled.map((f) => f.linkId)" />
         <p v-else-if="drawerOpen" class="text-sm" style="color:var(--cf-text)">
           This form isn't available yet — clinuxflow-api may not be reachable to seed it.
           Confirm it's running, then reopen this drawer.

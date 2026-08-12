@@ -238,3 +238,62 @@
     background: rgba(0, 212, 178, 0.3);
     border-radius: 3px;
 }
+
+/* /shortcut autocomplete dropdown — positioned above the textarea (input area is position:
+   relative), standard slash-palette pattern. */
+.cubo-slash-dropdown {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    margin-bottom: 4px;
+    max-height: 180px;
+    overflow-y: auto;
+    background: white;
+    border: 1px solid var(--cf-border, #e2e8f0);
+    border-radius: 0.5rem;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    z-index: 20;
+    font-size: 0.75rem;
+}
+.dark .cubo-slash-dropdown {
+    background: #0f172a;
+    border-color: #334155;
+}
+.cubo-slash-option {
+    padding: 0.4rem 0.6rem;
+    cursor: pointer;
+}
+.cubo-slash-option.active,
+.cubo-slash-option:hover {
+    background: rgba(0, 212, 178, 0.12);
+}
+
+/* Thinking -> Planning -> Doing -> Verifying progress pill, shown above the textarea while a
+   message is processing — there was no loading indicator here before this. */
+.cubo-progress-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.7rem;
+    color: var(--color-primary, #00d4b2);
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+}
+.cubo-progress-dots {
+    display: inline-flex;
+    gap: 2px;
+}
+.cubo-progress-dots span {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: cubo-progress-wave 1s infinite ease-in-out;
+}
+.cubo-progress-dots span:nth-child(2) { animation-delay: 0.15s; }
+.cubo-progress-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes cubo-progress-wave {
+    0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-2px); }
+}

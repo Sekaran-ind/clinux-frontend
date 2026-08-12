@@ -12,11 +12,13 @@ import {
   saveDataRecord, getGroupInstances,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
+import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 
 const PATIENT_FORM_ID = 'system-patient-profile-v1';
 
 const router = useRouter();
 const clinical = useClinicalStore();
+const slotFillHighlights = useSlotFillHighlightsStore();
 // Encounter/Vitals/Triage all now edit the SAME merged Encounter-composition record
 // (clinical.ENCOUNTER_FORM_ID) rather than three separately-keyed forms — see formData.js's
 // getGroupInstances for how repeating Vitals readings are read back out of it.
@@ -312,7 +314,7 @@ function sendToConsultation() {
       <button @click="closeDrawer()" class="bg-transparent border-none cursor-pointer" style="color:var(--cf-text);font-size:1.1rem"><i class="fas fa-times"></i></button>
     </div>
     <div class="drawer-body">
-      <LhcFormHost v-if="drawerOpen && drawerQuestionnaire" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" />
+      <LhcFormHost v-if="drawerOpen && drawerQuestionnaire" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" :highlight-link-ids="slotFillHighlights.recentlyFilled.map((f) => f.linkId)" />
       <p v-else-if="drawerOpen" class="text-sm" style="color:var(--cf-text)">
         This form isn't available yet — clinuxflow-api may not be reachable to seed it.
         Confirm it's running, then reopen this drawer.

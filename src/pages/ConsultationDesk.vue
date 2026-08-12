@@ -12,6 +12,7 @@ import LhcFormHost from '../components/LhcFormHost.vue';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useCuboStore } from '../stores/cubo.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 import {
   listDataRecords, activeQuestionnaire, activeVersionNumber, saveDataRecord,
   getAnswer, patchRecordField, withGroupFields,
@@ -29,6 +30,7 @@ const router = useRouter();
 const clinical = useClinicalStore();
 const cubo = useCuboStore();
 const auth = useAuthStore();
+const slotFillHighlights = useSlotFillHighlightsStore();
 // Vitals/SOAP/Prescription/Billing all live inside this one merged Encounter-composition
 // record now — the right pane below renders the whole thing via LhcFormHost rather than a
 // SOAP-only textarea set.
@@ -432,7 +434,7 @@ function sendToCheckout() {
           </button>
           <span v-else class="text-xs cf-text">AI SOAP drafting is a paid-tier feature.</span>
         </div>
-        <LhcFormHost v-if="consultationQuestionnaire" ref="consultationFormHost" :questionnaire="consultationQuestionnaire" :record="liveRecord" container-id="consultationFormContainer" />
+        <LhcFormHost v-if="consultationQuestionnaire" ref="consultationFormHost" :questionnaire="consultationQuestionnaire" :record="liveRecord" container-id="consultationFormContainer" :highlight-link-ids="slotFillHighlights.recentlyFilled.map((f) => f.linkId)" />
         <p v-else class="text-sm" style="color:var(--cf-text)">
           This form isn't available yet — clinuxflow-api may not be reachable to seed it.
           Confirm it's running, then reload this page.
