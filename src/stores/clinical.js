@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { listDataRecords, getAnswer } from '../data/collections/formData.js';
+import { useLiveQuery } from '@tanstack/vue-db';
+import { formData, getAnswer } from '../data/collections/formData.js';
 import { getCareTeam, addCareTeamMember, removeCareTeamMember } from '../data/collections/encounterDocs.js';
 
 // The one merged Encounter-composition record per visit (Vitals/SOAP/Prescription/Billing all
@@ -21,6 +22,19 @@ const LAST_PAGE_KEY = 'cf_encounter_last_page';
 export const useClinicalStore = defineStore('clinical', () => {
   const activeEncounterId = ref(localStorage.getItem('cf_active_encounter') || null);
 
+  // Reactive to every formData write (any page's own saveDataRecord() call), not just this
+  // store's own local activeEncounterId ref — plain .toArray()/.filter() reads aren't Vue-
+  // reactive on their own; useLiveQuery is what actually subscribes to the collection's change
+  // events (same pattern CornerstoneViewer.vue/Cubo.vue already use for their own collections).
+  // Needed now that Front Desk/Consultation Desk/Checkout are long-lived child components of
+  // ClinicHome.vue instead of separate routed pages (see
+  // clinux-frontdesk-consultation-checkout-as-clinic-home-components memory note) — a session
+  // created in one no longer implies a fresh page load (and thus a fresh, correct read) for
+  // ClinicHome's own view of it.
+  const { data: allFormData } = useLiveQuery((q) => q.from({ r: formData }));
+  const encounterRecords = () =>
+    allFormData.value.filter((r) => r.formId === ENCOUNTER_FORM_ID).sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+
   function setActive(id) {
     activeEncounterId.value = id;
     localStorage.setItem('cf_active_encounter', id);
@@ -33,14 +47,14 @@ export const useClinicalStore = defineStore('clinical', () => {
 
   function getEncounter() {
     if (!activeEncounterId.value) return null;
-    return listDataRecords(ENCOUNTER_FORM_ID).find((r) => r.id === activeEncounterId.value) || null;
+    return encounterRecords().find((r) => r.id === activeEncounterId.value) || null;
   }
 
   // The shared "active sessions list" foundation for Front Desk/Checkout/ClinicHome — every open
   // encounter-composition record, not just the single one activeEncounterId happens to point at.
-  // Sorted most-recent-first already, via listDataRecords' own savedAt ordering.
+  // Sorted most-recent-first already, via encounterRecords()' own savedAt ordering.
   function listActiveSessions() {
-    return listDataRecords(ENCOUNTER_FORM_ID)
+    return encounterRecords()
       .filter((r) => OPEN_ENCOUNTER_STATUSES.includes(getAnswer(r, 'encounter_status')))
       .map((r) => ({
         id: r.id,

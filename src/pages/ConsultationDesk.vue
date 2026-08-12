@@ -45,7 +45,9 @@ const ENCOUNTER_FORM_ID = clinical.ENCOUNTER_FORM_ID;
 const encounter = clinical.getEncounter();
 if (encounter) clinical.recordVisit(encounter.id, 'consultation-desk');
 const priority = ref(encounter ? getAnswer(encounter, 'encounter_priority') || 'Normal' : 'Normal');
-const leftTab = ref('cubo');
+// Left pane is just Cübo now, like every other page — Labs & Imaging/Documents moved to the
+// right pane's own tab bar alongside Consultation Record.
+const rightTab = ref('record');
 const isGenerating = ref(false);
 const isGeneratingRx = ref(false);
 const logsExpanded = ref(false);
@@ -335,7 +337,7 @@ const allDocuments = computed(() => {
 // step (this file has no generic drawer for an arbitrary custom form's shape), so opening one
 // just confirms what's there via a log entry rather than a dead click.
 function openDocument(doc) {
-  if (doc.kind === 'image') leftTab.value = 'imaging';
+  if (doc.kind === 'image') rightTab.value = 'imaging';
   else if (doc.kind === 'prescription') viewPrescription(doc.ref);
   else if (doc.kind === 'customForm') log('Viewed: ' + doc.label);
 }
@@ -411,31 +413,43 @@ function sendToCheckout() {
     </div>
 
     <div class="flex-1 flex overflow-hidden">
-      <!-- LEFT: tools -->
+      <!-- LEFT: Cübo, same confined-pane pattern as Front Desk/Checkout — no tabs here anymore. -->
       <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
-        <div class="flex border-b" style="border-color:var(--cf-border)">
-          <button class="flex-1 text-xs font-bold py-2.5" :class="leftTab === 'cubo' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="leftTab = 'cubo'">Cübo Assistant</button>
-          <button class="flex-1 text-xs font-bold py-2.5" :class="leftTab === 'imaging' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="leftTab = 'imaging'">Labs &amp; Imaging</button>
-          <button class="flex-1 text-xs font-bold py-2.5" :class="leftTab === 'documents' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="leftTab = 'documents'">Documents</button>
-        </div>
-
-        <div v-show="leftTab === 'cubo'" class="cubo-inline-host flex-1" style="min-height:420px">
+        <div class="cubo-inline-host flex-1" style="min-height:420px">
           <Cubo category="encounter" :encounter-id="encounter.id" :encounter-title="`${patientName} — ${chiefComplaint}`" page-context="Current Page: ClinixFlow Consultation Desk." />
         </div>
+      </div>
 
-        <div v-show="leftTab === 'imaging'" class="flex-1 overflow-y-auto">
-          <CornerstoneViewer :encounter-id="encounter.id" />
+      <!-- RIGHT: Consultation Record / Labs & Imaging / Documents, as tabs. -->
+      <div class="flex-1 flex flex-col overflow-hidden">
+        <div class="flex border-b" style="border-color:var(--cf-border)">
+          <button class="flex-1 text-xs font-bold py-2.5" :class="rightTab === 'record' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="rightTab = 'record'">Consultation Record</button>
+          <button class="flex-1 text-xs font-bold py-2.5" :class="rightTab === 'imaging' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="rightTab = 'imaging'">Labs &amp; Imaging</button>
+          <button class="flex-1 text-xs font-bold py-2.5" :class="rightTab === 'documents' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="rightTab = 'documents'">Documents</button>
         </div>
 
-        <div v-show="leftTab === 'documents'" class="flex-1 overflow-y-auto p-3 space-y-3">
-          <div>
-            <div class="text-xs font-bold uppercase tracking-wide mb-2" style="color:var(--cf-text)">All Documents</div>
-            <div v-for="doc in allDocuments" :key="doc.id" class="record-card flex items-center justify-between p-2 mb-1.5 cursor-pointer" @click="openDocument(doc)">
-              <span class="text-xs" style="color:var(--cf-text-strong)">{{ doc.label }}</span>
-              <i :class="doc.kind === 'image' ? 'fas fa-image' : 'fas fa-file-pdf'" class="text-gray-400"></i>
-            </div>
+        <!-- Consultation Record: the whole Encounter/Vitals/SOAP/Billing document — accepted
+             tradeoff: every page shows the whole accumulating document, not just its own slice,
+             in exchange for not needing page-scoped subset rendering. Care Team lives here now
+             (was in the old Documents tab) instead of the removed Prescriptions list. -->
+        <div v-show="rightTab === 'record'" class="flex-1 overflow-y-auto p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <h2 class="font-bold text-lg" style="color:var(--cf-text-strong)">Consultation Record</h2>
+            <button v-if="auth.currentUser?.tier === 'paid'" class="text-xs px-2 py-1 rounded bg-(--color-primary)/10 text-(--color-primary) font-bold flex items-center gap-1.5" :disabled="isGenerating" @click="generateSoapDraft()">
+              <i class="fas fa-magic" :class="isGenerating ? 'fa-spin fa-spinner' : ''"></i>{{ isGenerating ? 'Parsing chat…' : 'Generate SOAP Draft from Chat' }}
+            </button>
+            <span v-else class="text-xs cf-text">AI SOAP drafting is a paid-tier feature.</span>
           </div>
-          <div>
+          <LhcFormHost v-if="consultationQuestionnaire" ref="consultationFormHost" :questionnaire="consultationQuestionnaire" :record="liveRecord" container-id="consultationFormContainer" :highlight-link-ids="slotFillHighlights.recentlyFilled.map((f) => f.linkId)" />
+          <p v-else class="text-sm" style="color:var(--cf-text)">
+            This form isn't available yet — clinuxflow-api may not be reachable to seed it.
+            Confirm it's running, then reload this page.
+          </p>
+          <div class="flex items-center gap-2">
+            <button class="btn-teal" @click="saveConsultation()">Save Consultation Record</button>
+            <button class="btn-outline" :disabled="isGeneratingRx" @click="generatePrescriptionPdf()">{{ isGeneratingRx ? 'Generating…' : 'Generate Prescription PDF' }}</button>
+          </div>
+          <div class="pt-2">
             <div class="text-xs font-bold uppercase tracking-wide mb-2" style="color:var(--cf-text)">Care Team</div>
             <select class="cf-input text-xs mb-2" @change="addTeamMember($event.target.value); $event.target.value = ''">
               <option value="">+ Add staff member…</option>
@@ -447,34 +461,18 @@ function sendToCheckout() {
             </div>
           </div>
         </div>
-      </div>
 
-      <!-- RIGHT: the whole Consultation record (Encounter/Vitals/SOAP/Prescription/Billing) —
-           accepted tradeoff: every page shows the whole accumulating document, not just its own
-           slice, in exchange for not needing page-scoped subset rendering. -->
-      <div class="flex-1 overflow-y-auto p-4 space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="font-bold text-lg" style="color:var(--cf-text-strong)">Consultation Record</h2>
-          <button v-if="auth.currentUser?.tier === 'paid'" class="text-xs px-2 py-1 rounded bg-(--color-primary)/10 text-(--color-primary) font-bold flex items-center gap-1.5" :disabled="isGenerating" @click="generateSoapDraft()">
-            <i class="fas fa-magic" :class="isGenerating ? 'fa-spin fa-spinner' : ''"></i>{{ isGenerating ? 'Parsing chat…' : 'Generate SOAP Draft from Chat' }}
-          </button>
-          <span v-else class="text-xs cf-text">AI SOAP drafting is a paid-tier feature.</span>
+        <div v-show="rightTab === 'imaging'" class="flex-1 overflow-y-auto">
+          <CornerstoneViewer :encounter-id="encounter.id" />
         </div>
-        <LhcFormHost v-if="consultationQuestionnaire" ref="consultationFormHost" :questionnaire="consultationQuestionnaire" :record="liveRecord" container-id="consultationFormContainer" :highlight-link-ids="slotFillHighlights.recentlyFilled.map((f) => f.linkId)" />
-        <p v-else class="text-sm" style="color:var(--cf-text)">
-          This form isn't available yet — clinuxflow-api may not be reachable to seed it.
-          Confirm it's running, then reload this page.
-        </p>
-        <div class="flex items-center gap-2">
-          <button class="btn-teal" @click="saveConsultation()">Save Consultation Record</button>
-          <button class="btn-outline" :disabled="isGeneratingRx" @click="generatePrescriptionPdf()">{{ isGeneratingRx ? 'Generating…' : 'Generate Prescription PDF' }}</button>
-        </div>
-        <div v-if="prescriptions.length" class="pt-2">
-          <div class="text-xs font-bold uppercase tracking-wide mb-1" style="color:var(--cf-text)">Prescriptions</div>
-          <div v-for="rx in prescriptions" :key="rx.id" class="record-card flex items-center justify-between p-2 mb-1 cursor-pointer" @click="viewPrescription(rx.id)">
-            <span class="text-xs">{{ new Date(rx.createdAt).toLocaleString() }}</span>
-            <i class="fas fa-file-pdf text-gray-400"></i>
+
+        <div v-show="rightTab === 'documents'" class="flex-1 overflow-y-auto p-4 space-y-3">
+          <div class="text-xs font-bold uppercase tracking-wide mb-2" style="color:var(--cf-text)">All Documents</div>
+          <div v-for="doc in allDocuments" :key="doc.id" class="record-card flex items-center justify-between p-2 mb-1.5 cursor-pointer" @click="openDocument(doc)">
+            <span class="text-xs" style="color:var(--cf-text-strong)">{{ doc.label }}</span>
+            <i :class="doc.kind === 'image' ? 'fas fa-image' : 'fas fa-file-pdf'" class="text-gray-400"></i>
           </div>
+          <p v-if="allDocuments.length === 0" class="text-sm" style="color:var(--cf-text)">No documents attached to this visit yet.</p>
         </div>
       </div>
     </div>
