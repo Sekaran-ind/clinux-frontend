@@ -238,8 +238,10 @@ onUnmounted(stopAutoplay);
     <div class="max-w-7xl mx-auto px-6 flex items-center justify-between h-16">
       <a href="#hero" class="flex items-center gap-2">
         <div class="bg-(--color-primary) text-(--color-secondary) font-black text-2xl px-2.5 py-1 rounded shadow-lg font-mono">CÜ</div>
-        <span class="font-bold text-xl cf-text-strong" style="font-family:'Poppins',sans-serif">Clinüx<span style="color:var(--color-primary)">Flow 🇮🇳</span>
-          <p class="text-xs font-bold cf-text-strong" style="font-family:'Poppins',sans-serif"><em>Trusted Partner of ABDM</em></p>
+        <span class="font-bold text-xl cf-text-strong" style="font-family:'Poppins',sans-serif">Clinüx<span style="color:var(--color-primary)">Flow </span>
+          <p class="text-xs font-bold cf-text-strong" style="font-family:'Poppins',sans-serif"><em>Trusted Partner of ABDM </em>
+            <img style="display:inline;vertical-align:middle" src="/india.svg" width="20" height="20" alt="Flag of India" />
+          </p>
         </span>
       </a>
       <div class="hidden md:flex items-center gap-7 text-sm">
@@ -287,7 +289,7 @@ onUnmounted(stopAutoplay);
 
     <div class="max-w-7xl mx-auto px-6 py-20 relative z-10">
       <div class="max-w-3xl">
-        <h1 class="text-6xl md:text-7xl font-extrabold leading-tight cf-text-strong mb-4" style="letter-spacing:-2px">Clinüx<span class="grad-text">Flow </span>🇮🇳</h1>
+        <h1 class="text-6xl md:text-7xl font-extrabold leading-tight cf-text-strong mb-4" style="letter-spacing:-2px">Clinüx<span class="grad-text">Flow </span> <img style="display:inline;vertical-align:middle" src="/india.svg" width="50" height="50" alt="Flag of India" /></h1>
         <p class="text-2xl font-semibold mb-3" style="color:var(--color-primary);font-family:'Poppins',sans-serif"><em><i class="fa-solid fa-arrows-turn-to-dots"></i> Moving Care in every step and Corner.</em></p>
         <p class="text-lg cf-text mb-10 max-w-2xl leading-relaxed">
           Clinüxflow increases upto 30% of the valuable consultation face time with patients and unburdens administrative and cognitive overloads by digitally connecting patients, providers, and payers through <b>frictionless care continuity across their entire end-to-end journey.</b>
