@@ -1,10 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import Index from '../pages/Index.vue';
-import FrontDesk from '../pages/FrontDesk.vue';
-import ConsultationDesk from '../pages/ConsultationDesk.vue';
 import Onboarding from '../pages/Onboarding.vue';
 import ClinicHome from '../pages/ClinicHome.vue';
-import Checkout from '../pages/Checkout.vue';
 import AbdmOnboarding from '../pages/AbdmOnboarding.vue';
 import Designer from '../pages/Designer.vue';
 import { useAuthStore } from '../stores/auth.js';
@@ -16,13 +13,22 @@ import { resolveGuard } from './guardLogic.js';
 // link" nav every clinical workflow page uses — see App.vue. meta.requiresAuth marks the
 // operational/clinical pages that need a real logged-in account — see the router.beforeEach
 // guard below (resolveGuard() itself is a pure function, unit-tested in guardLogic.test.js).
+//
+// Front Desk/Consultation Desk/Checkout are no longer routes of their own — they're mounted
+// directly inside ClinicHome.vue as internally-switched views (see
+// clinux-frontdesk-consultation-checkout-as-clinic-home-components memory note): one persistent
+// /clinic-home URL, pure in-memory view state, no query-param/hash deep-linking to a specific
+// step. Old bookmarks/links to their former routes redirect to /clinic-home (same "old route
+// still lands somewhere useful" precedent /ai-engine → /designer already set) rather than the
+// generic catch-all's redirect to /, since /clinic-home is the more specific "you were looking
+// for this" destination.
 const routes = [
   { path: '/', name: 'index', component: Index, meta: { hideAppNav: true } },
-  { path: '/front-desk', name: 'front-desk', component: FrontDesk, meta: { requiresAuth: true } },
-  { path: '/consultation-desk', name: 'consultation-desk', component: ConsultationDesk, meta: { requiresAuth: true } },
+  { path: '/front-desk', redirect: '/clinic-home' },
+  { path: '/consultation-desk', redirect: '/clinic-home' },
+  { path: '/checkout', redirect: '/clinic-home' },
   { path: '/onboarding', name: 'onboarding', component: Onboarding, meta: { requiresAuth: true } },
   { path: '/clinic-home', name: 'clinic-home', component: ClinicHome, meta: { hideAppNav: true } },
-  { path: '/checkout', name: 'checkout', component: Checkout, meta: { requiresAuth: true } },
   { path: '/onboarding-abdm', name: 'onboarding-abdm', component: AbdmOnboarding, meta: { requiresAuth: true } },
   // Unauthenticated visitors can still reach this page, constrained to Sandbox Data — see
   // clinux-authenticated-vs-sandbox-mode memory note. The real Forms Library tab (Provider-
