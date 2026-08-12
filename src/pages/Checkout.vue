@@ -9,6 +9,7 @@ import {
   saveDataRecord, getAnswer, getGroupInstances,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
+import { useCuboStore } from '../stores/cubo.js';
 import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 
 // This used to be its own routed page reached via /checkout; now mounted directly inside
@@ -17,7 +18,11 @@ import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 // since there's no longer a route to push to.
 const emit = defineEmits(['navigate']);
 const clinical = useClinicalStore();
+const cubo = useCuboStore();
 const slotFillHighlights = useSlotFillHighlightsStore();
+// Same confined-pane Cübo host as Front Desk/Consultation Desk below — start expanded rather
+// than the collapsed FAB badge (see FrontDesk.vue's identical line for the full rationale).
+cubo.currentLayout = 'EXPANDED';
 // Prescription/Billing live inside the same merged Encounter-composition record Front Desk and
 // Consultation Desk edit — this page opens/saves that one record too, rather than two
 // separately-keyed forms.

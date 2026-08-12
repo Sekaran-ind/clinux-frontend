@@ -20,6 +20,13 @@ const props = defineProps({
   // its own watcher below, separate from the render-triggering one above, so a highlight change
   // never forces a full LForms re-render.
   highlightLinkIds: { type: Array, default: () => [] },
+  // A field to scroll into view right after this render — for hosts that render ONE whole
+  // multi-section document regardless of which "step" the user is actually on (Front Desk's
+  // Encounter/Vitals/Triage all share one drawer over the same merged document). Without this,
+  // opening "Record Vitals" lands on the document's top (Encounter Details) with Vitals pushed
+  // below the fold — easy to miss, fill the wrong (already-filled) fields near the top instead,
+  // and conclude nothing was recorded.
+  scrollToLinkId: { type: String, default: null },
 });
 
 const slotFillHighlights = useSlotFillHighlightsStore();
@@ -46,6 +53,13 @@ function applyHighlights() {
   (props.highlightLinkIds || []).forEach((linkId) => applyHighlight(linkId));
 }
 
+// Same `${linkId}/1/1` id convention applyHighlight() already relies on.
+function scrollToField() {
+  if (!props.scrollToLinkId) return;
+  const el = document.getElementById(`${props.scrollToLinkId}/1/1`);
+  if (el) el.scrollIntoView({ block: 'start' });
+}
+
 // LForms (Angular Elements + Zone.js) does its own DOM insertion outside Vue's render cycle and
 // exposes no "render complete" callback/promise — a short delay after calling into it is what
 // the rest of this app already relies on (matches the fixed short waits this same LForms
@@ -58,7 +72,7 @@ function render() {
   } else {
     renderBlank(props.questionnaire, props.containerId);
   }
-  setTimeout(applyHighlights, 50);
+  setTimeout(() => { applyHighlights(); scrollToField(); }, 50);
 }
 
 onMounted(render);
