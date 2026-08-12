@@ -50,6 +50,32 @@ export function patchRecordField(recordId, linkId, value) {
   });
 }
 
+// Persisting equivalent of withGroupFields, but scoped to ONE instance of a REPEATING group.
+// Repeating instances have no id of their own (getGroupInstances returns plain sibling items
+// sharing groupLinkId, addressed only by their position) — instanceIndex is the only way to
+// target "this one instance" instead of every instance sharing that linkId. Needed once a
+// formerly-separate-record entity (e.g. one Staff member, before the Provider-composition merge)
+// becomes a repeating group inside one shared record: patchRecordField's own global walk would
+// otherwise write the same value onto every repeating instance indiscriminately (e.g. every staff
+// member's HPR ID, not just the one that was just registered).
+export function patchGroupInstanceField(recordId, groupLinkId, instanceIndex, fieldValues) {
+  if (!formData.has(recordId)) return;
+  formData.update(recordId, (draft) => {
+    const instances = (draft.data.item || []).filter((item) => item.linkId === groupLinkId);
+    const instance = instances[instanceIndex];
+    if (!instance) return;
+    instance.item = instance.item || [];
+    Object.entries(fieldValues).forEach(([linkId, value]) => {
+      let field = instance.item.find((item) => item.linkId === linkId);
+      if (!field) {
+        field = { linkId };
+        instance.item.push(field);
+      }
+      field.answer = [{ valueString: value }];
+    });
+  });
+}
+
 // LForms represents any choice/coded answer as valueCoding even when the Questionnaire's
 // answerOption was authored as plain valueString choices — reading only valueString/etc.
 // without this fallback silently returns '' for every Dropdown/MultiSelect answer. Ported

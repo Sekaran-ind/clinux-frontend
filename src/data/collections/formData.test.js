@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getAnswer, getAnswers, recordSummary, getGroupInstances, withGroupFields } from './formData.js';
+import { getAnswer, getAnswers, recordSummary, getGroupInstances, withGroupFields, patchGroupInstanceField, formData } from './formData.js';
 
 // getAnswer/getAnswers/recordSummary are pure functions over a FHIR QuestionnaireResponse-shaped
 // record ({ data: { item: [...] } }) — tested directly with plain fixtures, no TanStack DB/
@@ -123,5 +123,42 @@ describe('withGroupFields', () => {
     it('creates the group (and its fields) from scratch when absent', () => {
         const result = withGroupFields({ item: [] }, 'section_billing', { billing_total: '500' });
         expect(getAnswer({ data: result }, 'billing_total')).toBe('500');
+    });
+});
+
+describe('patchGroupInstanceField', () => {
+    // Unlike withGroupFields (pure, singular groups), this persists directly against the real
+    // formData collection and targets ONE instance of a REPEATING group by position — the whole
+    // point being that patchRecordField's own global walk would otherwise write onto every
+    // repeating instance sharing that linkId, not just the one that should change.
+    it("patches only the targeted instance, leaving every other instance untouched", () => {
+        const id = 'rec-patch-instance-test';
+        formData.insert({
+            id, formId: 'system-provider-composition-v1', version: 1,
+            data: {
+                item: [
+                    { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'Alice' }] }] },
+                    { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'Bob' }] }] },
+                    { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'Carol' }] }] },
+                ],
+            },
+            savedAt: new Date().toISOString(),
+        });
+
+        patchGroupInstanceField(id, 'section_staff', 1, { staff_hprid: 'HPR-BOB-001' });
+
+        const rec = formData.get(id);
+        const instances = getGroupInstances(rec, 'section_staff');
+        expect(getAnswer({ data: instances[0] }, 'staff_hprid')).toBe('');
+        expect(getAnswer({ data: instances[1] }, 'staff_hprid')).toBe('HPR-BOB-001');
+        expect(getAnswer({ data: instances[2] }, 'staff_hprid')).toBe('');
+        // The targeted instance's other fields survive untouched.
+        expect(getAnswer({ data: instances[1] }, 'staff_name')).toBe('Bob');
+
+        formData.delete(id);
+    });
+
+    it('does nothing for a record id that does not exist', () => {
+        expect(() => patchGroupInstanceField('rec-does-not-exist', 'section_staff', 0, { staff_hprid: 'x' })).not.toThrow();
     });
 });

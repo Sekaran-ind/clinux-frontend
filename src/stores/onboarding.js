@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, reactive, computed } from 'vue';
-import { listDataRecords, getAnswer, getAnswers, saveDataRecord } from '../data/collections/formData.js';
+import { listDataRecords, getAnswer, getAnswers, saveDataRecord, getGroupInstances } from '../data/collections/formData.js';
 import { activeVersionNumber } from '../data/collections/formsLibrary.js';
 import { extractResponse } from '../data/useSystemForms.js';
 import { useAuthStore } from './auth.js';
@@ -8,16 +8,15 @@ import { useAuthStore } from './auth.js';
 const ONB_COLORS = ['#3B82F6', '#00D4B2', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#06B6D4', '#10B981'];
 const ONB_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
-// Replaces Alpine.store('onboarding') from clinixflow's store.js — flattens the FHIR
-// QuestionnaireResponse records collected across Hospital/Staff/Services/Office Hours/Consents
-// into the flat clinic{} shape clinic-home.html reads from cf_clinic_profile.
+// Replaces Alpine.store('onboarding') from clinixflow's store.js — flattens the ONE merged
+// Provider-composition record's Hospital/Staff/Services/Office Hours/Consents/Locations groups
+// into the flat clinic{} shape clinic-home.html reads from cf_clinic_profile. Was 6 separate
+// forms/records before the Provider-composition merge (see clinux-provider-composition-merge
+// memory note) — getGroupInstances() reads the repeating groups the same way
+// Checkout.vue/FrontDesk.vue already read Vitals/Prescription/Billing off the (already merged)
+// Encounter composition.
 export const useOnboardingStore = defineStore('onboarding', () => {
-  const HOSPITAL_FORM_ID = 'system-hospital-profile-v1';
-  const STAFF_FORM_ID = 'system-staff-profile-v1';
-  const SERVICES_FORM_ID = 'system-services-profile-v1';
-  const HOURS_FORM_ID = 'system-office-hours-profile-v1';
-  const CONSENTS_FORM_ID = 'system-consents-profile-v1';
-  const LOCATIONS_FORM_ID = 'system-locations-profile-v1';
+  const PROVIDER_FORM_ID = 'system-provider-composition-v1';
 
   const auth = useAuthStore();
   // registeredUser is index.html's registration account, carried over here so the Hospital form
@@ -36,7 +35,14 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     if (saved) publishedClinic.value = JSON.parse(saved);
   } catch (e) { /* keep default */ }
 
-  const hospitalRecordId = ref(listDataRecords(HOSPITAL_FORM_ID)[0]?.id ?? null);
+  const providerRecordId = ref(listDataRecords(PROVIDER_FORM_ID)[0]?.id ?? null);
+
+  // The one shared record every onboarding card now reads/writes — a thin wrapper since several
+  // pages (ConsultationDesk.vue's care-team picker, AbdmOnboarding.vue) need it directly, not
+  // just via buildClinicProfile()'s flattened snapshot.
+  function getProviderRecord() {
+    return listDataRecords(PROVIDER_FORM_ID)[0] || null;
+  }
 
   // Bumped on every save/delete of any onboarding-related record so buildClinicProfile()'s
   // callers (Vue computeds) have a reactive dependency to track — plain collection reads
@@ -56,7 +62,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     if (u.city) answers.push({ linkId: 'hospital_city', answer: [{ valueString: u.city }] });
     if (answers.length === 0) return null;
     return {
-      id: 'seed-from-registration', formId: HOSPITAL_FORM_ID, version: null,
+      id: 'seed-from-registration', formId: PROVIDER_FORM_ID, version: null,
       data: { resourceType: 'QuestionnaireResponse', status: 'in-progress', item: [{ linkId: 'section_hospital', item: answers }] },
       savedAt: new Date().toISOString(),
     };
@@ -78,22 +84,31 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     localStorage.setItem('cf_onboarding_branding', JSON.stringify(branding));
   }
 
-  // Extracts and upserts the single Hospital record from whichever container currently holds
-  // its rendered form. Returns false if there was nothing to read.
-  function saveHospitalRecord(containerId) {
+  // Extracts and upserts the ONE Provider record from whichever container currently holds its
+  // rendered form — every onboarding card (Hospital/Staff/Services/Hours/Consents/Locations)
+  // shares this one save path now, not just Hospital's (there's no longer a "single vs
+  // repeatable save mechanic" distinction at the store level — LForms' own "+ Add another"
+  // handles repeating groups within the one document natively). Returns false if there was
+  // nothing to read.
+  function saveProviderRecord(containerId) {
     const qr = extractResponse(containerId);
     if (!qr) return false;
-    hospitalRecordId.value = saveDataRecord(HOSPITAL_FORM_ID, activeVersionNumber(HOSPITAL_FORM_ID), qr, hospitalRecordId.value);
+    providerRecordId.value = saveDataRecord(PROVIDER_FORM_ID, activeVersionNumber(PROVIDER_FORM_ID), qr, providerRecordId.value);
     saveBranding();
     dataVersion.value++;
     return true;
   }
 
-  // Office Hours records are arbitrary day-ranges; expands them into the fixed 7-day array
-  // clinic-home.html's hours table expects. Later-saved records win for a given day.
-  function flattenHours(records) {
+  // Office Hours instances are arbitrary day-ranges; expands them into the fixed 7-day array
+  // clinic-home.html's hours table expects. Instances are bare {linkId,item} group instances now
+  // (see getGroupInstances), not full records — they share the ONE parent record's single
+  // savedAt, so "later-saved wins" is no longer meaningful; natural array order (LForms' own
+  // "+ Add another" append order) is the next-best proxy and is what's used instead: later
+  // array position wins for a given day.
+  function flattenHours(instances) {
     const byDay = {};
-    [...records].sort((a, b) => a.savedAt.localeCompare(b.savedAt)).forEach((rec) => {
+    instances.forEach((instance) => {
+      const rec = { data: instance };
       const abbrevs = getAnswers(rec, 'hours_days');
       const open = getAnswer(rec, 'hours_open');
       const close = getAnswer(rec, 'hours_close');
@@ -109,15 +124,15 @@ export const useOnboardingStore = defineStore('onboarding', () => {
 
   function buildClinicProfile() {
     dataVersion.value; // register the reactive dependency
-    const hospitalRec = listDataRecords(HOSPITAL_FORM_ID)[0] || null;
-    const ga = (linkId) => getAnswer(hospitalRec, linkId);
+    const providerRec = getProviderRecord();
+    const ga = (linkId) => getAnswer(providerRec, linkId);
 
     const name = ga('hospital_name');
-    const staffRecs = listDataRecords(STAFF_FORM_ID);
-    const serviceRecs = listDataRecords(SERVICES_FORM_ID);
-    const consentRecs = listDataRecords(CONSENTS_FORM_ID);
-    const hoursRecs = listDataRecords(HOURS_FORM_ID);
-    const locationRecs = listDataRecords(LOCATIONS_FORM_ID);
+    const staffInstances = getGroupInstances(providerRec, 'section_staff');
+    const serviceInstances = getGroupInstances(providerRec, 'section_services_matrix');
+    const consentInstances = getGroupInstances(providerRec, 'section_consent');
+    const hoursInstances = getGroupInstances(providerRec, 'section_hours');
+    const locationInstances = getGroupInstances(providerRec, 'section_location');
 
     return {
       name,
@@ -137,20 +152,28 @@ export const useOnboardingStore = defineStore('onboarding', () => {
       whatsapp: ga('hospital_whatsapp'),
       email: ga('hospital_email'),
       website: ga('hospital_website'),
-      staff: staffRecs.map((rec, i) => ({
-        id: rec.id,
-        name: getAnswer(rec, 'staff_name'),
-        role: getAnswer(rec, 'staff_role'),
-        specialty: getAnswers(rec, 'staff_specialty').join(', '),
-        qualification: getAnswer(rec, 'staff_qualification'),
-        bio: '',
-        color: ONB_COLORS[i % ONB_COLORS.length],
-      })),
-      services: serviceRecs.map((rec) => {
+      // Every entity below is a repeating group instance now, not its own record — id has no
+      // stable value from the record itself anymore (see getGroupInstances' own doc comment), so
+      // array position is used as a synthetic id instead. Only ever used as a display/:key value
+      // by ClinicHome.vue, never as a lookup key elsewhere — safe.
+      staff: staffInstances.map((instance, i) => {
+        const rec = { data: instance };
+        return {
+          id: 'staff-' + i,
+          name: getAnswer(rec, 'staff_name'),
+          role: getAnswer(rec, 'staff_role'),
+          specialty: getAnswers(rec, 'staff_specialty').join(', '),
+          qualification: getAnswer(rec, 'staff_qualification'),
+          bio: '',
+          color: ONB_COLORS[i % ONB_COLORS.length],
+        };
+      }),
+      services: serviceInstances.map((instance, i) => {
+        const rec = { data: instance };
         const program = getAnswer(rec, 'service_program_name');
         const description = getAnswer(rec, 'service_description');
         return {
-          id: rec.id,
+          id: 'service-' + i,
           name: getAnswer(rec, 'service_name'),
           category: getAnswer(rec, 'service_specialty_category'),
           description: [program ? 'Program: ' + program : '', description].filter(Boolean).join(' — '),
@@ -158,14 +181,17 @@ export const useOnboardingStore = defineStore('onboarding', () => {
           fee: '',
         };
       }),
-      hours: flattenHours(hoursRecs),
-      consents: consentRecs.map((rec) => ({ id: rec.id, title: getAnswer(rec, 'consent_category'), enabled: true })),
-      locations: locationRecs.map((rec) => ({
-        id: rec.id,
-        name: getAnswer(rec, 'location_name'),
-        address: getAnswer(rec, 'location_address'),
-        phone: getAnswer(rec, 'location_phone'),
-      })),
+      hours: flattenHours(hoursInstances),
+      consents: consentInstances.map((instance, i) => ({ id: 'consent-' + i, title: getAnswer({ data: instance }, 'consent_category'), enabled: true })),
+      locations: locationInstances.map((instance, i) => {
+        const rec = { data: instance };
+        return {
+          id: 'location-' + i,
+          name: getAnswer(rec, 'location_name'),
+          address: getAnswer(rec, 'location_address'),
+          phone: getAnswer(rec, 'location_phone'),
+        };
+      }),
       apptConfig: { onlineBooking: true },
       published: false,
     };
@@ -185,8 +211,8 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   }
 
   return {
-    HOSPITAL_FORM_ID, STAFF_FORM_ID, SERVICES_FORM_ID, HOURS_FORM_ID, CONSENTS_FORM_ID, LOCATIONS_FORM_ID,
-    registeredUser, branding, publishedClinic, hospitalRecordId, dataVersion,
-    buildSeedFromRegistration, saveBranding, saveHospitalRecord, buildClinicProfile, publish,
+    PROVIDER_FORM_ID,
+    registeredUser, branding, publishedClinic, providerRecordId, dataVersion,
+    getProviderRecord, buildSeedFromRegistration, saveBranding, saveProviderRecord, buildClinicProfile, publish,
   };
 });
