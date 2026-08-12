@@ -19,18 +19,24 @@ import GridActionsCell from '../components/grid/GridActionsCell.vue';
 import Cubo from '../components/Cubo.vue';
 import AiEngineSandbox from './AiEngineSandbox.vue';
 import {
-  formsLibrary, seedSystemForms, activeVersionNumber, SYSTEM_FORM_IDS,
+  formsLibrary, seedSystemForms, activeVersionNumber, activeQuestionnaire, SYSTEM_FORM_IDS,
   listDataRecords, saveDataRecord, deleteDataRecord, recordSummary,
+  getAnswer, getGroupInstances,
   renderBlank, renderWithRecord, extractResponse,
 } from '../data/useSystemForms.js';
 import { useThemeStore } from '../stores/theme.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useCuboStore } from '../stores/cubo.js';
+import { useOnboardingStore } from '../stores/onboarding.js';
 import { API_BASE, apiFetch } from '../config.js';
 
 const theme = useThemeStore();
 const auth = useAuthStore();
 const cubo = useCuboStore();
+// The 8 Provider-composition entity cards below (Hospital/Staff/Administrators/Services/Hours/
+// Consents/Branches/Appointments) read and write the ONE shared Provider record the same way
+// Onboarding.vue's own journeyCards do — see clinux-provider-composition-merge memory note.
+const onboarding = useOnboardingStore();
 // This page hosts Cübo full-time (same choice ConsultationDesk.vue/Checkout.vue/FrontDesk.vue
 // already made), so start expanded rather than the collapsed FAB badge.
 cubo.currentLayout = 'EXPANDED';
@@ -44,7 +50,12 @@ function onCuboSubmit(payload) {
   aiEngineSandboxRef.value?.classifyAndExecute(payload);
 }
 
-const currentView = ref('designer'); // 'designer' | 'dataExplorer'
+// 'cards' (new default landing — see clinux-settings-page-entity-cards memory note) | 'table'
+// (drilled into one card's records/instances) | 'designer' (the Step 1/2 compile-and-train
+// workflow, reached via a card's context menu instead of always being the landing view).
+const currentView = ref('cards');
+// The card currently drilled into (table/designer view) — null while on the card grid itself.
+const activeCard = ref(null);
 const currentStep = ref(0);
 const steps = [
   { id: 'compile', label: 'Compile & Preview' },
@@ -66,7 +77,7 @@ function onFormSearchInput(v) {
   formSearchInput.value = v;
   debouncedSetFormSearch(v);
 }
-const accordionOpen = reactive({ bookmarked: true, system: true, user: true, results: false, compileDetails: false });
+const accordionOpen = reactive({ results: false, compileDetails: false });
 const openMenuFormId = ref(null);
 const previewDrawerOpen = ref(false);
 const saveAsMenuOpen = ref(false);
@@ -86,6 +97,7 @@ const newFormDraft = reactive({ formId: 'new-form-v1', title: 'New Form', versio
 watch(primaryTab, () => {
   previewDrawerOpen.value = false;
   newFormDrawerOpen.value = false;
+  providerDrawerOpen.value = false;
 });
 const dataSaveLabel = ref('');
 const toast = ref({ show: false, msg: '' });
@@ -113,7 +125,7 @@ onMounted(async () => {
   const res = await apiFetch(`${API_BASE}/api/workflow/default-blueprint`).then((r) => r.json()).catch(() => ({ success: false }));
   if (res.success) {
     yamlInput.value = res.yaml;
-    await compileWorkflow();
+    await compileWorkflow(false);
   }
 });
 
@@ -154,7 +166,11 @@ watch(() => theme.isDark, (isDark) => {
   if (aceEditor) aceEditor.setTheme(isDark ? 'ace/theme/tomorrow_night' : 'ace/theme/tomorrow');
 });
 
-async function compileWorkflow() {
+// openDrawer:false is used only by the silent on-mount preload below — the card grid is now the
+// landing view (see clinux-settings-page-entity-cards memory note), so auto-opening the preview
+// drawer over it on every load would cover the very thing the user is meant to land on. Every
+// other caller (the Compile button, Trigger Scribe) still wants the drawer to open as before.
+async function compileWorkflow(openDrawer = true) {
   // A fresh compile means the previewed form may have changed since the last save.
   savedVersionLabel.value = '';
 
@@ -174,7 +190,7 @@ async function compileWorkflow() {
     resetKeywordInputs();
     await nextTick();
     renderBlueprintPreview();
-    previewDrawerOpen.value = true;
+    if (openDrawer) previewDrawerOpen.value = true;
   } else {
     showToast('Compiler Error: ' + res.error);
   }
@@ -198,15 +214,14 @@ function formTitle(formId) {
   return latest?.questionnaire?.title || formId;
 }
 
+// Patient/Encounter are also their own compositions, but stay unsplit (one card apiece) — only
+// Provider's sub-entities get the Onboarding.vue-style split (see PROVIDER_CARDS below and the
+// clinux-settings-page-entity-cards memory note). Provider's own formId is excluded here (never
+// reaches this function) so the hospital/staff/services/etc. substring checks below no longer
+// apply to anything — trimmed to just what a non-Provider form can actually be.
 function formIcon(formId) {
-  if (formId.includes('hospital')) return 'fas fa-hospital';
   if (formId.includes('patient')) return 'fas fa-user-injured';
-  if (formId.includes('staff')) return 'fas fa-user-md';
-  if (formId.includes('services')) return 'fas fa-stethoscope';
-  if (formId.includes('consent')) return 'fas fa-file-signature';
-  if (formId.includes('appointment')) return 'fas fa-calendar-alt';
-  if (formId.includes('office-hours')) return 'fas fa-clock';
-  if (formId.includes('locations')) return 'fas fa-map-marker-alt';
+  if (formId.includes('encounter')) return 'fas fa-clipboard-list';
   return 'fas fa-file-lines';
 }
 
@@ -216,52 +231,95 @@ function matchesSearch(formId) {
   return formTitle(formId).toLowerCase().includes(q) || formId.toLowerCase().includes(q);
 }
 
-// Bookmarked forms (from either group) float to a dedicated section above everything else —
-// system forms keep their fixed order, user forms stay most-recent-first.
-function bookmarkedFormIds() {
-  libraryVersion.value;
-  const rows = formsLibrary.toArray;
-  return rows
-    .filter((r) => r.bookmarked)
-    .filter((r) => libraryShowArchived.value || !r.archived)
-    .filter((r) => matchesSearch(r.formId))
-    .map((r) => r.formId)
-    .sort((a, b) => {
-      const aSys = SYSTEM_FORM_IDS.includes(a), bSys = SYSTEM_FORM_IDS.includes(b);
-      if (aSys !== bSys) return aSys ? -1 : 1;
-      if (aSys && bSys) return SYSTEM_FORM_IDS.indexOf(a) - SYSTEM_FORM_IDS.indexOf(b);
-      const eA = formEntry(a), eB = formEntry(b);
-      const latestA = eA.versions[eA.versions.length - 1]?.savedAt || '';
-      const latestB = eB.versions[eB.versions.length - 1]?.savedAt || '';
-      return latestB.localeCompare(latestA);
-    });
-}
+// Provider composition's sub-entities, one card each — mirrors Onboarding.vue's journeyCards
+// (same groupLinkIds), extended with Branches/Appointments (no onboarding card exists for those
+// yet) and Administrators (a filtered view into Staff by role, not its own FHIR resource — see
+// clinux-provider-composition-merge memory note). Fixed order/set, unlike the dynamic form cards
+// below, since these always exist regardless of what's in the forms library.
+const PROVIDER_CARDS = [
+  { id: 'hospital', kind: 'group', groupLinkId: 'section_hospital', mode: 'single', icon: 'fas fa-hospital', color: '#3B82F6', bg: 'rgba(59,130,246,.1)', title: 'Hospital Profile', desc: 'Your clinic profile as a FHIR Organization resource.' },
+  { id: 'staff', kind: 'group', groupLinkId: 'section_staff', mode: 'repeatable', icon: 'fas fa-user-md', color: '#00D4B2', bg: 'rgba(0,212,178,.1)', title: 'Care Team', desc: 'Physicians, nurses and staff as FHIR Practitioner records.' },
+  { id: 'admin', kind: 'group', groupLinkId: 'section_staff', mode: 'repeatable', roleFilter: 'Administrator', icon: 'fas fa-user-shield', color: '#6366F1', bg: 'rgba(99,102,241,.1)', title: 'Administrators', desc: 'Staff members with the Administrator role.' },
+  { id: 'services', kind: 'group', groupLinkId: 'section_services_matrix', mode: 'repeatable', icon: 'fas fa-stethoscope', color: '#8B5CF6', bg: 'rgba(139,92,246,.1)', title: 'Services', desc: 'Services your clinic offers.' },
+  { id: 'hours', kind: 'group', groupLinkId: 'section_hours', mode: 'repeatable', icon: 'fas fa-clock', color: '#F59E0B', bg: 'rgba(245,158,11,.1)', title: 'Office Hours', desc: 'Operating hours, one day-range at a time.' },
+  { id: 'consent', kind: 'group', groupLinkId: 'section_consent', mode: 'repeatable', icon: 'fas fa-file-signature', color: '#EF4444', bg: 'rgba(239,68,68,.1)', title: 'Legal Consents', desc: 'Consent types your clinic collects from patients.' },
+  { id: 'location', kind: 'group', groupLinkId: 'section_location', mode: 'repeatable', icon: 'fas fa-map-marker-alt', color: '#14B8A6', bg: 'rgba(20,184,166,.1)', title: 'Branches', desc: 'Additional clinic locations.' },
+  { id: 'appointment', kind: 'group', groupLinkId: 'section_appointment', mode: 'repeatable', icon: 'fas fa-calendar-alt', color: '#EC4899', bg: 'rgba(236,72,153,.1)', title: 'Appointments', desc: 'Booked appointment records.' },
+];
 
-// System forms: fixed display order. Bookmarked ones move up to the Bookmarked section instead
-// of appearing here too.
-function systemFormIds() {
-  libraryVersion.value;
-  return SYSTEM_FORM_IDS
-    .filter((id) => formsLibrary.has(id) && !formEntry(id).bookmarked)
-    .filter((id) => matchesSearch(id));
-}
-
-// User-created forms: most-recently-saved first; archived ones only included if the Show
-// archived toggle is on; bookmarked ones move up to the Bookmarked section.
-function userFormIds() {
+// Every other form in the library — Patient/Encounter (unsplit) plus any custom/user-created
+// forms — gets ONE card apiece, same single formId as the old sidebar row, just reached via a
+// card now. Provider's own formId is excluded (replaced by the 8 PROVIDER_CARDS above).
+function formLibraryCards() {
   libraryVersion.value;
   return formsLibrary.toArray
-    .filter((r) => !r.isSystem && !r.bookmarked)
+    .filter((r) => r.formId !== onboarding.PROVIDER_FORM_ID)
     .filter((r) => libraryShowArchived.value || !r.archived)
     .filter((r) => matchesSearch(r.formId))
-    .map((r) => r.formId)
+    .map((r) => ({
+      id: r.formId, kind: 'form', formId: r.formId, mode: 'form',
+      icon: formIcon(r.formId), color: '#64748B', bg: 'rgba(100,116,139,.1)',
+      title: formTitle(r.formId), desc: r.isSystem ? 'System form' : 'Custom form',
+      isSystem: r.isSystem, archived: r.archived, bookmarked: r.bookmarked,
+    }))
     .sort((a, b) => {
-      const eA = formEntry(a), eB = formEntry(b);
-      if (eA.archived !== eB.archived) return eA.archived ? 1 : -1;
+      if (a.bookmarked !== b.bookmarked) return a.bookmarked ? -1 : 1;
+      const aSys = SYSTEM_FORM_IDS.includes(a.formId), bSys = SYSTEM_FORM_IDS.includes(b.formId);
+      if (aSys !== bSys) return aSys ? -1 : 1;
+      if (aSys && bSys) return SYSTEM_FORM_IDS.indexOf(a.formId) - SYSTEM_FORM_IDS.indexOf(b.formId);
+      if (a.archived !== b.archived) return a.archived ? 1 : -1;
+      const eA = formEntry(a.formId), eB = formEntry(b.formId);
       const latestA = eA.versions[eA.versions.length - 1]?.savedAt || '';
       const latestB = eB.versions[eB.versions.length - 1]?.savedAt || '';
       return latestB.localeCompare(latestA);
     });
+}
+
+// Provider's 8 cards always come first (fixed order, always shown — filtered only by the search
+// box, since Show Archived doesn't apply to them), then every other form card.
+function allLibraryCards() {
+  const q = formSearchQuery.value.trim().toLowerCase();
+  const providerCards = q ? PROVIDER_CARDS.filter((c) => c.title.toLowerCase().includes(q)) : PROVIDER_CARDS;
+  return [...providerCards, ...formLibraryCards()];
+}
+
+// Reads a Provider group card's current instances off the ONE shared record — same
+// getGroupInstances() pattern every other post-merge page uses, with an optional role filter for
+// the Administrators card.
+function groupInstancesForCard(card) {
+  dataVersion.value; onboarding.dataVersion;
+  let instances = getGroupInstances(onboarding.getProviderRecord(), card.groupLinkId);
+  if (card.roleFilter) instances = instances.filter((i) => getAnswer({ data: i }, 'staff_role') === card.roleFilter);
+  return instances;
+}
+
+// recordSummary() expects a full { id, data: { item } } record — group instances are bare
+// { linkId, item } objects with no id of their own, so wrap one the same way every other
+// bare-instance read in this migration does (see formData.js's getGroupInstances doc comment).
+function instanceSummary(instance, index) {
+  return recordSummary({ data: instance, id: String(index) });
+}
+
+// Safe accessor for the version-list v-for below — v-show (unlike v-if) still evaluates its
+// subtree's expressions even while hidden, so a group card's formId (always undefined — group
+// cards have a groupLinkId, not a formId) would otherwise throw reading .versions off
+// formEntry(undefined) every render, not just when actually expanded.
+function versionsReversed(formId) {
+  const entry = formEntry(formId);
+  return entry ? [...entry.versions].reverse() : [];
+}
+
+function cardStatus(card) {
+  if (card.kind === 'form') {
+    dataVersion.value;
+    const n = listDataRecords(card.formId).length;
+    return n > 0 ? `${n} record${n === 1 ? '' : 's'}` : 'No records';
+  }
+  if (card.mode === 'single') {
+    return getAnswer(onboarding.getProviderRecord(), 'hospital_name') ? 'Saved' : 'Not started';
+  }
+  const n = groupInstancesForCard(card).length;
+  return n > 0 ? `${n} added` : 'Not started';
 }
 
 function toggleAccordion(key) { accordionOpen[key] = !accordionOpen[key]; }
@@ -354,16 +412,82 @@ function loadVersionIntoEditor(formId, version) {
   renderBlueprintPreview();
 }
 
-// Sidebar rows open straight into Data Explorer by default; Designer View is reached via each
-// form's context menu (or the persistent toggle once a form is loaded).
+// A form card's own click opens straight into its Data Explorer table; Designer/YAML View is
+// reached via that same card's context menu instead.
 function openInDataExplorer(formId) {
   loadVersionIntoEditor(formId, activeVersionNumber(formId));
-  currentView.value = 'dataExplorer';
+  currentView.value = 'table';
 }
 
 function openInDesigner(formId) {
   loadVersionIntoEditor(formId, activeVersionNumber(formId));
   currentView.value = 'designer';
+}
+
+// ─── Card grid: drill-in / back navigation (see clinux-settings-page-entity-cards memory note) ───
+
+// Provider's 'single' cards (just Hospital today) have nothing to list — one card, one record —
+// so clicking it opens the whole-document drawer directly, same as Onboarding.vue's own Hospital
+// card. 'repeatable' Provider cards and every form card drill into a table view instead.
+function openCard(card) {
+  activeCard.value = card;
+  if (card.kind === 'group' && card.mode === 'single') {
+    openProviderDrawer(card);
+    return;
+  }
+  if (card.kind === 'group') {
+    currentView.value = 'table';
+    return;
+  }
+  openInDataExplorer(card.formId);
+}
+
+// Every card's context-menu "Designer/YAML View" routes here — Provider's 8 cards all share the
+// ONE underlying system-provider-composition-v1 form, so they all land on the same YAML/version.
+function openCardDesigner(card) {
+  activeCard.value = card;
+  openInDesigner(card.kind === 'group' ? onboarding.PROVIDER_FORM_ID : card.formId);
+}
+
+function backToCards() {
+  currentView.value = 'cards';
+  activeCard.value = null;
+}
+
+// ─── Provider Entity Drawer — whole-document add/view/edit for the 8 Provider cards ───
+// Separate from the Live Preview Slide-Over below (that one is blueprintJson/compile-driven);
+// this one is onboarding-store-driven, mirroring Onboarding.vue's own drawer exactly, including
+// the "whole accumulating document every time" tradeoff and LForms' native "+ Add another" for
+// repeating instances instead of any custom add/remove UI.
+const providerDrawerOpen = ref(false);
+const providerDrawerQuestionnaire = ref(null);
+const providerDrawerRecord = ref(null);
+
+function openProviderDrawer(card) {
+  activeCard.value = card;
+  providerDrawerOpen.value = true;
+  const q = activeQuestionnaire(onboarding.PROVIDER_FORM_ID);
+  providerDrawerQuestionnaire.value = q;
+  if (!q) { providerDrawerRecord.value = null; return; }
+  providerDrawerRecord.value = onboarding.getProviderRecord() || onboarding.buildSeedFromRegistration();
+  nextTick(() => renderWithRecord(q, providerDrawerRecord.value, 'providerFormContainer'));
+}
+
+function closeProviderDrawer() { providerDrawerOpen.value = false; }
+
+function saveProviderDrawerRecord() {
+  const ok = onboarding.saveProviderRecord('providerFormContainer');
+  if (!ok) { showToast('Could not read the entered data. Please try again.'); return; }
+  if (activeCard.value?.mode === 'repeatable') {
+    // Stay open — LForms' own "+ Add another" is how a second/third instance gets added, not a
+    // separate save-per-entry action.
+    providerDrawerRecord.value = onboarding.getProviderRecord();
+    nextTick(() => renderWithRecord(providerDrawerQuestionnaire.value, providerDrawerRecord.value, 'providerFormContainer'));
+    showToast('Added.');
+  } else {
+    showToast('Saved.');
+    closeProviderDrawer();
+  }
 }
 
 // Set Active: only one version per form can be active at a time — this is the version that
@@ -750,6 +874,33 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
     </div>
   </div>
 
+  <!-- ─── Provider Entity Drawer (Hospital/Care Team/Administrators/Services/Hours/Consents/
+       Branches/Appointments) — whole-document add/view/edit, same pattern as Onboarding.vue's
+       own drawer, kept separate from the Live Preview Slide-Over above since it's driven by the
+       onboarding store's Provider record rather than the compiler's blueprintJson. ─── -->
+  <div class="drawer-backdrop" :class="providerDrawerOpen ? 'open' : ''" @click="closeProviderDrawer()"></div>
+  <div class="drawer-panel" :class="providerDrawerOpen ? 'open' : ''">
+    <div class="drawer-header">
+      <div>
+        <h3 style="font-size:.95rem;font-weight:700;color:var(--cf-text-strong);display:flex;align-items:center;gap:.5rem">
+          <i :class="activeCard ? activeCard.icon : 'fas fa-file-lines'" :style="activeCard ? `color:${activeCard.color}` : ''"></i>
+          <span>{{ activeCard ? activeCard.title : '' }}</span>
+        </h3>
+        <p style="font-size:.72rem;color:var(--cf-text);margin-top:.15rem">{{ activeCard ? activeCard.desc : '' }}</p>
+      </div>
+      <button @click="closeProviderDrawer()" style="background:transparent;border:none;cursor:pointer;color:var(--cf-text);font-size:1.1rem"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="drawer-body">
+      <div class="preview-panel">
+        <div id="providerFormContainer"></div>
+      </div>
+    </div>
+    <div class="drawer-footer">
+      <button v-if="activeCard && activeCard.mode === 'single'" class="btn-teal" @click="saveProviderDrawerRecord()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-save"></i>Save</button>
+      <button v-if="activeCard && activeCard.mode === 'repeatable'" class="btn-teal" @click="saveProviderDrawerRecord()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-plus"></i>Add</button>
+    </div>
+  </div>
+
   <div class="flex-1 flex overflow-hidden">
     <!-- LEFT: Cübo, same confined-pane pattern as Front Desk/Consultation Desk/Checkout. One
          shared instance now serves both tabs — onCuboSubmit() forwards to whichever one is
@@ -780,171 +931,93 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
       </div>
 
   <main v-show="primaryTab === 'formsLibrary'" style="flex:1;overflow:hidden;display:flex;justify-content:center">
-  <div style="max-width:1500px;width:100%;display:flex;gap:1.5rem;padding:1.5rem;overflow:hidden">
+  <div style="max-width:1500px;width:100%;overflow-y:auto;padding:1.5rem">
 
-    <!-- ── LEFT: Forms Library ── -->
-    <aside style="width:300px;flex-shrink:0;display:flex;flex-direction:column;overflow-y:auto">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
-        <span class="cf-label" style="margin:0">Forms Library</span>
-        <button class="btn-ghost" @click="startNewForm()" style="padding:.3rem .6rem;font-size:.7rem;display:flex;align-items:center;gap:.3rem">
-          <i class="fas fa-plus"></i>New
-        </button>
-      </div>
-
-      <div style="position:relative;margin-bottom:.5rem">
-        <i class="fas fa-search" style="position:absolute;left:.65rem;top:50%;transform:translateY(-50%);font-size:.68rem;color:var(--cf-text)"></i>
-        <input type="text" data-library-search :value="formSearchInput" @input="onFormSearchInput($event.target.value)" placeholder="Search forms…" class="cf-input" style="padding-left:1.8rem" />
-      </div>
-
-      <!-- ── Bookmarked ── -->
-      <div v-if="bookmarkedFormIds().length > 0">
-        <button class="accordion-header" :class="accordionOpen.bookmarked ? '' : 'collapsed'" @click="toggleAccordion('bookmarked')">
-          <span class="section-eyebrow" style="margin:0"><i class="fas fa-star" style="margin-right:.35rem;color:#F59E0B"></i>Bookmarked</span>
-          <i class="fas fa-chevron-down"></i>
-        </button>
-        <div v-show="accordionOpen.bookmarked">
-          <div v-for="formId in bookmarkedFormIds()" :key="'bm-' + formId" class="form-entry" :class="formEntry(formId).archived ? 'archived' : ''">
-            <div style="display:flex;align-items:center;gap:.35rem">
-              <button class="icon-btn bookmarked" @click.stop="toggleBookmark(formId)" title="Unbookmark"><i class="fas fa-star"></i></button>
-              <button class="sidebar-item" :class="blueprintJson && blueprintJson.id === formId ? 'active' : ''" @click="openInDataExplorer(formId)">
-                <i :class="formIcon(formId)" style="width:14px;text-align:center;flex-shrink:0;font-size:.8rem"></i>
-                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ formTitle(formId) }}</span>
-              </button>
-              <div style="position:relative">
-                <button class="icon-btn" @click.stop="toggleMenu('bm-' + formId)"><i class="fas fa-ellipsis-vertical"></i></button>
-                <div class="context-menu" v-show="openMenuFormId === ('bm-' + formId)">
-                  <button class="context-menu-item" @click="openInDesigner(formId); closeMenu()"><i class="fas fa-pen-ruler"></i>Designer View</button>
-                  <button class="context-menu-item" @click="toggleExpand(formId); closeMenu()"><i class="fas fa-clock-rotate-left"></i>Show Versions</button>
-                  <button class="context-menu-item" v-show="!formEntry(formId).isSystem" @click="toggleArchive(formId); closeMenu()">
-                    <i class="fas" :class="formEntry(formId).archived ? 'fa-box-open' : 'fa-box-archive'"></i>
-                    <span>{{ formEntry(formId).archived ? 'Restore' : 'Archive' }}</span>
-                  </button>
-                  <label class="context-menu-item" style="cursor:pointer"><input type="checkbox" v-model="libraryShowArchived" />Show Archived</label>
-                </div>
-              </div>
-            </div>
-
-            <div v-show="libraryExpanded[formId]" style="padding-left:1.4rem;margin-top:.4rem">
-              <div v-for="v in [...formEntry(formId).versions].reverse()" :key="v.version" class="version-row">
-                <span>
-                  <strong>v{{ v.version }}</strong>
-                  <span class="badge" :class="v.status === 'final' ? 'badge-teal' : 'badge-muted'" style="font-size:.55rem;padding:.05rem .4rem;margin-left:.25rem">{{ (v.status || 'draft').toUpperCase() }}</span>
-                  <span class="badge badge-teal" style="font-size:.55rem;padding:.05rem .4rem;margin-left:.25rem" v-show="v.version === activeVersionNumber(formId)">ACTIVE</span>
-                  <span style="color:var(--cf-text)">{{ ' · ' + new Date(v.savedAt).toLocaleDateString() }}</span>
-                </span>
-                <div style="display:flex;gap:.3rem;flex-shrink:0">
-                  <button class="btn-ghost" style="font-size:.62rem;padding:.2rem .45rem" @click="loadVersionIntoEditor(formId, v.version)">Load</button>
-                  <button class="btn-outline" style="font-size:.62rem;padding:.2rem .45rem" v-show="v.version !== activeVersionNumber(formId)" @click="setActiveVersion(formId, v.version)">Set Active</button>
-                </div>
-              </div>
-            </div>
+    <!-- ── Card grid (default landing) — one card per Provider entity plus one per Patient/
+         Encounter/custom form. See clinux-settings-page-entity-cards memory note. ── -->
+    <div v-show="currentView === 'cards'">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.25rem">
+        <div>
+          <span class="cf-label" style="margin-bottom:.2rem;display:block">Forms Library</span>
+          <p style="font-size:.8rem;color:var(--cf-text)">Every entity your clinic manages, plus every custom form you've designed. Click a card to view its records; use the menu for the Designer/YAML view.</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:.5rem;flex-shrink:0">
+          <label style="display:flex;align-items:center;gap:.35rem;font-size:.75rem;color:var(--cf-text);cursor:pointer"><input type="checkbox" v-model="libraryShowArchived" />Show Archived</label>
+          <div style="position:relative">
+            <i class="fas fa-search" style="position:absolute;left:.65rem;top:50%;transform:translateY(-50%);font-size:.68rem;color:var(--cf-text)"></i>
+            <input type="text" data-library-search :value="formSearchInput" @input="onFormSearchInput($event.target.value)" placeholder="Search forms…" class="cf-input" style="padding-left:1.8rem;width:220px" />
           </div>
+          <button class="btn-teal" @click="startNewForm()" style="padding:.5rem 1rem;font-size:.78rem;display:flex;align-items:center;gap:.4rem;white-space:nowrap">
+            <i class="fas fa-plus"></i>New Form
+          </button>
         </div>
       </div>
 
-      <!-- ── System Forms ── -->
-      <button class="accordion-header" :class="accordionOpen.system ? '' : 'collapsed'" @click="toggleAccordion('system')">
-        <span class="section-eyebrow" style="margin:0">System Forms</span>
-        <i class="fas fa-chevron-down"></i>
-      </button>
-      <div v-show="accordionOpen.system">
-        <div v-for="formId in systemFormIds()" :key="formId" class="form-entry">
-          <div style="display:flex;align-items:center;gap:.35rem">
-            <button class="icon-btn" :class="formEntry(formId).bookmarked ? 'bookmarked' : ''" @click.stop="toggleBookmark(formId)" title="Bookmark">
-              <i :class="formEntry(formId).bookmarked ? 'fas fa-star' : 'far fa-star'"></i>
-            </button>
-            <button class="sidebar-item" :class="blueprintJson && blueprintJson.id === formId ? 'active' : ''" @click="openInDataExplorer(formId)">
-              <i :class="formIcon(formId)" style="width:14px;text-align:center;flex-shrink:0;font-size:.8rem"></i>
-              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ formTitle(formId) }}</span>
-            </button>
-            <div style="position:relative">
-              <button class="icon-btn" @click.stop="toggleMenu(formId)"><i class="fas fa-ellipsis-vertical"></i></button>
-              <div class="context-menu" v-show="openMenuFormId === formId">
-                <button class="context-menu-item" @click="openInDesigner(formId); closeMenu()"><i class="fas fa-pen-ruler"></i>Designer View</button>
-                <button class="context-menu-item" @click="toggleExpand(formId); closeMenu()"><i class="fas fa-clock-rotate-left"></i>Show Versions</button>
-                <label class="context-menu-item" style="cursor:pointer"><input type="checkbox" v-model="libraryShowArchived" />Show Archived</label>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:.9rem">
+        <div v-for="card in allLibraryCards()" :key="card.id" style="position:relative">
+          <button class="entry-card" @click="openCard(card)">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:.5rem">
+              <div style="width:36px;height:36px;border-radius:.625rem;display:flex;align-items:center;justify-content:center;margin-bottom:.75rem" :style="`background:${card.bg}`">
+                <i :class="card.icon" :style="`color:${card.color};font-size:.9rem`"></i>
               </div>
+              <button class="icon-btn" style="margin-top:.1rem" @click.stop="toggleMenu(card.id)"><i class="fas fa-ellipsis-vertical"></i></button>
             </div>
+            <p style="font-weight:700;font-size:.85rem;color:var(--cf-text-strong);font-family:'Poppins',sans-serif;margin-bottom:.3rem">{{ card.title }}</p>
+            <p style="font-size:.75rem;color:var(--cf-text);line-height:1.45;margin-bottom:.5rem">{{ card.desc }}</p>
+            <div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap">
+              <span class="badge" :class="cardStatus(card) !== 'Not started' && cardStatus(card) !== 'No records' ? 'badge-teal' : 'badge-muted'">{{ cardStatus(card) }}</span>
+              <span class="badge badge-muted" v-show="card.archived">ARCHIVED</span>
+              <span v-show="card.bookmarked"><i class="fas fa-star" style="color:#F59E0B;font-size:.7rem"></i></span>
+            </div>
+          </button>
+          <div class="context-menu" v-show="openMenuFormId === card.id" style="right:.5rem;top:2.6rem">
+            <button class="context-menu-item" @click="openCardDesigner(card); closeMenu()"><i class="fas fa-pen-ruler"></i>Designer / YAML View</button>
+            <button class="context-menu-item" v-show="card.kind === 'group'" @click="toggleExpand(onboarding.PROVIDER_FORM_ID); closeMenu()"><i class="fas fa-clock-rotate-left"></i>Show Versions</button>
+            <button class="context-menu-item" v-show="card.kind === 'form'" @click="toggleExpand(card.formId); closeMenu()"><i class="fas fa-clock-rotate-left"></i>Show Versions</button>
+            <button class="context-menu-item" v-show="card.kind === 'form'" @click="toggleBookmark(card.formId); closeMenu()">
+              <i :class="card.bookmarked ? 'fas fa-star' : 'far fa-star'"></i><span>{{ card.bookmarked ? 'Unbookmark' : 'Bookmark' }}</span>
+            </button>
+            <button class="context-menu-item" v-show="card.kind === 'form' && !card.isSystem" @click="toggleArchive(card.formId); closeMenu()">
+              <i class="fas" :class="card.archived ? 'fa-box-open' : 'fa-box-archive'"></i><span>{{ card.archived ? 'Restore' : 'Archive' }}</span>
+            </button>
           </div>
-
-          <div v-show="libraryExpanded[formId]" style="padding-left:1.4rem;margin-top:.4rem">
-            <div v-for="v in [...formEntry(formId).versions].reverse()" :key="v.version" class="version-row">
+          <div v-show="card.kind === 'form' && libraryExpanded[card.formId]" class="cf-card" style="margin-top:.4rem;padding:.6rem .75rem;border-radius:.6rem">
+            <div v-for="v in versionsReversed(card.formId)" :key="v.version" class="version-row">
               <span>
                 <strong>v{{ v.version }}</strong>
-                <span class="badge badge-teal" style="font-size:.55rem;padding:.05rem .4rem;margin-left:.25rem" v-show="v.version === activeVersionNumber(formId)">ACTIVE</span>
+                <span class="badge" :class="v.status === 'final' ? 'badge-teal' : 'badge-muted'" style="font-size:.55rem;padding:.05rem .4rem;margin-left:.25rem">{{ (v.status || 'draft').toUpperCase() }}</span>
+                <span class="badge badge-teal" style="font-size:.55rem;padding:.05rem .4rem;margin-left:.25rem" v-show="v.version === activeVersionNumber(card.formId)">ACTIVE</span>
                 <span style="color:var(--cf-text)">{{ ' · ' + new Date(v.savedAt).toLocaleDateString() }}</span>
               </span>
               <div style="display:flex;gap:.3rem;flex-shrink:0">
-                <button class="btn-ghost" style="font-size:.62rem;padding:.2rem .45rem" @click="loadVersionIntoEditor(formId, v.version)">Load</button>
-                <button class="btn-outline" style="font-size:.62rem;padding:.2rem .45rem" v-show="v.version !== activeVersionNumber(formId)" @click="setActiveVersion(formId, v.version)">Set Active</button>
+                <button class="btn-ghost" style="font-size:.62rem;padding:.2rem .45rem" @click="loadVersionIntoEditor(card.formId, v.version); currentView = 'designer'">Load</button>
+                <button class="btn-outline" style="font-size:.62rem;padding:.2rem .45rem" v-show="v.version !== activeVersionNumber(card.formId)" @click="setActiveVersion(card.formId, v.version); currentView = 'designer'">Set Active</button>
               </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      <!-- ── My Forms ── -->
-      <button class="accordion-header" :class="accordionOpen.user ? '' : 'collapsed'" @click="toggleAccordion('user')">
-        <span class="section-eyebrow" style="margin:0">My Forms</span>
-        <i class="fas fa-chevron-down"></i>
-      </button>
-      <div v-show="accordionOpen.user">
-        <div v-for="formId in userFormIds()" :key="formId" class="form-entry" :class="formEntry(formId).archived ? 'archived' : ''">
-          <div style="display:flex;align-items:center;gap:.35rem">
-            <button class="icon-btn" :class="formEntry(formId).bookmarked ? 'bookmarked' : ''" @click.stop="toggleBookmark(formId)" title="Bookmark">
-              <i :class="formEntry(formId).bookmarked ? 'fas fa-star' : 'far fa-star'"></i>
-            </button>
-            <button class="sidebar-item" :class="blueprintJson && blueprintJson.id === formId ? 'active' : ''" @click="openInDataExplorer(formId)">
-              <i :class="formIcon(formId)" style="width:14px;text-align:center;flex-shrink:0;font-size:.8rem"></i>
-              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ formTitle(formId) }}</span>
-            </button>
-            <div style="position:relative">
-              <button class="icon-btn" @click.stop="toggleMenu(formId)"><i class="fas fa-ellipsis-vertical"></i></button>
-              <div class="context-menu" v-show="openMenuFormId === formId">
-                <button class="context-menu-item" @click="openInDesigner(formId); closeMenu()"><i class="fas fa-pen-ruler"></i>Designer View</button>
-                <button class="context-menu-item" @click="toggleExpand(formId); closeMenu()"><i class="fas fa-clock-rotate-left"></i>Show Versions</button>
-                <button class="context-menu-item" @click="toggleArchive(formId); closeMenu()">
-                  <i class="fas" :class="formEntry(formId).archived ? 'fa-box-open' : 'fa-box-archive'"></i>
-                  <span>{{ formEntry(formId).archived ? 'Restore' : 'Archive' }}</span>
-                </button>
-                <label class="context-menu-item" style="cursor:pointer"><input type="checkbox" v-model="libraryShowArchived" />Show Archived</label>
-              </div>
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:.35rem;margin-top:.3rem;padding-left:1.75rem">
-            <span class="badge badge-muted" style="font-size:.58rem;padding:.1rem .5rem" v-show="formEntry(formId).archived">ARCHIVED</span>
-          </div>
-
-          <div v-show="libraryExpanded[formId]" style="padding-left:1.4rem;margin-top:.4rem">
-            <div v-for="v in [...formEntry(formId).versions].reverse()" :key="v.version" class="version-row">
+          <div v-show="card.kind === 'group' && libraryExpanded[onboarding.PROVIDER_FORM_ID] && formEntry(onboarding.PROVIDER_FORM_ID)" class="cf-card" style="margin-top:.4rem;padding:.6rem .75rem;border-radius:.6rem">
+            <div v-for="v in versionsReversed(onboarding.PROVIDER_FORM_ID)" :key="v.version" class="version-row">
               <span>
                 <strong>v{{ v.version }}</strong>
-                <span class="badge badge-teal" style="font-size:.55rem;padding:.05rem .4rem;margin-left:.25rem" v-show="v.version === activeVersionNumber(formId)">ACTIVE</span>
+                <span class="badge" :class="v.status === 'final' ? 'badge-teal' : 'badge-muted'" style="font-size:.55rem;padding:.05rem .4rem;margin-left:.25rem">{{ (v.status || 'draft').toUpperCase() }}</span>
+                <span class="badge badge-teal" style="font-size:.55rem;padding:.05rem .4rem;margin-left:.25rem" v-show="v.version === activeVersionNumber(onboarding.PROVIDER_FORM_ID)">ACTIVE</span>
                 <span style="color:var(--cf-text)">{{ ' · ' + new Date(v.savedAt).toLocaleDateString() }}</span>
               </span>
               <div style="display:flex;gap:.3rem;flex-shrink:0">
-                <button class="btn-ghost" style="font-size:.62rem;padding:.2rem .45rem" @click="loadVersionIntoEditor(formId, v.version)">Load</button>
-                <button class="btn-outline" style="font-size:.62rem;padding:.2rem .45rem" v-show="v.version !== activeVersionNumber(formId)" @click="setActiveVersion(formId, v.version)">Set Active</button>
+                <button class="btn-ghost" style="font-size:.62rem;padding:.2rem .45rem" @click="loadVersionIntoEditor(onboarding.PROVIDER_FORM_ID, v.version); currentView = 'designer'">Load</button>
+                <button class="btn-outline" style="font-size:.62rem;padding:.2rem .45rem" v-show="v.version !== activeVersionNumber(onboarding.PROVIDER_FORM_ID)" @click="setActiveVersion(onboarding.PROVIDER_FORM_ID, v.version); currentView = 'designer'">Set Active</button>
               </div>
             </div>
           </div>
         </div>
-
-        <p style="font-size:.75rem;color:var(--cf-text);text-align:center;padding:1rem 0" v-show="userFormIds().length === 0">No custom forms yet — click New, or Save to Library from Step 1.</p>
       </div>
-    </aside>
-
-    <!-- ── RIGHT: Designer View / Data Explorer ── -->
-    <div style="flex:1;min-width:0;overflow-y:auto">
-
-    <div style="display:flex;gap:.5rem;justify-content:center;margin-bottom:1.5rem">
-      <button class="btn-outline" :class="currentView === 'designer' ? 'btn-teal' : ''" @click="currentView = 'designer'" style="font-size:.75rem;padding:.4rem 1.1rem">
-        <i class="fas fa-pen-ruler" style="margin-right:.35rem"></i>Designer View
-      </button>
-      <button class="btn-outline" :class="currentView === 'dataExplorer' ? 'btn-teal' : ''" @click="currentView = 'dataExplorer'" style="font-size:.75rem;padding:.4rem 1.1rem">
-        <i class="fas fa-table-list" style="margin-right:.35rem"></i>Data Explorer
-      </button>
     </div>
+
+    <!-- ── Table view / Designer view (drilled into one card) ── -->
+    <div v-show="currentView !== 'cards'">
+    <button class="btn-outline" @click="backToCards()" style="font-size:.75rem;padding:.4rem 1rem;margin-bottom:1.25rem;display:flex;align-items:center;gap:.4rem">
+      <i class="fas fa-arrow-left"></i>Back to Forms Library
+    </button>
 
     <div v-show="currentView === 'designer'">
 
@@ -1088,8 +1161,8 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
     </div>
     <!-- ════ end Designer View ════ -->
 
-    <!-- ════ Data Explorer: Data Records ════ -->
-    <div v-show="currentView === 'dataExplorer'" class="step-panel">
+    <!-- ════ Data Explorer: Data Records (Patient/Encounter/custom form cards) ════ -->
+    <div v-show="currentView === 'table' && activeCard && activeCard.kind === 'form'" class="step-panel">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem">
         <div>
           <span class="section-eyebrow" style="display:block;margin-bottom:.4rem">Data Explorer</span>
@@ -1106,6 +1179,33 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
           :theme="gridTheme" :rowData="currentFormDataRecords()" :columnDefs="dataExplorerColumnDefs" :defaultColDef="dataExplorerDefaultColDef"
           pagination :paginationPageSize="10" domLayout="autoHeight" :getRowId="(p) => p.data.id"
           overlayNoRowsTemplate="No data saved for this form yet. Click New Entry to create one."
+        />
+      </div>
+    </div>
+
+    <!-- ════ Provider group table (Care Team/Administrators/Services/Hours/Consents/Branches/
+         Appointments cards) — one row per repeating-group instance inside the ONE shared
+         Provider record, not one row per formData record (there's only ever one). ════ -->
+    <div v-show="currentView === 'table' && activeCard && activeCard.kind === 'group'" class="step-panel">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem">
+        <div>
+          <span class="section-eyebrow" style="display:block;margin-bottom:.4rem">{{ activeCard ? activeCard.title : '' }}</span>
+          <h2 style="font-size:1.5rem;font-weight:700;color:var(--cf-text-strong);margin-bottom:.35rem">{{ activeCard ? activeCard.desc : '' }}</h2>
+        </div>
+        <button class="btn-teal" @click="openProviderDrawer(activeCard)" style="display:flex;align-items:center;gap:.5rem;white-space:nowrap">
+          <i class="fas fa-plus"></i>Add
+        </button>
+      </div>
+
+      <div class="cf-card" style="border-radius:1rem;padding:0;overflow:hidden">
+        <AgGridVue
+          :theme="gridTheme" :rowData="activeCard ? groupInstancesForCard(activeCard) : []" :defaultColDef="dataExplorerDefaultColDef"
+          :columnDefs="[
+            { headerName: 'Record', valueGetter: (p) => instanceSummary(p.data, p.node.rowIndex), flex: 1.4 },
+            { headerName: 'Actions', cellRenderer: GridActionsCell, cellRendererParams: { onView: () => openProviderDrawer(activeCard) }, flex: 0.6, sortable: false, filter: false },
+          ]"
+          pagination :paginationPageSize="10" domLayout="autoHeight"
+          overlayNoRowsTemplate="Nothing added yet. Click Add to open the form."
         />
       </div>
     </div>
