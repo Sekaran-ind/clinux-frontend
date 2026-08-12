@@ -6,6 +6,7 @@
 // x-data object with no Alpine.store dependency beyond 'theme' — ported the same way, as page-
 // local state, since nothing here is needed by any other page.
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { load as yamlLoad, dump as yamlDump } from 'js-yaml';
 import ace from 'ace-builds/src-noconflict/ace';
 import 'ace-builds/src-noconflict/mode-yaml';
@@ -30,6 +31,7 @@ import { useCuboStore } from '../stores/cubo.js';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import { API_BASE, apiFetch } from '../config.js';
 
+const router = useRouter();
 const theme = useThemeStore();
 const auth = useAuthStore();
 const cubo = useCuboStore();
@@ -44,7 +46,19 @@ cubo.currentLayout = 'EXPANDED';
 // Merged from the former standalone AiEngine.vue (see clinux-ai-engine-designer-merge-tanstack-
 // table memory note) — one shared Cübo instance now serves both halves of this page; which half
 // its cubo-api-submit emit actually reaches is just a matter of which tab is showing.
-const primaryTab = ref('formsLibrary'); // 'formsLibrary' | 'sandbox'
+//
+// This route has no requiresAuth guard (see clinux-authenticated-vs-sandbox-mode memory note) —
+// Sandbox Data is a deliberately isolated demo, safe for anyone to reach, but Forms Library holds
+// the real Provider-composition data, so an unauthenticated visitor only ever lands on/stays on
+// Sandbox Data; there is nothing behind Forms Library for them, so its own tab button is hidden
+// rather than shown-but-disabled.
+const primaryTab = ref(auth.currentUser ? 'formsLibrary' : 'sandbox'); // 'formsLibrary' | 'sandbox'
+// Logging out while on Forms Library (e.g. via another tab) must not leave a signed-out visitor
+// looking at real clinic data — same reasoning a moment ago, just reactive to a session change
+// instead of only checked once at mount.
+watch(() => auth.currentUser, (user) => {
+  if (!user) primaryTab.value = 'sandbox';
+});
 const aiEngineSandboxRef = ref(null);
 function onCuboSubmit(payload) {
   aiEngineSandboxRef.value?.classifyAndExecute(payload);
@@ -918,9 +932,12 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
            drawer rather than switch tabs) since these buttons sit at z-index:auto by default.
            Found during live verification of this merge, not anticipated at design time. -->
       <div style="display:flex;gap:.5rem;padding:1rem 1.5rem 0;flex-shrink:0;position:relative;z-index:110">
-        <button class="btn-outline" :class="primaryTab === 'formsLibrary' ? 'btn-teal' : ''" @click="primaryTab = 'formsLibrary'" style="font-size:.78rem">
+        <button v-show="auth.currentUser" class="btn-outline" :class="primaryTab === 'formsLibrary' ? 'btn-teal' : ''" @click="primaryTab = 'formsLibrary'" style="font-size:.78rem">
           <i class="fas fa-pen-ruler" style="margin-right:.4rem"></i>Forms Library
         </button>
+        <span v-show="!auth.currentUser" style="font-size:.75rem;color:var(--cf-text);align-self:center;padding:0 .25rem">
+          <i class="fas fa-flask" style="margin-right:.35rem;color:var(--color-primary)"></i>Sandbox mode — <button class="btn-ghost" style="padding:0;font-size:.75rem;text-decoration:underline;display:inline" @click="router.push('/')">sign in</button> for your clinic's real data.
+        </span>
         <button class="btn-outline" :class="primaryTab === 'sandbox' ? 'btn-teal' : ''" @click="primaryTab = 'sandbox'" style="font-size:.78rem">
           <i class="fas fa-flask" style="margin-right:.4rem"></i>Sandbox Data
         </button>
