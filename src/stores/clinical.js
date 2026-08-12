@@ -10,9 +10,17 @@ import { getCareTeam, addCareTeamMember, removeCareTeamMember } from '../data/co
 // instead of each hardcoding the literal string themselves.
 const ENCOUNTER_FORM_ID = 'system-encounter-composition-v1';
 
-// The other two choices compiled into encounter_status (system-encounter-composition-v1.yaml)
-// are 'finished'/'cancelled' — everything else is still an open, in-progress visit.
-const OPEN_ENCOUNTER_STATUSES = ['arrived', 'in-progress'];
+// Deny-list, not allow-list. getAnswer() returns '' for a field the user hasn't touched yet
+// (see formData.js) — a freshly created encounter's encounter_status starts exactly like that
+// until someone explicitly opens the drawer and picks a value from the dropdown. Checking
+// against an allow-list of ['arrived','in-progress'] meant '' never matched either one, so every
+// new session was invisible in Front Desk/Checkout/ClinicHome's Active Sessions from the moment
+// it was created — not just eventually, immediately — regardless of how far the visit actually
+// progressed (real chief complaint, vitals, SOAP notes, prescriptions could all be filled in and
+// it would still never show). 'finished'/'cancelled' are the only two statuses Checkout.vue's own
+// closeEncounter() (or a manually cancelled visit) ever explicitly sets — anything else, including
+// unset, is still an open visit.
+const CLOSED_ENCOUNTER_STATUSES = ['finished', 'cancelled'];
 
 const LAST_PAGE_KEY = 'cf_encounter_last_page';
 
@@ -55,7 +63,7 @@ export const useClinicalStore = defineStore('clinical', () => {
   // Sorted most-recent-first already, via encounterRecords()' own savedAt ordering.
   function listActiveSessions() {
     return encounterRecords()
-      .filter((r) => OPEN_ENCOUNTER_STATUSES.includes(getAnswer(r, 'encounter_status')))
+      .filter((r) => !CLOSED_ENCOUNTER_STATUSES.includes(getAnswer(r, 'encounter_status')))
       .map((r) => ({
         id: r.id,
         status: getAnswer(r, 'encounter_status'),
