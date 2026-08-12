@@ -8,6 +8,7 @@ import { jsPDF } from 'jspdf';
 import Cubo from '../components/Cubo.vue';
 import CornerstoneViewer from '../components/CornerstoneViewer.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
+import SessionShareModal from '../components/SessionShareModal.vue';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useCuboStore } from '../stores/cubo.js';
 import { useAuthStore } from '../stores/auth.js';
@@ -115,6 +116,11 @@ cubo.currentLayout = 'EXPANDED';
 
 const patientName = computed(() => (encounter.value ? getAnswer(encounter.value, 'encounter_patient_ref') : ''));
 const chiefComplaint = computed(() => (encounter.value ? getAnswer(encounter.value, 'encounter_chief_complaint') : ''));
+
+// Phase C: QR/text-key session transfer — see sessionShare.js. Consultation Desk only ever
+// shows an already-active encounter (the v-if="!encounter" branch above handles the empty
+// case), so it only needs the Share side, not Import.
+const shareModalOpen = ref(false);
 
 const systemLog = computed(() => {
   dataVersion.value;
@@ -416,9 +422,12 @@ function sendToCheckout() {
           <option>Urgent</option>
           <option>Emergency</option>
         </select>
+        <button class="btn-outline text-xs inline-flex items-center gap-1.5" @click="shareModalOpen = true"><i class="fas fa-share-nodes"></i>Share / Sync</button>
         <button class="btn-primary text-xs inline-flex items-center gap-1.5" @click="sendToCheckout()"><i class="fas fa-arrow-right"></i>Send to Checkout</button>
       </div>
     </div>
+
+    <SessionShareModal :open="shareModalOpen" :record="encounter" @close="shareModalOpen = false" />
 
     <div class="flex-1 flex overflow-hidden chat-forms-shell" :class="mobileView === 'chat' ? 'mobile-mode-chat' : 'mobile-mode-forms'">
       <!-- LEFT: Cübo, same confined-pane pattern as Front Desk/Checkout — no tabs here anymore. -->

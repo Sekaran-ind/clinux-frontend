@@ -37,6 +37,7 @@
     "node-nlp": "^5.0.0-alpha.5",
     "pinia": "^4.0.2",
     "qr-scanner": "^1.4.2",
+    "qrcode": "^1.5.4",
     "tinykeys": "^4.0.0",
     "vue": "^3.5.39",
     "vue-router": "^4.6.4",

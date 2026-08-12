@@ -6,6 +6,8 @@
 import { computed, ref } from 'vue';
 import Cubo from '../components/Cubo.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
+import SessionShareModal from '../components/SessionShareModal.vue';
+import SessionImportModal from '../components/SessionImportModal.vue';
 import {
   listDataRecords, recordSummary, activeQuestionnaire, activeVersionNumber,
   saveDataRecord, getGroupInstances, formsLibrary,
@@ -275,6 +277,27 @@ const vitalsRecords = computed(() => {
 function sendToConsultation() {
   emit('navigate', 'consultation-desk');
 }
+
+// Phase C: QR/text-key session transfer — see sessionShare.js. Share is only meaningful once
+// this visit has an encounter record to share; Import is offered from the sessions landing
+// screen too, for pulling in a session that doesn't exist on this device yet.
+const shareModalOpen = ref(false);
+const importModalOpen = ref(false);
+const shareRecord = computed(() => {
+  dataVersion.value;
+  return encounterRecordId.value ? clinical.getEncounter() : null;
+});
+
+// Deliberately does NOT close the modal here — SessionImportModal shows its own "Session
+// imported." success state and waits for the user to dismiss it (X button / backdrop click,
+// both already wired to @close). Closing it immediately on this event made that success state
+// unreachable in practice — it would flash the modal shut before anyone ever saw it. The wizard
+// underneath is already resumed to the imported session by the time they close it.
+function onSessionImported(importedEncounterId) {
+  dataVersion.value++;
+  resumeSession({ id: importedEncounterId });
+  showToast('Session imported.');
+}
 </script>
 
 <template>
@@ -286,6 +309,9 @@ function sendToConsultation() {
   <button class="mobile-toggle-fab" @click="mobileView = mobileView === 'chat' ? 'forms' : 'chat'" :title="mobileView === 'chat' ? 'Switch to forms' : 'Switch to chat'">
     <i :class="mobileView === 'chat' ? 'fas fa-table-list' : 'fas fa-comment'"></i>
   </button>
+
+  <SessionShareModal :open="shareModalOpen" :record="shareRecord" @close="shareModalOpen = false" />
+  <SessionImportModal :open="importModalOpen" @close="importModalOpen = false" @imported="onSessionImported" />
 
   <div class="flex-1 flex overflow-hidden chat-forms-shell" :class="mobileView === 'chat' ? 'mobile-mode-chat' : 'mobile-mode-forms'">
     <!-- LEFT: Cübo, threaded to this visit's encounter once one exists (see Cubo.vue's
@@ -300,9 +326,12 @@ function sendToConsultation() {
     <!-- RIGHT: sessions list, or the wizard once a session's picked/started -->
     <div class="flex-1 overflow-y-auto p-6 space-y-3 content-pane">
       <div v-if="screen === 'sessions'" class="max-w-[720px]">
-        <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
           <h2 class="text-2xl font-bold" style="color:var(--cf-text-strong)">Active Sessions</h2>
-          <button class="btn-teal whitespace-nowrap" @click="startNewSession()"><i class="fas fa-plus"></i> New Check-In</button>
+          <div class="flex gap-2">
+            <button class="btn-outline whitespace-nowrap text-sm" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Import Session</button>
+            <button class="btn-teal whitespace-nowrap" @click="startNewSession()"><i class="fas fa-plus"></i> New Check-In</button>
+          </div>
         </div>
         <div v-if="activeSessions.length === 0" class="cf-card rounded-2xl p-5 text-sm" style="color:var(--cf-text)">
           No active sessions right now. Start a new check-in above.
@@ -323,16 +352,19 @@ function sendToConsultation() {
       </div>
 
       <div v-else>
-      <div class="flex items-center gap-6 flex-wrap mb-6">
-        <button class="btn-ghost text-xs" @click="screen = 'sessions'"><i class="fas fa-arrow-left"></i> Sessions</button>
-        <div v-for="(s, idx) in steps" :key="s.id" class="flex items-center gap-2 cursor-pointer" @click="goToStep(idx)">
-          <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0"
-               :class="idx < currentStep ? 'bg-(--color-primary) text-(--color-secondary)' : idx === currentStep ? 'bg-(--color-secondary) text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'">
-            <i v-if="idx < currentStep" class="fas fa-check text-xs"></i>
-            <span v-else>{{ idx + 1 }}</span>
+      <div class="flex items-center justify-between gap-4 flex-wrap mb-6">
+        <div class="flex items-center gap-6 flex-wrap">
+          <button class="btn-ghost text-xs" @click="screen = 'sessions'"><i class="fas fa-arrow-left"></i> Sessions</button>
+          <div v-for="(s, idx) in steps" :key="s.id" class="flex items-center gap-2 cursor-pointer" @click="goToStep(idx)">
+            <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs shrink-0"
+                 :class="idx < currentStep ? 'bg-(--color-primary) text-(--color-secondary)' : idx === currentStep ? 'bg-(--color-secondary) text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-500'">
+              <i v-if="idx < currentStep" class="fas fa-check text-xs"></i>
+              <span v-else>{{ idx + 1 }}</span>
+            </div>
+            <span class="text-sm" :class="idx === currentStep ? 'font-bold' : ''" style="color:var(--cf-text)">{{ s.label }}</span>
           </div>
-          <span class="text-sm" :class="idx === currentStep ? 'font-bold' : ''" style="color:var(--cf-text)">{{ s.label }}</span>
         </div>
+        <button v-if="encounterRecordId" class="btn-outline text-xs px-3 py-1.5 whitespace-nowrap" @click="shareModalOpen = true"><i class="fas fa-share-nodes"></i> Share / Sync</button>
       </div>
 
       <div class="max-w-[720px]">
