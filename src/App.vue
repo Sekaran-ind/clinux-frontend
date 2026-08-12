@@ -31,7 +31,7 @@ const pageBadge = {
     <nav v-if="!route.meta.hideAppNav" class="cf-nav sticky top-0 z-40">
       <div class="max-w-[1300px] mx-auto px-6 h-14 flex items-center justify-between">
         <RouterLink to="/" class="flex items-center gap-2.5 no-underline">
-          <img src="/cu-icon.png" alt="ClinuxFlow" style="width:28px;height:28px;border-radius:.375rem;box-shadow:0 2px 6px rgba(0,0,0,.15)" />
+          <div class="bg-(--color-primary) text-(--color-secondary) font-black font-mono rounded shadow-lg" style="font-size:.85rem;line-height:1;padding:.35rem .5rem">Cü</div>
           <span style="font-family:'Poppins',sans-serif;font-weight:700;font-size:1rem;color:var(--cf-text-strong)">Clinüx<span style="color:var(--color-primary)">Flow</span></span>
           <span class="badge badge-teal">{{ pageBadge[route.name] || 'CLINUX FRONTEND' }}</span>
         </RouterLink>
