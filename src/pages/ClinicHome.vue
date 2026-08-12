@@ -493,7 +493,7 @@ function sendMessage() {
   <footer style="background:var(--color-secondary);padding:2.5rem 0;margin-bottom:1.5rem">
     <div class="container" style="display:flex;flex-direction:column;align-items:center;gap:1rem;text-align:center">
       <div style="display:flex;align-items:center;gap:.625rem">
-        <img src="/cu-icon.png" alt="ClinuxFlow" style="width:28px;height:28px;border-radius:.4rem" />
+        <div style="width:28px;height:28px;border-radius:.4rem;display:flex;align-items:center;justify-content:center;background:rgba(0,212,178,.15)"><span style="color:#00D4B2;font-weight:800;font-size:.65rem;font-family:'Poppins',sans-serif">CÜ</span></div>
         <span style="font-family:'Poppins',sans-serif;font-weight:700;color:#fff;font-size:.9rem">Clinix<span style="color:#00D4B2">Flow</span></span>
       </div>
       <p style="font-size:.8rem;color:rgba(255,255,255,.5)">{{ `© ${new Date().getFullYear()} ${clinic.name || 'Your Clinic'}. All rights reserved.` }}</p>

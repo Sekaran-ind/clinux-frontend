@@ -237,7 +237,7 @@ onUnmounted(stopAutoplay);
   <nav class="cf-nav fixed top-0 w-full z-40">
     <div class="max-w-7xl mx-auto px-6 flex items-center justify-between h-16">
       <a href="#hero" class="flex items-center gap-2">
-        <img src="/cu-icon.png" alt="ClinuxFlow" style="width:38px;height:38px;border-radius:.5rem;box-shadow:0 4px 10px rgba(0,0,0,.15)" />
+        <div class="bg-(--color-primary) text-(--color-secondary) font-black text-2xl px-2.5 py-1 rounded shadow-lg font-mono">CÜ</div>
         <span class="font-bold text-xl cf-text-strong" style="font-family:'Poppins',sans-serif">Clinüx<span style="color:var(--color-primary)">Flow </span>
           <p class="text-xs font-bold cf-text-strong" style="font-family:'Poppins',sans-serif"><em>Trusted Partner of ABDM </em>
             <img style="display:inline;vertical-align:middle" src="/india.svg" width="20" height="20" alt="Flag of India" />
@@ -499,7 +499,7 @@ onUnmounted(stopAutoplay);
   <footer style="padding:3rem 0">
     <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-4">
       <div class="flex items-center gap-2">
-        <img src="/cu-icon.png" alt="ClinuxFlow" class="w-7 h-7" style="border-radius:.25rem" />
+        <div class="bg-(--color-primary) text-(--color-secondary) w-7 h-7 rounded-xs flex items-center justify-center"><i class="text-xs" style="color:var(--color-secondary)">Cü</i></div>
         <span class="cf-label" style="font-family:'Poppins',sans-serif">Clinüx<span style="color:var(--color-primary)">Flow</span></span>
         <span class="cf-label">Powered by YAXB</span>
       </div>
