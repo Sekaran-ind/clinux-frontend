@@ -55,6 +55,9 @@ const priority = ref('Normal');
 // Left pane is just Cübo now, like every other page — Labs & Imaging/Documents moved to the
 // right pane's own tab bar alongside Consultation Record.
 const rightTab = ref('record');
+// Mobile/tablet chat<->forms toggle (see style.css's .chat-forms-shell) — chat is the default
+// per the mobile-app spec; a no-op above the breakpoint, where both panes always show anyway.
+const mobileView = ref('chat'); // 'chat' | 'forms'
 const isGenerating = ref(false);
 const isGeneratingRx = ref(false);
 const logsExpanded = ref(false);
@@ -397,6 +400,10 @@ function sendToCheckout() {
   </div>
 
   <template v-else>
+    <button class="mobile-toggle-fab" @click="mobileView = mobileView === 'chat' ? 'forms' : 'chat'" :title="mobileView === 'chat' ? 'Switch to forms' : 'Switch to chat'">
+      <i :class="mobileView === 'chat' ? 'fas fa-table-list' : 'fas fa-comment'"></i>
+    </button>
+
     <!-- Top bar -->
     <div class="flex items-center justify-between px-4 py-3 border-b" style="border-color:var(--cf-border)">
       <div>
@@ -413,16 +420,16 @@ function sendToCheckout() {
       </div>
     </div>
 
-    <div class="flex-1 flex overflow-hidden">
+    <div class="flex-1 flex overflow-hidden chat-forms-shell" :class="mobileView === 'chat' ? 'mobile-mode-chat' : 'mobile-mode-forms'">
       <!-- LEFT: Cübo, same confined-pane pattern as Front Desk/Checkout — no tabs here anymore. -->
-      <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
+      <div class="w-[380px] shrink-0 flex flex-col border-r chat-pane" style="border-color:var(--cf-border)">
         <div class="cubo-inline-host flex-1" style="min-height:420px">
           <Cubo category="encounter" :encounter-id="encounter.id" :encounter-title="`${patientName} — ${chiefComplaint}`" page-context="Current Page: ClinixFlow Consultation Desk." />
         </div>
       </div>
 
       <!-- RIGHT: Consultation Record / Labs & Imaging / Documents, as tabs. -->
-      <div class="flex-1 flex flex-col overflow-hidden">
+      <div class="flex-1 flex flex-col overflow-hidden content-pane">
         <div class="flex border-b" style="border-color:var(--cf-border)">
           <button class="flex-1 text-xs font-bold py-2.5" :class="rightTab === 'record' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="rightTab = 'record'">Consultation Record</button>
           <button class="flex-1 text-xs font-bold py-2.5" :class="rightTab === 'imaging' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="rightTab = 'imaging'">Labs &amp; Imaging</button>

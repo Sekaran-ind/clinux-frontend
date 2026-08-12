@@ -65,6 +65,10 @@ const selectedPatientId = ref(null);
 const encounterRecordId = ref(null);
 const lhcFormHost = ref(null);
 
+// Mobile/tablet chat<->forms toggle (see style.css's .chat-forms-shell) — chat is the default
+// per the mobile-app spec; a no-op above the breakpoint, where both panes always show anyway.
+const mobileView = ref('chat'); // 'chat' | 'forms'
+
 // Landing view: the active-sessions list, not a silent single-encounter auto-resume (there can
 // be more than one open visit at once — staff pick which one, or start a new check-in).
 const screen = ref('sessions'); // 'sessions' | 'wizard'
@@ -279,18 +283,22 @@ function sendToConsultation() {
     <span>{{ toast.msg }}</span>
   </div>
 
-  <div class="flex-1 flex overflow-hidden">
+  <button class="mobile-toggle-fab" @click="mobileView = mobileView === 'chat' ? 'forms' : 'chat'" :title="mobileView === 'chat' ? 'Switch to forms' : 'Switch to chat'">
+    <i :class="mobileView === 'chat' ? 'fas fa-table-list' : 'fas fa-comment'"></i>
+  </button>
+
+  <div class="flex-1 flex overflow-hidden chat-forms-shell" :class="mobileView === 'chat' ? 'mobile-mode-chat' : 'mobile-mode-forms'">
     <!-- LEFT: Cübo, threaded to this visit's encounter once one exists (see Cubo.vue's
          watch(encounterId) — it starts on a plain front-desk thread during the Patient step,
          then hands off the moment step 2 creates the encounter). -->
-    <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
+    <div class="w-[380px] shrink-0 flex flex-col border-r chat-pane" style="border-color:var(--cf-border)">
       <div class="cubo-inline-host flex-1" style="min-height:420px">
         <Cubo category="front-desk" :encounter-id="encounterRecordId" page-context="Front Desk — patient onboarding, encounter intake, vitals and triage." />
       </div>
     </div>
 
     <!-- RIGHT: sessions list, or the wizard once a session's picked/started -->
-    <div class="flex-1 overflow-y-auto p-6 space-y-3">
+    <div class="flex-1 overflow-y-auto p-6 space-y-3 content-pane">
       <div v-if="screen === 'sessions'" class="max-w-[720px]">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-2xl font-bold" style="color:var(--cf-text-strong)">Active Sessions</h2>

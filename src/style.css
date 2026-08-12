@@ -603,3 +603,32 @@ select {
 .record-card { background:var(--cf-bg-alt);border:1px solid var(--cf-border);border-radius:.75rem;padding:.75rem 1rem;display:flex;align-items:center;justify-content:space-between;gap:.75rem;transition:border .2s; }
 .record-card:hover { border-color:var(--color-primary); }
 .badge-muted { background:var(--cf-bg);color:var(--cf-text);border:1px solid var(--cf-border); }
+
+/* ── Mobile/tablet chat↔forms toggle (Front Desk/Consultation Desk/Checkout) — replaces the
+     deferred PR #7, reimplemented against the current single-Cübo-pane structure rather than
+     merged as-is (the original diff still had the left pane's own now-removed tab bar). Each of
+     these pages is a fixed two-pane row (Cübo pane + content pane) with no room to show both
+     side by side below tablet width — wrap that row in .chat-forms-shell, add .chat-pane/
+     .content-pane to its two direct children, and toggle .mobile-mode-chat/.mobile-mode-forms
+     via each page's own `mobileView` ref. A no-op above the breakpoint (existing desktop
+     two-pane layout untouched) — 768px matches ClinicHome.vue's own existing breakpoint. ── */
+.mobile-toggle-fab {
+  display: none; position: fixed; bottom: 1.25rem; right: 1.25rem; z-index: 60;
+  width: 52px; height: 52px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--color-primary); color: var(--color-secondary);
+  box-shadow: 0 8px 20px rgba(0,0,0,.25); font-size: 1.1rem;
+  align-items: center; justify-content: center;
+}
+/* This block must come AFTER the base .mobile-toggle-fab rule above -- same specificity (one
+   class each), so CSS cascade ORDER decides the tie at any width below the breakpoint; putting
+   it first would let the base display:none rule always win regardless of viewport. */
+@media (max-width: 768px) {
+  /* Just hide the inactive pane -- .content-pane is already flex-1 in every page that has one,
+     so it naturally expands to fill the row once .chat-pane's fixed w-[380px] sibling is gone.
+     .chat-pane itself isn't flex-1 (it's a fixed width by design on desktop), so mobile-mode-chat
+     needs its own width override to become full-width once IT'S the only visible child. */
+  .chat-forms-shell.mobile-mode-chat .content-pane { display: none; }
+  .chat-forms-shell.mobile-mode-chat .chat-pane { width: 100% !important; }
+  .chat-forms-shell.mobile-mode-forms .chat-pane { display: none; }
+  .mobile-toggle-fab { display: flex; }
+}

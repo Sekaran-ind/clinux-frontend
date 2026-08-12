@@ -29,6 +29,9 @@ cubo.currentLayout = 'EXPANDED';
 const ENCOUNTER_FORM_ID = clinical.ENCOUNTER_FORM_ID;
 
 const screen = ref('sessions'); // 'sessions' | 'steps' | 'done'
+// Mobile/tablet chat<->forms toggle (see style.css's .chat-forms-shell) — chat is the default
+// per the mobile-app spec; a no-op above the breakpoint, where both panes always show anyway.
+const mobileView = ref('chat'); // 'chat' | 'forms'
 
 const toast = ref({ show: false, msg: '' });
 let toastTimer = null;
@@ -164,17 +167,21 @@ function closeEncounter() {
     </div>
   </div>
 
-  <div class="flex-1 flex overflow-hidden">
+  <button class="mobile-toggle-fab" @click="mobileView = mobileView === 'chat' ? 'forms' : 'chat'" :title="mobileView === 'chat' ? 'Switch to forms' : 'Switch to chat'">
+    <i :class="mobileView === 'chat' ? 'fas fa-table-list' : 'fas fa-comment'"></i>
+  </button>
+
+  <div class="flex-1 flex overflow-hidden chat-forms-shell" :class="mobileView === 'chat' ? 'mobile-mode-chat' : 'mobile-mode-forms'">
     <!-- LEFT: Cübo, same confined-pane pattern as Front Desk/Consultation Desk. Stays mounted
          across every screen (sessions/steps/done), not just while a session is open. -->
-    <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
+    <div class="w-[380px] shrink-0 flex flex-col border-r chat-pane" style="border-color:var(--cf-border)">
       <div class="cubo-inline-host flex-1" style="min-height:420px">
         <Cubo category="billing" :encounter-id="encounterId" page-context="Checkout — prescription, billing, payment and visit close-out." />
       </div>
     </div>
 
     <!-- RIGHT: sessions list, or this session's own view once one's picked -->
-    <main class="flex-1 overflow-y-auto p-6">
+    <main class="flex-1 overflow-y-auto p-6 content-pane">
       <div class="max-w-[900px]">
 
         <div v-if="screen === 'sessions'">
