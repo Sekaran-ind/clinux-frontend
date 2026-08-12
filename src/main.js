@@ -1,5 +1,13 @@
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
+import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+
+// AG Grid's module system needs registering once, globally, before any <AgGridVue> mounts —
+// AllCommunityModule bundles every free (MIT-licensed) feature: sorting/filtering/pagination,
+// exactly what replaces PrimeVue's DataTable here (see clinux-ag-grid-instead-of-primevue memory
+// note — PrimeVue v5 turned out to require a paid license for component chrome; AG Grid
+// Community has no such gate).
+ModuleRegistry.registerModules([AllCommunityModule]);
 import './style.css';
 import App from './App.vue';
 import { router } from './router/index.js';

@@ -11,6 +11,13 @@ import ace from 'ace-builds/src-noconflict/ace';
 import 'ace-builds/src-noconflict/mode-yaml';
 import 'ace-builds/src-noconflict/theme-tomorrow';
 import 'ace-builds/src-noconflict/theme-tomorrow_night';
+import { tinykeys } from 'tinykeys';
+import { debounce } from '@tanstack/pacer';
+import { AgGridVue } from 'ag-grid-vue3';
+import { themeQuartz } from 'ag-grid-community';
+import GridActionsCell from '../components/grid/GridActionsCell.vue';
+import Cubo from '../components/Cubo.vue';
+import AiEngineSandbox from './AiEngineSandbox.vue';
 import {
   formsLibrary, seedSystemForms, activeVersionNumber, SYSTEM_FORM_IDS,
   listDataRecords, saveDataRecord, deleteDataRecord, recordSummary,
@@ -18,10 +25,24 @@ import {
 } from '../data/useSystemForms.js';
 import { useThemeStore } from '../stores/theme.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useCuboStore } from '../stores/cubo.js';
 import { API_BASE, apiFetch } from '../config.js';
 
 const theme = useThemeStore();
 const auth = useAuthStore();
+const cubo = useCuboStore();
+// This page hosts Cübo full-time (same choice ConsultationDesk.vue/Checkout.vue/FrontDesk.vue
+// already made), so start expanded rather than the collapsed FAB badge.
+cubo.currentLayout = 'EXPANDED';
+
+// Merged from the former standalone AiEngine.vue (see clinux-ai-engine-designer-merge-tanstack-
+// table memory note) — one shared Cübo instance now serves both halves of this page; which half
+// its cubo-api-submit emit actually reaches is just a matter of which tab is showing.
+const primaryTab = ref('formsLibrary'); // 'formsLibrary' | 'sandbox'
+const aiEngineSandboxRef = ref(null);
+function onCuboSubmit(payload) {
+  aiEngineSandboxRef.value?.classifyAndExecute(payload);
+}
 
 const currentView = ref('designer'); // 'designer' | 'dataExplorer'
 const currentStep = ref(0);
@@ -38,7 +59,13 @@ const savedVersionLabel = ref('');
 const keywordInputs = reactive({});
 const libraryShowArchived = ref(false);
 const libraryExpanded = reactive({});
-const formSearchQuery = ref('');
+const formSearchInput = ref('');
+const formSearchQuery = ref(''); // debounced mirror of formSearchInput, via @tanstack/pacer
+const debouncedSetFormSearch = debounce((v) => { formSearchQuery.value = v; }, { wait: 250 });
+function onFormSearchInput(v) {
+  formSearchInput.value = v;
+  debouncedSetFormSearch(v);
+}
 const accordionOpen = reactive({ bookmarked: true, system: true, user: true, results: false, compileDetails: false });
 const openMenuFormId = ref(null);
 const previewDrawerOpen = ref(false);
@@ -51,6 +78,15 @@ const currentVersionNumber = ref(null);
 const pendingStartVersion = ref(null);
 const newFormDrawerOpen = ref(false);
 const newFormDraft = reactive({ formId: 'new-form-v1', title: 'New Form', version: 1 });
+
+// Both drawers are page-level overlays (not scoped inside the Forms Library tab's own v-show
+// block), so leaving one open while switching to Sandbox Data would float over that tab's
+// content too, with its backdrop blocking every click there. Found during live verification of
+// this merge, not anticipated at design time.
+watch(primaryTab, () => {
+  previewDrawerOpen.value = false;
+  newFormDrawerOpen.value = false;
+});
 const dataSaveLabel = ref('');
 const toast = ref({ show: false, msg: '' });
 let toastTimer = null;
@@ -249,6 +285,37 @@ function closeMenusOnOutsideClick(e) {
 onMounted(() => document.addEventListener('click', closeMenusOnOutsideClick));
 onUnmounted(() => document.removeEventListener('click', closeMenusOnOutsideClick));
 
+// Hotkeys — new pattern for this codebase (no prior hotkey library/convention existed anywhere
+// in it, confirmed before adding tinykeys). Scoped to this merged page only, not app-wide.
+function isTypingContext() {
+  const el = document.activeElement;
+  if (!el) return false;
+  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return true;
+  if (el.isContentEditable) return true;
+  if (el.closest && el.closest('.ace_editor')) return true;
+  return false;
+}
+let unregisterHotkeys = null;
+onMounted(() => {
+  unregisterHotkeys = tinykeys(window, {
+    '/': (e) => {
+      if (isTypingContext()) return; // don't hijack '/' while typing anywhere else
+      e.preventDefault();
+      document.querySelector('.cubo-wrapper textarea')?.focus();
+    },
+    '$mod+KeyK': (e) => {
+      e.preventDefault();
+      const sel = primaryTab.value === 'sandbox' ? '[data-sandbox-search]' : '[data-library-search]';
+      document.querySelector(sel)?.focus();
+    },
+    Escape: () => {
+      if (previewDrawerOpen.value) previewDrawerOpen.value = false;
+      else if (newFormDrawerOpen.value) newFormDrawerOpen.value = false;
+    },
+  });
+});
+onUnmounted(() => unregisterHotkeys?.());
+
 function toggleBookmark(formId) {
   if (!formsLibrary.has(formId)) return;
   formsLibrary.update(formId, (draft) => { draft.bookmarked = !draft.bookmarked; });
@@ -438,6 +505,15 @@ function currentFormDataRecords() {
   if (!blueprintJson.value) return [];
   return listDataRecords(blueprintJson.value.id);
 }
+
+const gridTheme = themeQuartz;
+const dataExplorerDefaultColDef = { resizable: true, sortable: true, filter: true };
+const dataExplorerColumnDefs = computed(() => [
+  { headerName: 'Record', valueGetter: (p) => recordSummary(p.data), flex: 1.4 },
+  { headerName: 'Form Version', valueGetter: (p) => (p.data.version ? 'v' + p.data.version : '—'), flex: 0.6 },
+  { headerName: 'Saved', valueGetter: (p) => new Date(p.data.savedAt).toLocaleString(), flex: 1 },
+  { headerName: 'Actions', cellRenderer: GridActionsCell, cellRendererParams: { onView: (r) => viewDataRecord(r.id) }, flex: 0.6, sortable: false, filter: false },
+]);
 
 // Opens the slide-over with a blank copy of the active form, ready for a new entry.
 function openNewDataEntry() {
@@ -674,7 +750,36 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
     </div>
   </div>
 
-  <main style="flex:1;overflow:hidden;display:flex;justify-content:center">
+  <div class="flex-1 flex overflow-hidden">
+    <!-- LEFT: Cübo, same confined-pane pattern as Front Desk/Consultation Desk/Checkout. One
+         shared instance now serves both tabs — onCuboSubmit() forwards to whichever one is
+         showing (only Sandbox Data actually consumes it; Forms Library ignores the emit). -->
+    <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
+      <div class="cubo-inline-host flex-1" style="min-height:420px">
+        <Cubo category="ai-engine" page-context="ClinüxFlow Room Architect — form design/library on the Forms Library tab, natural-language sandbox patient/staff/encounter management on Sandbox Data." @cubo-api-submit="onCuboSubmit" />
+      </div>
+    </div>
+
+    <!-- RIGHT: primary tabs + content -->
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
+      <!-- z-index above .drawer-backdrop's 100 — otherwise a click here while either drawer is
+           open lands on the fixed, full-viewport backdrop instead (it would just close the
+           drawer rather than switch tabs) since these buttons sit at z-index:auto by default.
+           Found during live verification of this merge, not anticipated at design time. -->
+      <div style="display:flex;gap:.5rem;padding:1rem 1.5rem 0;flex-shrink:0;position:relative;z-index:110">
+        <button class="btn-outline" :class="primaryTab === 'formsLibrary' ? 'btn-teal' : ''" @click="primaryTab = 'formsLibrary'" style="font-size:.78rem">
+          <i class="fas fa-pen-ruler" style="margin-right:.4rem"></i>Forms Library
+        </button>
+        <button class="btn-outline" :class="primaryTab === 'sandbox' ? 'btn-teal' : ''" @click="primaryTab = 'sandbox'" style="font-size:.78rem">
+          <i class="fas fa-flask" style="margin-right:.4rem"></i>Sandbox Data
+        </button>
+      </div>
+
+      <div v-show="primaryTab === 'sandbox'" style="flex:1;overflow:hidden;padding:1rem 1.5rem">
+        <AiEngineSandbox ref="aiEngineSandboxRef" />
+      </div>
+
+  <main v-show="primaryTab === 'formsLibrary'" style="flex:1;overflow:hidden;display:flex;justify-content:center">
   <div style="max-width:1500px;width:100%;display:flex;gap:1.5rem;padding:1.5rem;overflow:hidden">
 
     <!-- ── LEFT: Forms Library ── -->
@@ -688,7 +793,7 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
 
       <div style="position:relative;margin-bottom:.5rem">
         <i class="fas fa-search" style="position:absolute;left:.65rem;top:50%;transform:translateY(-50%);font-size:.68rem;color:var(--cf-text)"></i>
-        <input type="text" v-model="formSearchQuery" placeholder="Search forms…" class="cf-input" style="padding-left:1.8rem" />
+        <input type="text" data-library-search :value="formSearchInput" @input="onFormSearchInput($event.target.value)" placeholder="Search forms…" class="cf-input" style="padding-left:1.8rem" />
       </div>
 
       <!-- ── Bookmarked ── -->
@@ -997,39 +1102,19 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
       </div>
 
       <div class="cf-card" style="border-radius:1rem;padding:0;overflow:hidden">
-        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
-          <thead>
-            <tr style="background:var(--cf-bg);border-bottom:1px solid var(--cf-border)">
-              <th style="text-align:left;padding:.7rem 1rem;color:var(--cf-text);font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em">Record</th>
-              <th style="text-align:left;padding:.7rem 1rem;color:var(--cf-text);font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em">Form Version</th>
-              <th style="text-align:left;padding:.7rem 1rem;color:var(--cf-text);font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em">Saved</th>
-              <th style="text-align:right;padding:.7rem 1rem;color:var(--cf-text);font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.04em">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="record in currentFormDataRecords()" :key="record.id" style="border-bottom:1px solid var(--cf-border)">
-              <td style="padding:.7rem 1rem;color:var(--cf-text-strong);font-weight:600">{{ recordSummary(record) }}</td>
-              <td style="padding:.7rem 1rem">
-                <span class="badge badge-muted">{{ record.version ? ('v' + record.version) : '—' }}</span>
-              </td>
-              <td style="padding:.7rem 1rem;color:var(--cf-text)">{{ new Date(record.savedAt).toLocaleString() }}</td>
-              <td style="padding:.7rem 1rem;text-align:right">
-                <button class="btn-outline" style="font-size:.72rem;padding:.35rem .75rem" @click="viewDataRecord(record.id)">
-                  <i class="fas fa-eye"></i> View
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <p style="font-size:.82rem;color:var(--cf-text);text-align:center;padding:2rem 0" v-show="currentFormDataRecords().length === 0">
-          No data saved for this form yet. Click <strong>New Entry</strong> to create one.
-        </p>
+        <AgGridVue
+          :theme="gridTheme" :rowData="currentFormDataRecords()" :columnDefs="dataExplorerColumnDefs" :defaultColDef="dataExplorerDefaultColDef"
+          pagination :paginationPageSize="10" domLayout="autoHeight" :getRowId="(p) => p.data.id"
+          overlayNoRowsTemplate="No data saved for this form yet. Click New Entry to create one."
+        />
       </div>
     </div>
 
     </div>
   </div>
   </main>
+    </div>
+  </div>
 </template>
 
 <style>
