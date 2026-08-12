@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { listDataRecords } from '../data/collections/formData.js';
+import { listDataRecords, getAnswer } from '../data/collections/formData.js';
 import { getCareTeam, addCareTeamMember, removeCareTeamMember } from '../data/collections/encounterDocs.js';
 
 // The one merged Encounter-composition record per visit (Vitals/SOAP/Prescription/Billing all
@@ -8,6 +8,12 @@ import { getCareTeam, addCareTeamMember, removeCareTeamMember } from '../data/co
 // than each being a separately-keyed form. FrontDesk.vue/Checkout.vue import this constant
 // instead of each hardcoding the literal string themselves.
 const ENCOUNTER_FORM_ID = 'system-encounter-composition-v1';
+
+// The other two choices compiled into encounter_status (system-encounter-composition-v1.yaml)
+// are 'finished'/'cancelled' — everything else is still an open, in-progress visit.
+const OPEN_ENCOUNTER_STATUSES = ['arrived', 'in-progress'];
+
+const LAST_PAGE_KEY = 'cf_encounter_last_page';
 
 // Replaces Alpine.store('clinical') from clinixflow's store.js — the active-encounter pointer
 // shared across Front Desk → Consultation Desk (→ Checkout, once migrated). Just an id pointer,
@@ -30,12 +36,50 @@ export const useClinicalStore = defineStore('clinical', () => {
     return listDataRecords(ENCOUNTER_FORM_ID).find((r) => r.id === activeEncounterId.value) || null;
   }
 
+  // The shared "active sessions list" foundation for Front Desk/Checkout/ClinicHome — every open
+  // encounter-composition record, not just the single one activeEncounterId happens to point at.
+  // Sorted most-recent-first already, via listDataRecords' own savedAt ordering.
+  function listActiveSessions() {
+    return listDataRecords(ENCOUNTER_FORM_ID)
+      .filter((r) => OPEN_ENCOUNTER_STATUSES.includes(getAnswer(r, 'encounter_status')))
+      .map((r) => ({
+        id: r.id,
+        status: getAnswer(r, 'encounter_status'),
+        priority: getAnswer(r, 'encounter_priority'),
+        patientRef: getAnswer(r, 'encounter_patient_ref'),
+        chiefComplaint: getAnswer(r, 'encounter_chief_complaint'),
+        savedAt: r.savedAt,
+      }));
+  }
+
+  // Per-encounter "last page visited" — lets ClinicHome's session cards resume exactly where
+  // staff left off instead of always bouncing back to Front Desk. Plain localStorage map, same
+  // simple-ref-backed-by-localStorage pattern as activeEncounterId above (no TanStack collection
+  // needed for something this small).
+  function readLastPageMap() {
+    try { return JSON.parse(localStorage.getItem(LAST_PAGE_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+
+  function recordVisit(encounterId, pageKey) {
+    if (!encounterId) return;
+    const map = readLastPageMap();
+    map[encounterId] = pageKey;
+    localStorage.setItem(LAST_PAGE_KEY, JSON.stringify(map));
+  }
+
+  function getLastVisitedPage(encounterId) {
+    return readLastPageMap()[encounterId] || null;
+  }
+
   return {
     ENCOUNTER_FORM_ID,
     activeEncounterId,
     setActive,
     clearActive,
     getEncounter,
+    listActiveSessions,
+    recordVisit,
+    getLastVisitedPage,
     getCareTeam,
     addCareTeamMember,
     removeCareTeamMember,

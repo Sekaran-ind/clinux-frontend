@@ -35,6 +35,7 @@ const auth = useAuthStore();
 const ENCOUNTER_FORM_ID = clinical.ENCOUNTER_FORM_ID;
 
 const encounter = clinical.getEncounter();
+if (encounter) clinical.recordVisit(encounter.id, 'consultation-desk');
 const priority = ref(encounter ? getAnswer(encounter, 'encounter_priority') || 'Normal' : 'Normal');
 const leftTab = ref('cubo');
 const isGenerating = ref(false);
