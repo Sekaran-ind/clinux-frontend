@@ -14,7 +14,7 @@ import { useOnboardingStore } from '../stores/onboarding.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useCuboStore } from '../stores/cubo.js';
 import {
-  recordSummary, activeQuestionnaire, seedSystemForms,
+  formData, recordSummary, activeQuestionnaire, seedSystemForms,
   getAnswer, patchRecordField, patchGroupInstanceField, getGroupInstances,
 } from '../data/useSystemForms.js';
 import {
@@ -56,6 +56,9 @@ const logsExpanded = ref(false);
 // onboarding.saveProviderRecord() instead, which bumps onboarding.dataVersion — groupInstances()
 // below registers both, so either path refreshes the cards/lists.
 const dataVersion = ref(0);
+// ALSO bumped by any formData change from ANY origin -- see onboarding.js's identical wiring for
+// the full story (shared-server sync merges happen in the background on their own timer).
+formData.subscribeChanges(() => { dataVersion.value++; });
 
 // Holds the ACTIVE STAFF INSTANCE'S ARRAY INDEX now, not a record id — section_staff is a
 // repeating group inside the one shared Provider record post-merge (see

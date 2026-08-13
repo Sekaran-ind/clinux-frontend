@@ -23,6 +23,7 @@ use axum::{
     routing::{get, put},
     Json, Router,
 };
+use axum_server_dual_protocol::{bind_dual_protocol, ServerExt as _};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -36,12 +37,32 @@ use std::{
 use tower::{service_fn, Service, ServiceExt};
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
+use crate::tls_cert;
+
 pub const SHARED_SERVER_PORT: u16 = 47856;
+// A tiny SEPARATE plain-HTTP listener, only for downloading the self-signed cert itself -- a
+// chicken-and-egg problem otherwise: a device can't trust an HTTPS connection it hasn't already
+// decided to trust the certificate for, so the cert has to be fetchable somewhere that doesn't
+// itself require trusting it first. iOS Safari specifically recognizes the
+// application/x-x509-ca-cert MIME type served over plain HTTP and offers to install it as a
+// profile (Settings -> General -> VPN & Device Management), which is the standard way to trust a
+// self-signed cert on iOS -- there's no "click through a warning" option there like on desktop.
+pub const CERT_DOWNLOAD_PORT: u16 = 47857;
 
 #[derive(Clone)]
 struct AppState {
     db: Arc<Mutex<Connection>>,
     jwt_secret: String,
+    // Where clinuxflow-api ACTUALLY lives from THIS host machine's own point of view (defaults to
+    // http://localhost:8787, its normal local-dev port) -- proxying through here is what makes
+    // login/team/realtime-join etc. work for a device on the LAN that isn't the Tauri host
+    // itself. The built frontend's own API_BASE is baked in at build time as a literal
+    // http://localhost:8787, which on ANY other device resolves to THAT device itself, not this
+    // one -- a real bug a live user hit (see clinux-mobile-sync-multiuser-video-roadmap memory
+    // note). The frontend switches to same-origin relative calls when it detects shared mode
+    // (src/config.js), which land here and get forwarded server-side instead.
+    api_proxy_target: String,
+    http_client: reqwest::Client,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -218,6 +239,61 @@ async fn delete_record(
     }
 }
 
+// Forwards anything under /api/ that ISN'T one of this server's own routes (health/collections)
+// through to the real clinuxflow-api, from the HOST machine's own network position -- login,
+// team management, realtime video-call joins, system-forms seeding, all of it. A LAN device's
+// browser only ever talks to this ONE origin (wherever it loaded the page from); this is what
+// makes that work instead of the browser trying to reach a literal "localhost:8787" that means
+// something different on every device.
+async fn proxy_to_api(
+    State(state): State<AppState>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or_else(|| uri.path());
+    let target = format!("{}{}", state.api_proxy_target, path_and_query);
+
+    let mut req = state.http_client.request(method, &target);
+    for (name, value) in headers.iter() {
+        // HOST/CONTENT_LENGTH are connection-specific -- reqwest sets its own correctly based on
+        // the actual outgoing request; forwarding the INCOMING ones verbatim would be wrong
+        // (wrong host entirely, and a body that gets re-encoded can have a different length).
+        if name == header::HOST || name == header::CONTENT_LENGTH {
+            continue;
+        }
+        req = req.header(name, value);
+    }
+    req = req.body(body);
+
+    match req.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let resp_headers = resp.headers().clone();
+            let bytes = resp.bytes().await.unwrap_or_default();
+            let mut builder = Response::builder().status(status.as_u16());
+            for (name, value) in resp_headers.iter() {
+                if name == reqwest::header::TRANSFER_ENCODING || name == reqwest::header::CONNECTION {
+                    continue;
+                }
+                builder = builder.header(name, value);
+            }
+            builder
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+        }
+        Err(e) => {
+            log::error!("proxy to clinuxflow-api ({target}) failed: {e}");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody { success: false, error: format!("Could not reach clinuxflow-api: {e}") }),
+            )
+                .into_response()
+        }
+    }
+}
+
 // Reads + serves index.html with one injected marker script, for any request ServeDir couldn't
 // resolve to a real static file -- covers both "/" itself and every vue-router history-mode
 // path (/clinic-home, /front-desk, ...), which don't exist as real files on disk. The injected
@@ -281,6 +357,11 @@ fn build_router(state: AppState, frontend_dist: PathBuf) -> Router {
         .route("/api/health", get(health))
         .route("/api/collections/{name}", get(list_collection))
         .route("/api/collections/{name}/{id}", put(upsert_record).delete(delete_record))
+        // Catch-all for everything else under /api/ -- matchit (axum's router) prefers the more
+        // specific static routes above over this wildcard, so health/collections still hit their
+        // own handlers; only genuinely unmatched /api/* paths (auth, team, realtime, workflow)
+        // fall through to the proxy.
+        .route("/api/{*rest}", axum::routing::any(proxy_to_api))
         .layer(cors)
         .with_state(state);
 
@@ -299,26 +380,85 @@ pub fn start(app_data_dir: PathBuf, frontend_dist: PathBuf) {
         }
     };
 
+    let api_proxy_target = std::env::var("CLINUX_API_PROXY_TARGET")
+        .unwrap_or_else(|_| "http://localhost:8787".to_string());
+
+    let lan_ip = local_ip_address::local_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|_| "127.0.0.1".to_string());
+
+    let (cert_pem, key_pem) = tls_cert::load_or_generate(&app_data_dir, &lan_ip);
+
+    // Plain-HTTP cert-download server -- see CERT_DOWNLOAD_PORT's own comment for why this has
+    // to stay unencrypted.
+    {
+        let cert_pem = cert_pem.clone();
+        tauri::async_runtime::spawn(async move {
+            let cert_app = Router::new().route(
+                "/",
+                get(move || {
+                    let cert_pem = cert_pem.clone();
+                    async move {
+                        (
+                            [
+                                (header::CONTENT_TYPE, "application/x-x509-ca-cert"),
+                                (header::CONTENT_DISPOSITION, "attachment; filename=\"clinux-cert.pem\""),
+                            ],
+                            cert_pem,
+                        )
+                    }
+                }),
+            );
+            let addr = SocketAddr::from(([0, 0, 0, 0], CERT_DOWNLOAD_PORT));
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(listener) => {
+                    if let Err(e) = axum::serve(listener, cert_app).await {
+                        log::error!("cert-download server stopped: {e}");
+                    }
+                }
+                Err(e) => log::error!("cert-download server: could not bind {addr}: {e}"),
+            }
+        });
+    }
+
     tauri::async_runtime::spawn(async move {
         let db = open_db(&app_data_dir);
-        let state = AppState { db: Arc::new(Mutex::new(db)), jwt_secret };
+        let state = AppState {
+            db: Arc::new(Mutex::new(db)),
+            jwt_secret,
+            api_proxy_target,
+            http_client: reqwest::Client::new(),
+        };
         let app = build_router(state, frontend_dist);
 
-        let addr = SocketAddr::from(([0, 0, 0, 0], SHARED_SERVER_PORT));
-        let listener = match tokio::net::TcpListener::bind(addr).await {
-            Ok(l) => l,
+        let tls_config = match axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem).await {
+            Ok(c) => c,
             Err(e) => {
-                log::error!("shared LAN server: could not bind {addr}: {e}");
+                log::error!("shared LAN server: could not load TLS certificate: {e}");
                 return;
             }
         };
 
-        let lan_ip = local_ip_address::local_ip()
-            .map(|ip| ip.to_string())
-            .unwrap_or_else(|_| "<unknown>".to_string());
-        log::info!("shared LAN server listening on http://{lan_ip}:{SHARED_SERVER_PORT} (and http://localhost:{SHARED_SERVER_PORT})");
+        let addr = SocketAddr::from(([0, 0, 0, 0], SHARED_SERVER_PORT));
+        log::info!("shared LAN server listening on https://{lan_ip}:{SHARED_SERVER_PORT} (and https://localhost:{SHARED_SERVER_PORT})");
+        log::info!("plain http:// requests to the same port are auto-redirected to https:// -- old bookmarks/muscle-memory URLs keep working");
+        log::info!("self-signed certificate -- other devices need to trust it once: visit http://{lan_ip}:{CERT_DOWNLOAD_PORT}/ to download it");
 
-        if let Err(e) = axum::serve(listener, app).await {
+        // Dual-protocol instead of bind_rustls: this port used to be plain HTTP, so anything a
+        // user already had bookmarked/typed as http://localhost:47856 (a real report -- see
+        // clinux-mobile-sync-multiuser-video-roadmap memory note) would otherwise get raw TLS
+        // handshake bytes back and fail with ERR_INVALID_HTTP_RESPONSE, since a plain-HTTP client
+        // can't parse a TLS ServerHello as an HTTP response. set_upgrade(true) makes a plain HTTP
+        // request on this SAME port get a 301 to the https:// equivalent instead of erroring --
+        // genuine HTTPS connections (the SPA's own fetches, a browser that already has the page
+        // loaded over https://) are accepted directly, unaffected. CERT_DOWNLOAD_PORT (47857)
+        // stays a SEPARATE, non-upgraded plain-HTTP listener on purpose -- see its own comment:
+        // a device can't be redirected to HTTPS to fetch a cert it hasn't yet decided to trust.
+        if let Err(e) = bind_dual_protocol(addr, tls_config)
+            .set_upgrade(true)
+            .serve(app.into_make_service())
+            .await
+        {
             log::error!("shared LAN server stopped: {e}");
         }
     });

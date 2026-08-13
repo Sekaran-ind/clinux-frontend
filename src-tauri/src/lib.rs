@@ -1,4 +1,5 @@
 mod shared_server;
+mod tls_cert;
 
 use tauri::Manager;
 

@@ -7,7 +7,7 @@ import LhcFormHost from '../components/LhcFormHost.vue';
 import SessionShareModal from '../components/SessionShareModal.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import {
-  activeQuestionnaire, activeVersionNumber,
+  formData, activeQuestionnaire, activeVersionNumber,
   saveDataRecord, getAnswer, getGroupInstances,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
@@ -46,6 +46,9 @@ function showToast(msg) {
 const drawerOpen = ref(false);
 const activeStepId = ref(null);
 const dataVersion = ref(0);
+// ALSO bumped by any formData change from ANY origin -- see onboarding.js's identical wiring for
+// the full story (shared-server sync merges happen in the background on their own timer).
+formData.subscribeChanges(() => { dataVersion.value++; });
 const lhcFormHost = ref(null);
 const drawerQuestionnaire = ref(null);
 const drawerRecord = ref(null);

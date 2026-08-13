@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, reactive, computed } from 'vue';
-import { listDataRecords, getAnswer, getAnswers, saveDataRecord, getGroupInstances } from '../data/collections/formData.js';
+import { formData, listDataRecords, getAnswer, getAnswers, saveDataRecord, getGroupInstances } from '../data/collections/formData.js';
 import { activeVersionNumber } from '../data/collections/formsLibrary.js';
 import { extractResponse } from '../data/useSystemForms.js';
 import { useAuthStore } from './auth.js';
@@ -60,6 +60,16 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   // (.toArray/.get) aren't Vue-reactive on their own, same reasoning as FrontDesk/
   // ConsultationDesk's dataVersion idiom.
   const dataVersion = ref(0);
+  // ALSO bumped by any change to formData from ANY origin, not just this store's own explicit
+  // saves — real bug found live: the shared-server sync layer (sharedServerSync.js) merges
+  // remote changes into formData via collection.insert()/.update() in the background, on its own
+  // timer, with nothing else in the app aware it happened. Without this, a device that pulls in
+  // another device's Provider record (e.g. a fresh login finding the clinic profile already set
+  // up elsewhere) never re-renders to show it — publishedClinic/buildClinicProfile() stay stuck
+  // on whatever was true at the moment this store was created, even though the underlying data
+  // changed moments later. formData.subscribeChanges() is TanStack DB's own change-notification
+  // primitive, already correct for every origin (local writes AND remote merges alike).
+  formData.subscribeChanges(() => { dataVersion.value++; });
 
   // A synthetic "existing record" built from the registration account, so the Hospital drawer
   // opens pre-filled the very first time instead of starting blank. Never persisted itself —

@@ -9,13 +9,14 @@ import Cubo from '../components/Cubo.vue';
 import CornerstoneViewer from '../components/CornerstoneViewer.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import SessionShareModal from '../components/SessionShareModal.vue';
+import VideoCallPanel from '../components/VideoCallPanel.vue';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useCuboStore } from '../stores/cubo.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import {
-  activeQuestionnaire, activeVersionNumber, saveDataRecord,
+  formData, activeQuestionnaire, activeVersionNumber, saveDataRecord,
   getAnswer, patchRecordField, withGroupFields, getGroupInstances,
   listDataRecords, recordSummary,
 } from '../data/useSystemForms.js';
@@ -63,6 +64,9 @@ const isGenerating = ref(false);
 const isGeneratingRx = ref(false);
 const logsExpanded = ref(false);
 const dataVersion = ref(0);
+// ALSO bumped by any formData change from ANY origin -- see onboarding.js's identical wiring for
+// the full story (shared-server sync merges happen in the background on their own timer).
+formData.subscribeChanges(() => { dataVersion.value++; });
 const liveRecord = ref(null);
 
 // Runs once immediately (covers the normal case, encounter already present at mount) and again
@@ -443,6 +447,7 @@ function sendToCheckout() {
           <button class="flex-1 text-xs font-bold py-2.5" :class="rightTab === 'record' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="rightTab = 'record'">Consultation Record</button>
           <button class="flex-1 text-xs font-bold py-2.5" :class="rightTab === 'imaging' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="rightTab = 'imaging'">Labs &amp; Imaging</button>
           <button class="flex-1 text-xs font-bold py-2.5" :class="rightTab === 'documents' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="rightTab = 'documents'">Documents</button>
+          <button class="flex-1 text-xs font-bold py-2.5" :class="rightTab === 'video' ? 'text-(--color-primary) border-b-2 border-(--color-primary)' : 'text-gray-500'" @click="rightTab = 'video'">Video Call</button>
         </div>
 
         <!-- Consultation Record: the whole Encounter/Vitals/SOAP/Billing document — accepted
@@ -490,6 +495,10 @@ function sendToCheckout() {
             <i :class="doc.kind === 'image' ? 'fas fa-image' : 'fas fa-file-pdf'" class="text-gray-400"></i>
           </div>
           <p v-if="allDocuments.length === 0" class="text-sm" style="color:var(--cf-text)">No documents attached to this visit yet.</p>
+        </div>
+
+        <div v-show="rightTab === 'video'" class="flex-1 overflow-y-auto p-4">
+          <VideoCallPanel :encounter-id="encounter.id" :encounter-title="`${patientName} — ${chiefComplaint}`" />
         </div>
       </div>
     </div>

@@ -20,7 +20,7 @@ import GridActionsCell from '../components/grid/GridActionsCell.vue';
 import Cubo from '../components/Cubo.vue';
 import AiEngineSandbox from './AiEngineSandbox.vue';
 import {
-  formsLibrary, seedSystemForms, activeVersionNumber, activeQuestionnaire, SYSTEM_FORM_IDS,
+  formData, formsLibrary, seedSystemForms, activeVersionNumber, activeQuestionnaire, SYSTEM_FORM_IDS,
   listDataRecords, saveDataRecord, deleteDataRecord, recordSummary,
   getAnswer, getGroupInstances,
   renderBlank, renderWithRecord, extractResponse,
@@ -130,6 +130,10 @@ function showToast(msg) {
 // uses for its own TanStack DB collections.
 const libraryVersion = ref(0);
 const dataVersion = ref(0);
+// ALSO bumped by any formData change from ANY origin, not just this page's own explicit saves --
+// see onboarding.js's identical wiring for the full story (shared-server sync merges happen in
+// the background on their own timer, with nothing else in the app aware unless it subscribes).
+formData.subscribeChanges(() => { dataVersion.value++; });
 
 const voiceTranscriptInput = ref('Patient is a female presenting in clinic today. Checked vitals showing stable diastolic metrics tracking, but an advanced systolic reading of 148. She has an active history of chronic hypertension. For management, we are initiating a new prescription order for oral tablet lisinopril 10mg.');
 const llmResponseOutput = ref(null);

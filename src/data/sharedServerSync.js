@@ -18,11 +18,17 @@
 // context uniformly: the shared-server-served page (relative fetch, same origin) and the Tauri
 // window/any other localhost tab (fixed port, since the Rust server always binds there on the
 // same machine).
-const FIXED_LOCALHOST_BASE = 'http://localhost:47856';
+// https:// -- the shared server now serves TLS with a self-signed cert (see
+// src-tauri/src/tls_cert.rs) specifically so getUserMedia() (camera/mic, needed for video calls
+// and QR scanning) works from a LAN device's browser at all. Plain HTTP never qualifies as a
+// "secure context" for a non-localhost origin -- confirmed live when an iPhone's Safari never
+// even showed a permission prompt for a video call reached over the LAN URL.
+const FIXED_LOCALHOST_BASE = 'https://localhost:47856';
 const PROBE_TIMEOUT_MS = 1500;
 const POLL_INTERVAL_MS = 4000;
 const SESSION_TOKEN_KEY = 'cf_session_token';
 const VIRTUAL_PROP_KEYS = ['$synced', '$origin', '$key', '$collectionId'];
+const SYNC_MODE_KEY = 'cf_sync_mode'; // 'server' (default) | 'local'
 
 // Mutated once the probe resolves — read SHARED_MODE only after awaiting
 // ensureSharedModeDetected() (collectionFactory.js does this per collection; the underlying
@@ -30,6 +36,30 @@ const VIRTUAL_PROP_KEYS = ['$synced', '$origin', '$key', '$collectionId'];
 export let SHARED_MODE = false;
 let apiBase = '';
 let detectPromise = null;
+
+// One pollOnce() per wired collection, registered as each finishes its own preload (see the end
+// of wireSharedSync below). Lets a UI action ("Sync Now" — explicit user request, not just the
+// automatic 4s interval) trigger every collection's poll immediately instead of waiting.
+const activePollers = [];
+
+// User-controlled preference, exposed via ClinicHome.vue's profile menu (explicit request: "give
+// the user the option to switch between local and server... under the profile menu"). Distinct
+// from SHARED_MODE (the LIVE outcome once detection resolves) -- the preference is 'server' by
+// default (try the shared server, falling back to local silently if unreachable, same as
+// before), or 'local' to skip the probe entirely and force local-only regardless of whether the
+// server is actually reachable.
+export function getSyncMode() {
+  try { return localStorage.getItem(SYNC_MODE_KEY) || 'server'; } catch (e) { return 'server'; }
+}
+
+// Applying a mode change live (stopping/starting every already-wired collection's poll loop) is
+// a lot more moving parts than a reload -- collections are wired once at app boot in
+// collectionFactory.js, and reloading keeps that the single source of truth for "is shared mode
+// active" rather than needing every collection to support being turned on/off after the fact.
+export function setSyncMode(mode) {
+  try { localStorage.setItem(SYNC_MODE_KEY, mode); } catch (e) { /* ignore */ }
+  if (typeof window !== 'undefined') window.location.reload();
+}
 
 function currentToken() {
   try { return localStorage.getItem(SESSION_TOKEN_KEY); } catch (e) { return null; }
@@ -53,6 +83,10 @@ async function probe(base) {
 export function ensureSharedModeDetected() {
   if (!detectPromise) {
     detectPromise = (async () => {
+      if (getSyncMode() === 'local') {
+        SHARED_MODE = false;
+        return false;
+      }
       // Prefer relative same-origin first — if this page was itself served by the shared server
       // (window.__CLINUX_SHARED_SERVER__, injected server-side, see shared_server.rs's
       // serve_injected_index()), a relative fetch avoids a cross-origin request entirely. Falls
@@ -111,8 +145,21 @@ export function wireSharedSync(collection, collectionName, getKey) {
   // devices re-syncing the same row back and forth.
   const applyingRemoteKeys = new Set();
 
+  // Real bug found live: pushOne() below is fire-and-forget (subscribeChanges can't await it),
+  // so there's a window between "local save happens" and "that PUT actually lands server-side"
+  // where pollOnce() can run, see the OLD (stale) server row, and overwrite the just-saved local
+  // record with it via collection.update() -- a save that visibly reverted itself a few seconds
+  // later. Hit repeatedly editing the Provider-composition record (Hospital Profile/Care Team/
+  // etc. in Designer.vue's entity cards, all sharing one record saved over and over). Fix: track
+  // when each key was last pushed locally, and have pollOnce() skip merging remote data for that
+  // key until safely past one full poll cycle -- long enough for any in-flight push to have
+  // either landed or failed, without needing to track the actual fetch promise itself.
+  const recentLocalPushAt = new Map(); // key -> Date.now() of the last local push for it
+  const PUSH_GRACE_MS = POLL_INTERVAL_MS * 2;
+
   async function pushOne(type, key) {
     if (applyingRemoteKeys.has(String(key))) return;
+    recentLocalPushAt.set(String(key), Date.now());
     if (type === 'delete') {
       await sharedFetch(`/api/collections/${collectionName}/${encodeURIComponent(key)}`, { method: 'DELETE' });
       return;
@@ -127,6 +174,10 @@ export function wireSharedSync(collection, collectionName, getKey) {
       method: 'PUT',
       body: JSON.stringify(stripVirtualProps(current)),
     });
+    // Refresh the timestamp on completion too, so the grace window covers "just landed, but the
+    // NEXT poll tick's request was already in flight before it did" as well, not just the
+    // original in-flight period.
+    recentLocalPushAt.set(String(key), Date.now());
   }
 
   collection.subscribeChanges((changes) => {
@@ -147,6 +198,8 @@ export function wireSharedSync(collection, collectionName, getKey) {
     rows.forEach((row) => {
       const key = getKey(row);
       remoteKeys.add(String(key));
+      const lastPush = recentLocalPushAt.get(String(key));
+      if (lastPush && Date.now() - lastPush < PUSH_GRACE_MS) return; // trust the local write for now
       const existing = collection.has(key) ? collection.get(key) : null;
       // Cheap "did anything actually change" check -- skips a no-op update on every poll tick
       // for the (typical) case where nobody else has touched this row since last time.
@@ -175,5 +228,10 @@ export function wireSharedSync(collection, collectionName, getKey) {
   collection.preload().then(() => {
     pollOnce();
     setInterval(pollOnce, POLL_INTERVAL_MS);
+    activePollers.push(pollOnce);
   });
+}
+
+export async function syncNow() {
+  await Promise.all(activePollers.map((fn) => fn().catch(() => {})));
 }
