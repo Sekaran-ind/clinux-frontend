@@ -3,6 +3,7 @@ import Index from '../pages/Index.vue';
 import Onboarding from '../pages/Onboarding.vue';
 import ClinicHome from '../pages/ClinicHome.vue';
 import AbdmOnboarding from '../pages/AbdmOnboarding.vue';
+import StaffOnboarding from '../pages/StaffOnboarding.vue';
 import Designer from '../pages/Designer.vue';
 import { useAuthStore } from '../stores/auth.js';
 import { resolveGuard } from './guardLogic.js';
@@ -30,6 +31,10 @@ const routes = [
   { path: '/onboarding', name: 'onboarding', component: Onboarding, meta: { requiresAuth: true } },
   { path: '/clinic-home', name: 'clinic-home', component: ClinicHome, meta: { hideAppNav: true } },
   { path: '/onboarding-abdm', name: 'onboarding-abdm', component: AbdmOnboarding, meta: { requiresAuth: true } },
+  // A teammate's own self-service onboarding (name/role/specialization/HPR fields + importing
+  // the clinic's existing profile) — distinct from /onboarding (the admin's full clinic setup)
+  // and /onboarding-abdm (the admin's full HFR/HPR registration console).
+  { path: '/staff-onboarding', name: 'staff-onboarding', component: StaffOnboarding, meta: { requiresAuth: true } },
   // Unauthenticated visitors can still reach this page, constrained to Sandbox Data — see
   // clinux-authenticated-vs-sandbox-mode memory note. The real Forms Library tab (Provider-
   // composition data) is gated inside Designer.vue itself instead of at the router level, since

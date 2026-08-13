@@ -5,6 +5,7 @@
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import LhcFormHost from '../components/LhcFormHost.vue';
+import SessionImportModal from '../components/SessionImportModal.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import { activeQuestionnaire, seedSystemForms, getGroupInstances, getAnswer } from '../data/useSystemForms.js';
 import { API_BASE } from '../config.js';
@@ -44,6 +45,23 @@ const journeyCards = [
 ];
 
 seedSystemForms(API_BASE).catch(() => {});
+
+// Phase C extension: importing this clinic's OWN profile (Hospital/Staff/Services/Hours/
+// Consents + branding) on a fresh device/teammate login — see sessionShare.js's
+// decodeProviderProfileShareKey and onboarding.js's importProviderProfile(). Most useful right
+// here, BEFORE any local onboarding has happened at all (a teammate's fresh device, the exact
+// gap this closes), so it's offered unconditionally. The Share/generate side lives in
+// ClinicHome's admin profile menu instead (see the Team memory note) — that's the discoverable
+// "my account/clinic" surface, not this setup hub.
+const importProfileModalOpen = ref(false);
+// Deliberately does NOT close the modal here -- same lesson as FrontDesk.vue/Checkout.vue's
+// onSessionImported: SessionImportModal shows its own "Clinic profile imported." success state
+// and waits for the user to dismiss it (X button / backdrop click, both already wired to
+// @close). Closing it immediately on this event would flash the modal shut before anyone ever
+// saw that message.
+function onProfileImported() {
+  showToast('Clinic profile imported.');
+}
 
 const screenLabel = computed(() => ({ hub: 'Setup', review: 'Review', published: 'Published' }[screen.value] || 'Setup'));
 
@@ -148,6 +166,8 @@ function publishClinic() {
 <template>
   <div class="cf-toast" v-show="toast.show"><i class="fas fa-check-circle" style="color:var(--color-primary)"></i><span>{{ toast.msg }}</span></div>
 
+  <SessionImportModal :open="importProfileModalOpen" @close="importProfileModalOpen = false" @profile-imported="onProfileImported" />
+
   <div class="drawer-backdrop" :class="drawerOpen ? 'open' : ''" @click="closeDrawer()"></div>
   <div class="drawer-panel" :class="drawerOpen ? 'open' : ''">
     <div class="drawer-header">
@@ -195,9 +215,17 @@ function publishClinic() {
           <p style="font-size:.95rem;color:var(--cf-text);line-height:1.7;margin-bottom:1.5rem">
             Tap a card to add that piece of your clinic's profile — each opens a quick entry panel and saves as a real FHIR record. Add as much or as little as you like, then review and publish when ready.
           </p>
-          <div style="display:flex;gap:.75rem">
+          <div style="display:flex;gap:.75rem;flex-wrap:wrap">
             <button class="btn-teal" @click="goToReview()" style="display:flex;align-items:center;gap:.5rem"><i class="fas fa-arrow-right"></i>Continue to Review</button>
             <RouterLink to="/clinic-home" target="_blank" class="btn-outline" style="display:flex;align-items:center;gap:.5rem"><i class="fas fa-eye"></i>See Sample Page</RouterLink>
+          </div>
+          <!-- Already part of this clinic on another device? Import brings over the whole
+               profile (Hospital/Staff/Services/Hours/Consents + branding) instead of re-typing
+               it — most useful right here, before any local onboarding exists at all. (The
+               Share side of this now lives in ClinicHome's admin profile menu, next to Team —
+               that's the discoverable "my account/clinic" surface; this hub is Import-only.) -->
+          <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.625rem">
+            <button class="btn-outline text-sm" @click="importProfileModalOpen = true"><i class="fas fa-qrcode"></i> Import Clinic Profile</button>
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">

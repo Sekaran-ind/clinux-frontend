@@ -20,6 +20,7 @@ function goHome() {
 const pageBadge = {
   'onboarding-abdm': 'ABDM ONBOARDING',
   'designer': 'ROOM ARCHITECT',
+  'staff-onboarding': 'STAFF ONBOARDING',
 };
 </script>
 

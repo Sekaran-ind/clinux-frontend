@@ -15,6 +15,9 @@ import { publicAppointments } from '../data/collections/publicAppointments.js';
 import FrontDesk from './FrontDesk.vue';
 import ConsultationDesk from './ConsultationDesk.vue';
 import Checkout from './Checkout.vue';
+import TeamSettingsModal from '../components/TeamSettingsModal.vue';
+import SessionShareModal from '../components/SessionShareModal.vue';
+import { SHARED_MODE, ensureSharedModeDetected, getSyncMode, setSyncMode, syncNow } from '../data/sharedServerSync.js';
 
 const onboarding = useOnboardingStore();
 const auth = useAuthStore();
@@ -118,6 +121,36 @@ const appointmentsWindow = computed(() => {
 // outside-click close rather than Index.vue's vestigial (unregistered, no-op) v-click-outside
 // directive.
 const userMenuOpen = ref(false);
+// Phase D: multi-user accounts per clinic — see TeamSettingsModal.vue.
+const teamModalOpen = ref(false);
+// Phase C extension: generating a clinic-profile transfer key — moved here from Onboarding.vue's
+// hub screen (this is the discoverable "my account/clinic" surface for an admin, not the setup
+// wizard). See SessionShareModal.vue's kind="provider-profile" mode.
+const shareProfileModalOpen = ref(false);
+
+// LAN-shared server: local/server mode toggle + manual sync, both explicit user requests after
+// finding the Tauri desktop window and a mobile browser could show DIFFERENT data for the same
+// account (see clinux-mobile-sync-multiuser-video-roadmap memory note). sharedModeLive reflects
+// the ACTUAL current state (whether the shared server was reachable when this page loaded);
+// syncModePref is the user's own PREFERENCE ('server' tries the shared server, 'local' forces
+// local-only regardless of reachability) — the two can differ, e.g. preference is 'server' but
+// the host machine is unreachable right now, so the badge and the toggle button show different
+// things on purpose. Changing the preference reloads the page (see setSyncMode's own comment for
+// why that's simpler and safer than trying to hot-swap every collection's sync state live).
+const sharedModeLive = ref(false);
+ensureSharedModeDetected().then((active) => { sharedModeLive.value = active; });
+const syncModePref = computed(() => getSyncMode());
+const syncing = ref(false);
+async function handleSyncNow() {
+  syncing.value = true;
+  try {
+    await syncNow();
+    showToast('Synced with server.');
+  } finally {
+    syncing.value = false;
+  }
+}
+
 function closeUserMenuOnOutsideClick(e) {
   if (!e.target.closest('.user-menu-anchor')) userMenuOpen.value = false;
 }
@@ -181,6 +214,9 @@ function sendMessage() {
 
 <template>
   <div class="cf-toast" v-show="toast.show"><i class="fas fa-check-circle" style="color:var(--brand)"></i><span>{{ toast.msg }}</span></div>
+
+  <TeamSettingsModal :open="teamModalOpen" @close="teamModalOpen = false" />
+  <SessionShareModal :open="shareProfileModalOpen" :record="onboarding.getProviderRecord()" :branding="onboarding.branding" kind="provider-profile" @close="shareProfileModalOpen = false" />
 
   <div class="modal-bg" v-show="apptModal" @click.self="apptModal = false">
     <div class="modal-panel" @click.stop>
@@ -260,9 +296,26 @@ function sendMessage() {
             </div>
             <template v-if="isAdmin">
               <button class="user-menu-item" @click="openClinicView('front-desk'); userMenuOpen = false"><i class="fas fa-user-clock" style="color:var(--brand)"></i>Front Desk</button>
+              <button class="user-menu-item" @click="teamModalOpen = true; userMenuOpen = false"><i class="fas fa-users" style="color:var(--brand)"></i>Team</button>
+              <button v-show="onboarding.providerRecordId" class="user-menu-item" @click="shareProfileModalOpen = true; userMenuOpen = false"><i class="fas fa-share-nodes" style="color:var(--brand)"></i>Share Clinic Profile</button>
+              <RouterLink to="/staff-onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-user-md" style="color:var(--brand)"></i>Staff Onboarding</RouterLink>
               <RouterLink to="/onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-pen" style="color:var(--brand)"></i>Edit Profile</RouterLink>
               <RouterLink to="/designer" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-cog" style="color:var(--brand)"></i>Settings</RouterLink>
               <RouterLink to="/ai-engine" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-brain" style="color:var(--brand)"></i>AI Engine</RouterLink>
+              <div style="padding:.5rem .875rem;border-top:1px solid var(--border);margin-top:.25rem">
+                <p style="font-size:.65rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text);opacity:.7;margin-bottom:.3rem">
+                  <i class="fas" :class="sharedModeLive ? 'fa-satellite-dish' : 'fa-house-laptop'"></i>
+                  {{ sharedModeLive ? 'Synced with shared server' : 'Local only' }}
+                </p>
+                <button class="user-menu-item" style="padding-left:0" @click="setSyncMode(syncModePref === 'local' ? 'server' : 'local')">
+                  <i class="fas fa-toggle-on" style="color:var(--brand)"></i>
+                  Switch to {{ syncModePref === 'local' ? 'Sync with Server' : 'Local Only' }}
+                </button>
+                <button class="user-menu-item" style="padding-left:0" v-show="sharedModeLive" :disabled="syncing" @click="handleSyncNow()">
+                  <i class="fas" :class="syncing ? 'fa-spinner fa-spin' : 'fa-rotate'" style="color:var(--brand)"></i>
+                  {{ syncing ? 'Syncing…' : 'Sync Now' }}
+                </button>
+              </div>
             </template>
             <button class="user-menu-item" style="color:#EF4444" @click="auth.logout(); userMenuOpen = false"><i class="fas fa-sign-out-alt"></i>Sign Out</button>
           </div>

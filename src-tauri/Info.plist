@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS camera/microphone usage descriptions for the Tauri desktop app. Without these, macOS's
+  TCC (Transparency, Consent, and Control) privacy system has no description to show the user and
+  denies the request outright rather than prompting -- exactly the reported symptom: RealtimeKit's
+  Core SDK failing with "[ERR0001]: Failed to initialize. device not supported" when starting a
+  video call from the Tauri window, and no permission dialog ever appearing at all.
+
+  Tauri looks for a file literally named Info.plist / Info.macos.plist in the same directory as
+  tauri.conf.json (this one) and merges it into the app's own Info.plist. The equivalent
+  ios/App/App/Info.plist entry (added during Phase C for QR scanning) is a COMPLETELY SEPARATE
+  file for the Capacitor iOS build -- this app has TWO independent native shells (Tauri desktop,
+  Capacitor mobile), each needing its own platform-specific permission declarations.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSCameraUsageDescription</key>
+    <string>ClinüxFlow uses the camera for video consultations between care team members and for scanning session-transfer QR codes.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>ClinüxFlow uses the microphone for video consultations between care team members.</string>
+</dict>
+</plist>

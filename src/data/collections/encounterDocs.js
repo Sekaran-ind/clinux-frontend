@@ -110,3 +110,29 @@ export function attachCustomFormRecord(encounterId, formId, recordId) {
 export function getEncounterCustomFormLinks(encounterId) {
   return encounterCustomForms.toArray.filter((r) => r.encounterId === encounterId).sort((a, b) => b.attachedAt.localeCompare(a.attachedAt));
 }
+
+// encounterConsent gets real purpose here (Phase C session transfer) after PR #16 removed its
+// old, unwired "patient consent to treatment" UI — repurposed with a different shape:
+// { id, encounterId, sourceClinicId, targetClinicId, consentedAt, consentedBy }, one row per
+// (encounterId, sourceClinicId) pair — composite id, same idiom as attachCustomFormRecord above.
+// Only written when a cross-CLINIC import is explicitly confirmed (see sessionShare.js) — a
+// same-clinic sync/share never touches this collection at all.
+export function recordCrossClinicConsent(encounterId, sourceClinicId, targetClinicId) {
+  const id = `${encounterId}:${sourceClinicId}`;
+  if (encounterConsent.has(id)) return; // already consented once for this (encounter, source) pair
+  encounterConsent.insert({
+    id, encounterId, sourceClinicId, targetClinicId,
+    consentedAt: new Date().toISOString(), consentedBy: currentUserLabel(),
+  });
+}
+
+export function hasCrossClinicConsent(encounterId, sourceClinicId) {
+  return encounterConsent.has(`${encounterId}:${sourceClinicId}`);
+}
+
+// Full consent audit trail for one encounter — every OTHER clinic that has ever been granted
+// access to it via an imported session transfer. Not wired into any UI yet; kept available for
+// a future Documents-tab audit view without needing another collection read helper added later.
+export function getCrossClinicConsents(encounterId) {
+  return encounterConsent.toArray.filter((c) => c.encounterId === encounterId).sort((a, b) => a.consentedAt.localeCompare(b.consentedAt));
+}

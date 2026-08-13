@@ -4,6 +4,13 @@
 <dict>
     <key>CAPACITOR_DEBUG</key>
 	<string>$(CAPACITOR_DEBUG)</string>
+	<!-- Needed for the QR-based session-transfer feature (Phase C) -- plain getUserMedia() from
+	     the WebView, not a native camera plugin (this project's iOS platform uses Swift Package
+	     Manager, not CocoaPods, which the usual native barcode-scanner plugins require). Known
+	     WKWebView caveat: without a custom WKUIDelegate, this permission isn't persisted across
+	     app launches and re-prompts every time -- acceptable for now, not a functional blocker. -->
+	<key>NSCameraUsageDescription</key>
+	<string>ClinüxFlow uses the camera to scan a QR code when transferring a session from another device.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>

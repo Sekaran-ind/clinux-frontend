@@ -1,7 +1,18 @@
-// clinuxflow-api (Hono/Workers) — the backend this frontend calls for forms/scribe/clinic-specialities.
-export const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8787';
+// clinuxflow-api's real URL is baked in at BUILD time (VITE_API_BASE, normally
+// http://localhost:8787 for local dev) -- fine for the device that build actually ran on, but a
+// literal "localhost:8787" means something different on every device, so a LAN device loading
+// this app from the Tauri shared server would resolve it to ITSELF, not the Tauri host, and get
+// a network error trying to log in. When this page was served BY that shared server
+// (window.__CLINUX_SHARED_SERVER__, injected server-side -- see src-tauri/src/shared_server.rs),
+// API_BASE becomes '' instead: a relative /api/... call lands on that SAME origin, which proxies
+// it through to the real clinuxflow-api from the host machine's own network position. Found and
+// fixed after a live user hit this exact "network error" logging in from a second device.
+const SHARED_SERVER_PAGE = typeof window !== 'undefined' && window.__CLINUX_SHARED_SERVER__ === true;
+export const API_BASE = SHARED_SERVER_PAGE ? '' : (import.meta.env.VITE_API_BASE || 'http://localhost:8787');
 
-// clinuxflow-abdm-gateway — separate Worker, only called by AbdmOnboarding.vue.
+// clinuxflow-abdm-gateway — separate Worker, only called by AbdmOnboarding.vue. NOT proxied by
+// the shared server (only clinuxflow-api is, so far) -- AbdmOnboarding.vue will hit the same
+// class of network error from a second device until that's built too.
 export const ABDM_GATEWAY_BASE = import.meta.env.VITE_ABDM_GATEWAY_BASE || 'http://localhost:8788';
 
 // Shared secret both backends require as X-Service-Key (see their own src/index.js auth

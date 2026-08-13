@@ -4,8 +4,10 @@
 import { computed, ref } from 'vue';
 import Cubo from '../components/Cubo.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
+import SessionShareModal from '../components/SessionShareModal.vue';
+import SessionImportModal from '../components/SessionImportModal.vue';
 import {
-  activeQuestionnaire, activeVersionNumber,
+  formData, activeQuestionnaire, activeVersionNumber,
   saveDataRecord, getAnswer, getGroupInstances,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
@@ -44,6 +46,9 @@ function showToast(msg) {
 const drawerOpen = ref(false);
 const activeStepId = ref(null);
 const dataVersion = ref(0);
+// ALSO bumped by any formData change from ANY origin -- see onboarding.js's identical wiring for
+// the full story (shared-server sync merges happen in the background on their own timer).
+formData.subscribeChanges(() => { dataVersion.value++; });
 const lhcFormHost = ref(null);
 const drawerQuestionnaire = ref(null);
 const drawerRecord = ref(null);
@@ -65,6 +70,23 @@ function resumeSession(session) {
   clinical.setActive(session.id);
   clinical.recordVisit(session.id, 'checkout');
   screen.value = 'steps';
+}
+
+// Phase C: QR/text-key session transfer — see sessionShare.js. Checkout never originates a
+// session (no "New Check-In" here either), so Import is offered right on the sessions landing
+// screen, same reasoning as Front Desk's.
+const shareModalOpen = ref(false);
+const importModalOpen = ref(false);
+const shareRecord = computed(() => {
+  dataVersion.value;
+  return encounterId.value ? clinical.getEncounter() : null;
+});
+
+// See FrontDesk.vue's identical function for why this doesn't close the modal itself.
+function onSessionImported(importedEncounterId) {
+  dataVersion.value++;
+  resumeSession({ id: importedEncounterId });
+  showToast('Session imported.');
 }
 
 const activeStepLabel = computed(() => ({ prescription: 'Add Medication', billing: 'Add Payment' }[activeStepId.value] || ''));
@@ -171,6 +193,9 @@ function closeEncounter() {
     <i :class="mobileView === 'chat' ? 'fas fa-table-list' : 'fas fa-comment'"></i>
   </button>
 
+  <SessionShareModal :open="shareModalOpen" :record="shareRecord" @close="shareModalOpen = false" />
+  <SessionImportModal :open="importModalOpen" @close="importModalOpen = false" @imported="onSessionImported" />
+
   <div class="flex-1 flex overflow-hidden chat-forms-shell" :class="mobileView === 'chat' ? 'mobile-mode-chat' : 'mobile-mode-forms'">
     <!-- LEFT: Cübo, same confined-pane pattern as Front Desk/Consultation Desk. Stays mounted
          across every screen (sessions/steps/done), not just while a session is open. -->
@@ -185,7 +210,10 @@ function closeEncounter() {
       <div class="max-w-[900px]">
 
         <div v-if="screen === 'sessions'">
-          <h2 class="text-2xl font-bold mb-4" style="color:var(--cf-text-strong)">Active Sessions</h2>
+          <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+            <h2 class="text-2xl font-bold" style="color:var(--cf-text-strong)">Active Sessions</h2>
+            <button class="btn-outline whitespace-nowrap text-sm" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Import Session</button>
+          </div>
           <div v-if="activeSessions.length === 0" class="cf-card" style="border-radius:1rem;padding:2rem;text-align:center">
             <i class="fas fa-user-clock" style="font-size:2rem;color:var(--cf-border);display:block;margin-bottom:.75rem"></i>
             <p style="font-weight:700;color:var(--cf-text-strong);margin-bottom:.3rem">No active encounter</p>
@@ -205,9 +233,12 @@ function closeEncounter() {
         </div>
 
         <div v-if="screen === 'steps'">
-          <div class="flex items-center justify-between mb-6">
+          <div class="flex items-center justify-between mb-6 flex-wrap gap-2">
             <h2 class="text-2xl font-bold" style="color:var(--cf-text-strong)">Checkout</h2>
-            <button class="btn-primary" @click="closeEncounter()"><i class="fas fa-flag-checkered"></i> Close Encounter & Checkout</button>
+            <div class="flex gap-2">
+              <button class="btn-outline text-sm" @click="shareModalOpen = true"><i class="fas fa-share-nodes"></i> Share / Sync</button>
+              <button class="btn-primary" @click="closeEncounter()"><i class="fas fa-flag-checkered"></i> Close Encounter & Checkout</button>
+            </div>
           </div>
 
           <div class="cf-card rounded-2xl p-5 mb-5">
