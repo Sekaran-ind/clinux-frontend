@@ -6,21 +6,33 @@
 // "camera not working?" message.
 import { nextTick, ref, watch, onUnmounted } from 'vue';
 import QrScanner from 'qr-scanner';
+import { decodeSessionTransfer } from '../data/sessionTransfer.js';
 import {
-  decodeEncounterShareKey, isSameClinic, alreadyConsented,
+  isSameClinic, alreadyConsented,
   importEncounterSharePayload, consentAndImport,
 } from '../data/sessionShare.js';
+import { useOnboardingStore } from '../stores/onboarding.js';
 
+// CALLER WARNING, hit 3 times already (FrontDesk.vue/Checkout.vue's encounter import,
+// Onboarding.vue's and StaffOnboarding.vue's clinic-profile import) before this comment existed:
+// on 'imported'/'profile-imported', do NOT set your `open` prop to false in the handler. This
+// modal shows its own "...imported." success state and expects the USER to dismiss it (the X
+// button / backdrop click already call emit('close') for you) — closing it yourself in the
+// event handler races the success render and always wins, so the message flashes for 0ms and
+// nobody ever sees it. Just react to the data (toast, refresh, navigate); leave `open` alone.
 const props = defineProps({ open: { type: Boolean, default: false } });
-const emit = defineEmits(['close', 'imported']);
+const emit = defineEmits(['close', 'imported', 'profile-imported']);
+const onboarding = useOnboardingStore();
 
-// 'scan' (idle, camera + paste both available) | 'consent' (cross-clinic, awaiting confirm) |
+// 'scan' (idle, camera + paste both available) | 'consent' (cross-clinic encounter, awaiting
+// confirm) | 'rejected' (cross-clinic clinic-profile — no consent option, just a clear no) |
 // 'imported' (success) | 'error'
 const stage = ref('scan');
 const pastedKey = ref('');
 const cameraError = ref('');
 const errorMessage = ref('');
 const pendingPayload = ref(null);
+const importedKind = ref(''); // drives the success message's wording
 const videoEl = ref(null);
 let scanner = null;
 
@@ -33,25 +45,50 @@ function reset() {
 }
 
 async function handleDecoded(rawString) {
-  const result = await decodeEncounterShareKey(rawString);
+  const result = await decodeSessionTransfer(rawString);
   if (!result.ok) {
     errorMessage.value = result.error;
     stage.value = 'error';
     return;
   }
   const payload = result.data;
-  if (isSameClinic(payload) || alreadyConsented(payload)) {
-    const { encounterId } = importEncounterSharePayload(payload);
+
+  if (payload?.kind === 'provider-profile') {
+    // No consent path at all for a clinic profile -- importing a DIFFERENT clinic's profile
+    // into your own would just overwrite your own clinic's public page with a stranger's data,
+    // not a referral worth consenting into. See sessionShare.js's own comment on this.
+    if (!isSameClinic(payload)) {
+      pendingPayload.value = payload;
+      stage.value = 'rejected';
+      return;
+    }
+    onboarding.importProviderProfile(payload);
+    importedKind.value = 'provider-profile';
     stage.value = 'imported';
-    emit('imported', encounterId);
-  } else {
-    pendingPayload.value = payload;
-    stage.value = 'consent';
+    emit('profile-imported');
+    return;
   }
+
+  if (payload?.kind === 'encounter-session') {
+    if (isSameClinic(payload) || alreadyConsented(payload)) {
+      const { encounterId } = importEncounterSharePayload(payload);
+      importedKind.value = 'encounter-session';
+      stage.value = 'imported';
+      emit('imported', encounterId);
+    } else {
+      pendingPayload.value = payload;
+      stage.value = 'consent';
+    }
+    return;
+  }
+
+  errorMessage.value = 'This key is valid but is not something ClinüxFlow recognizes.';
+  stage.value = 'error';
 }
 
 function confirmCrossClinicImport() {
   const { encounterId } = consentAndImport(pendingPayload.value);
+  importedKind.value = 'encounter-session';
   stage.value = 'imported';
   emit('imported', encounterId);
 }
@@ -130,9 +167,21 @@ onUnmounted(stopCamera);
         </div>
       </div>
 
+      <div v-else-if="stage === 'rejected'" class="text-sm">
+        <p class="mb-3" style="color:var(--cf-text-strong)">
+          This clinic profile belongs to <strong>{{ pendingPayload.sourceClinicName || 'a different clinic' }}</strong>,
+          not the one you're logged into.
+        </p>
+        <p class="mb-4" style="color:var(--cf-text)">
+          A clinic profile can only be imported into a login on the SAME clinic it came from — importing
+          it here would overwrite your own clinic's page with theirs, so this isn't allowed.
+        </p>
+        <button class="btn-outline text-xs w-full" @click="reset()">Close</button>
+      </div>
+
       <div v-else-if="stage === 'imported'" class="text-sm text-center py-4">
         <i class="fas fa-check-circle text-2xl mb-2" style="color:var(--color-primary)"></i>
-        <p style="color:var(--cf-text-strong)">Session imported.</p>
+        <p style="color:var(--cf-text-strong)">{{ importedKind === 'provider-profile' ? 'Clinic profile imported.' : 'Session imported.' }}</p>
       </div>
 
       <div v-else-if="stage === 'error'" class="text-sm">

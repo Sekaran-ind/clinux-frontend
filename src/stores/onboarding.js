@@ -225,9 +225,30 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     return profile;
   }
 
+  // Phase C extension: applies an imported clinic-profile transfer (see sessionShare.js's
+  // buildProviderProfileSharePayload/decodeProviderProfileShareKey) to THIS device's own local
+  // state. existingRecordId = payload.recordId means this upserts by the SOURCE record's own id
+  // — same "re-importing updates in place" convention Phase C's encounter transfer already
+  // uses — so a fresh device importing for the first time ends up with providerRecordId pointed
+  // at that same id, and a device re-importing a refreshed profile later doesn't duplicate it.
+  // If this device already had its OWN different local provider record (e.g. it had started
+  // onboarding independently before ever importing), that old record is left in place, unused,
+  // rather than deleted — accepted v1 clutter rather than a destructive auto-merge/delete nobody
+  // asked for. Reuses publish() to rebuild the flattened profile, write the localStorage
+  // snapshots, flip everPublished, and sync the registered account's own contact fields — the
+  // exact same side effects a normal first Publish already performs.
+  function importProviderProfile(payload) {
+    providerRecordId.value = saveDataRecord(payload.formId, payload.version, payload.data, payload.recordId);
+    Object.assign(branding, payload.branding || {});
+    saveBranding();
+    dataVersion.value++;
+    return publish();
+  }
+
   return {
     PROVIDER_FORM_ID,
     registeredUser, branding, publishedClinic, providerRecordId, dataVersion,
     getProviderRecord, buildSeedFromRegistration, saveBranding, saveProviderRecord, buildClinicProfile, publish,
+    importProviderProfile,
   };
 });

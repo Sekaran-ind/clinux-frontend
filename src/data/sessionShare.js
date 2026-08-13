@@ -76,3 +76,46 @@ export function consentAndImport(payload) {
   recordCrossClinicConsent(payload.encounterId, payload.sourceClinicId, myClinicId);
   return importEncounterSharePayload(payload);
 }
+
+// ---- Provider/Onboarding clinic-profile transfer -----------------------------------------
+// Syncing YOUR OWN clinic's profile (Hospital/Staff/Services/Hours/Consents + branding) across
+// your own devices or to a teammate's fresh one — the gap found while verifying Phase D: a
+// teammate given a login on the same clinic gets the right clinicId, but never the clinic's
+// actual published profile, since that lives only in whichever device ran Onboarding, never
+// synced via login. UNLIKE the encounter case above, there is no legitimate cross-clinic
+// version of this — importing a DIFFERENT clinic's profile into your own would just overwrite
+// your own clinic's public page with a stranger's data, not a referral workflow worth consenting
+// into. So this path has no consent step at all: same-clinic imports, everything else is
+// rejected outright (see isSameClinic() above, reused as-is; the actual reject decision lives in
+// the UI, SessionImportModal.vue, since there's nothing further to do here on a mismatch).
+
+// The clinic's actual FHIR-ish record (Hospital/Staff/Services/Hours/Consents, one merged
+// Provider-composition document) PLUS its branding, which — unlike vitals/prescriptions living
+// inside the Encounter record — lives in a separate localStorage key (cf_onboarding_branding),
+// not inside the Provider record's own QuestionnaireResponse tree. Passed in explicitly rather
+// than read directly here so this module stays independent of the onboarding store.
+export async function buildProviderProfileSharePayload(record, branding) {
+  const user = currentUser();
+  const payload = {
+    kind: 'provider-profile',
+    v: 1,
+    recordId: record.id,
+    formId: record.formId,
+    version: record.version,
+    sourceClinicId: record.clinicId ?? user?.clinicId ?? null,
+    sourceClinicName: user?.clinicName || null,
+    data: record.data,
+    branding: branding || {},
+  };
+  const key = await encodeSessionTransfer(payload);
+  return { key, payload };
+}
+
+export async function decodeProviderProfileShareKey(rawString) {
+  const result = await decodeSessionTransfer(rawString);
+  if (!result.ok) return result;
+  if (!result.data || result.data.kind !== 'provider-profile') {
+    return { ok: false, error: 'This key is valid but is not a ClinüxFlow clinic-profile transfer.' };
+  }
+  return result;
+}

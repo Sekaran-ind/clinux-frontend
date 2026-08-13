@@ -15,6 +15,8 @@ import { publicAppointments } from '../data/collections/publicAppointments.js';
 import FrontDesk from './FrontDesk.vue';
 import ConsultationDesk from './ConsultationDesk.vue';
 import Checkout from './Checkout.vue';
+import TeamSettingsModal from '../components/TeamSettingsModal.vue';
+import SessionShareModal from '../components/SessionShareModal.vue';
 
 const onboarding = useOnboardingStore();
 const auth = useAuthStore();
@@ -118,6 +120,12 @@ const appointmentsWindow = computed(() => {
 // outside-click close rather than Index.vue's vestigial (unregistered, no-op) v-click-outside
 // directive.
 const userMenuOpen = ref(false);
+// Phase D: multi-user accounts per clinic — see TeamSettingsModal.vue.
+const teamModalOpen = ref(false);
+// Phase C extension: generating a clinic-profile transfer key — moved here from Onboarding.vue's
+// hub screen (this is the discoverable "my account/clinic" surface for an admin, not the setup
+// wizard). See SessionShareModal.vue's kind="provider-profile" mode.
+const shareProfileModalOpen = ref(false);
 function closeUserMenuOnOutsideClick(e) {
   if (!e.target.closest('.user-menu-anchor')) userMenuOpen.value = false;
 }
@@ -181,6 +189,9 @@ function sendMessage() {
 
 <template>
   <div class="cf-toast" v-show="toast.show"><i class="fas fa-check-circle" style="color:var(--brand)"></i><span>{{ toast.msg }}</span></div>
+
+  <TeamSettingsModal :open="teamModalOpen" @close="teamModalOpen = false" />
+  <SessionShareModal :open="shareProfileModalOpen" :record="onboarding.getProviderRecord()" :branding="onboarding.branding" kind="provider-profile" @close="shareProfileModalOpen = false" />
 
   <div class="modal-bg" v-show="apptModal" @click.self="apptModal = false">
     <div class="modal-panel" @click.stop>
@@ -260,6 +271,9 @@ function sendMessage() {
             </div>
             <template v-if="isAdmin">
               <button class="user-menu-item" @click="openClinicView('front-desk'); userMenuOpen = false"><i class="fas fa-user-clock" style="color:var(--brand)"></i>Front Desk</button>
+              <button class="user-menu-item" @click="teamModalOpen = true; userMenuOpen = false"><i class="fas fa-users" style="color:var(--brand)"></i>Team</button>
+              <button v-show="onboarding.providerRecordId" class="user-menu-item" @click="shareProfileModalOpen = true; userMenuOpen = false"><i class="fas fa-share-nodes" style="color:var(--brand)"></i>Share Clinic Profile</button>
+              <RouterLink to="/staff-onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-user-md" style="color:var(--brand)"></i>Staff Onboarding</RouterLink>
               <RouterLink to="/onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-pen" style="color:var(--brand)"></i>Edit Profile</RouterLink>
               <RouterLink to="/designer" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-cog" style="color:var(--brand)"></i>Settings</RouterLink>
               <RouterLink to="/ai-engine" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-brain" style="color:var(--brand)"></i>AI Engine</RouterLink>

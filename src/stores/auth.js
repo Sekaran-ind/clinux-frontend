@@ -99,6 +99,29 @@ export const useAuthStore = defineStore('auth', () => {
     persist();
   }
 
+  // Phase D: multi-user accounts per clinic. Every login on the CALLER's own clinic — the
+  // server derives clinicId from the caller's own JWT (via requireUser()), never from anything
+  // the client sends, so there's no clinicId to pass here either.
+  async function fetchTeam() {
+    const res = await apiFetch(`${API_BASE}/api/auth/team`).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+    if (!res.success) return { error: res.error };
+    return { accounts: res.accounts };
+  }
+
+  // Adds another login to THIS account's own clinic. No email is sent (this app has no mail
+  // server) — the admin sets the new teammate's email+password directly and shares it with them
+  // out of band, then the teammate signs in normally at /.
+  async function inviteTeammate({ email, password, adminName, designation }) {
+    const res = await apiFetch(`${API_BASE}/api/auth/invite`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, adminName, designation }),
+    }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+
+    if (!res.success) return { error: res.error };
+    return { account: res.account };
+  }
+
   function saveProfile(profileForm) {
     if (!currentUser.value) return;
     const updated = { ...currentUser.value, ...profileForm };
@@ -109,5 +132,5 @@ export const useAuthStore = defineStore('auth', () => {
     persist();
   }
 
-  return { currentUser, register, login, logout, saveProfile, refreshSession };
+  return { currentUser, register, login, logout, saveProfile, refreshSession, fetchTeam, inviteTeammate };
 });

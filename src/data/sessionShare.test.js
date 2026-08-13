@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   buildEncounterSharePayload, decodeEncounterShareKey, isSameClinic, alreadyConsented,
   importEncounterSharePayload, consentAndImport,
+  buildProviderProfileSharePayload, decodeProviderProfileShareKey,
 } from './sessionShare.js';
 import { encodeSessionTransfer } from './sessionTransfer.js';
 import { formData } from './collections/formData.js';
@@ -88,4 +89,35 @@ describe('cross-clinic import flow', () => {
     expect(alreadyConsented(payload)).toBe(true);
     expect(formData.has('rec-imported-2')).toBe(true);
   });
+});
+
+describe('buildProviderProfileSharePayload / decodeProviderProfileShareKey', () => {
+  it('carries the source clinicId/name + branding, and round-trips through decode', async () => {
+    loginAs('clinic-a', { clinicName: 'Clinic A' });
+    const record = {
+      id: 'provider-rec-1', formId: 'system-provider-composition-v1', version: 2, clinicId: 'clinic-a',
+      data: { item: [{ linkId: 'section_hospital', item: [{ linkId: 'hospital_name', answer: [{ valueString: 'Clinic A' }] }] }] },
+    };
+    const branding = { tagline: 'Trusted care', brandColor: '#00D4B2', logoUrl: '', slug: 'clinic-a' };
+    const { key, payload } = await buildProviderProfileSharePayload(record, branding);
+    expect(payload).toMatchObject({
+      kind: 'provider-profile', recordId: 'provider-rec-1', sourceClinicId: 'clinic-a', sourceClinicName: 'Clinic A', branding,
+    });
+
+    const decoded = await decodeProviderProfileShareKey(key);
+    expect(decoded.ok).toBe(true);
+    expect(decoded.data).toEqual(payload);
+  });
+
+  it('rejects a validly-encrypted key that is not a provider-profile payload (e.g. an encounter one)', async () => {
+    const { key } = await buildEncounterSharePayload({ id: 'x', formId: 'f', version: 1, clinicId: 'c', data: { item: [] } });
+    const result = await decodeProviderProfileShareKey(key);
+    expect(result.ok).toBe(false);
+  });
+
+  // isSameClinic() is already fully covered above (it's reused as-is, not duplicated) -- the
+  // thing specific to the provider-profile path is that there's NO consentAndImport/alreadyConsented
+  // equivalent for it at all, by design (see sessionShare.js's own comment on why). That absence
+  // is enforced in the UI (SessionImportModal.vue rejects outright on a clinic mismatch), not
+  // testable as a missing export here.
 });
