@@ -1,8 +1,23 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { useLiveQuery } from '@tanstack/vue-db';
-import { formData, getAnswer } from '../data/collections/formData.js';
+import { formData, getAnswer, withGroupFields, saveDataRecord } from '../data/collections/formData.js';
 import { getCareTeam, addCareTeamMember, removeCareTeamMember } from '../data/collections/encounterDocs.js';
+
+// Per-encounter stage-completion tracking for the shared Active Sessions landing (see
+// ActiveSessionsLanding.vue) — deliberately separate from encounter_status (arrived/in-progress/
+// finished/cancelled, a coarse open/closed signal Checkout.vue already owns). These three track
+// each of the three PHASES independently, set at the exact moment each phase's own existing
+// hand-off action already fires (Front Desk's sendToConsultation(), Consultation Desk's
+// sendToCheckout(), Checkout's closeEncounter()) -- not new user actions, just marking what
+// already happens. Stored as ordinary answer fields on the SAME section_encounter group
+// (via withGroupFields, same mechanism formSlotEngine.js's applyFills() uses) rather than a
+// schema change to the compiled Questionnaire -- these are internal/system-tracked, never
+// rendered as form inputs, so they don't need a YAML field definition to exist.
+export const ENCOUNTER_STAGES = ['onboarding', 'consultation', 'checkout'];
+function stageFieldId(stage) {
+  return `stage_${stage}_complete`;
+}
 
 // The one merged Encounter-composition record per visit (Vitals/SOAP/Prescription/Billing all
 // live inside it now, as repeating/singular groups — see formData.js's getGroupInstances) rather
@@ -87,6 +102,44 @@ export const useClinicalStore = defineStore('clinical', () => {
       }));
   }
 
+  // { onboarding: bool, consultation: bool, checkout: bool } for one encounter record — the
+  // shared landing's 3 per-row action badges read this to show complete vs. not-yet.
+  function getStageCompletion(record) {
+    const out = {};
+    ENCOUNTER_STAGES.forEach((stage) => {
+      out[stage] = getAnswer(record, stageFieldId(stage)) === 'true';
+    });
+    return out;
+  }
+
+  // Called from each phase's own EXISTING hand-off action (see this function's own comment
+  // above) — not a new user-facing action. Silently no-ops if the encounter's gone missing
+  // (closed/deleted elsewhere mid-action) rather than throwing partway through a hand-off.
+  function markStageComplete(encounterId, stage) {
+    const record = encounterRecords().find((r) => r.id === encounterId);
+    if (!record) return;
+    const newData = withGroupFields(record.data, 'section_encounter', { [stageFieldId(stage)]: 'true' });
+    saveDataRecord(ENCOUNTER_FORM_ID, record.version, newData, record.id);
+  }
+
+  // Every encounter — open AND closed — sorted most-recent-first, for the shared Active Sessions
+  // landing's timeline (see ActiveSessionsLanding.vue). Deliberately NOT filtered by
+  // CLOSED_ENCOUNTER_STATUSES the way listActiveSessions() is: the landing is a real session
+  // history/timeline now, not just a "what's still open" list, and TanStack Query's infinite
+  // scroll needs a genuinely growing dataset to page through, not just the handful of visits
+  // open on a given day.
+  function listAllSessions() {
+    return encounterRecords().map((r) => ({
+      id: r.id,
+      status: getAnswer(r, 'encounter_status'),
+      priority: getAnswer(r, 'encounter_priority'),
+      patientRef: getAnswer(r, 'encounter_patient_ref'),
+      chiefComplaint: getAnswer(r, 'encounter_chief_complaint'),
+      savedAt: r.savedAt,
+      stages: getStageCompletion(r),
+    }));
+  }
+
   // Per-encounter "last page visited" — lets ClinicHome's session cards resume exactly where
   // staff left off instead of always bouncing back to Front Desk. Plain localStorage map, same
   // simple-ref-backed-by-localStorage pattern as activeEncounterId above (no TanStack collection
@@ -113,6 +166,9 @@ export const useClinicalStore = defineStore('clinical', () => {
     clearActive,
     getEncounter,
     listActiveSessions,
+    listAllSessions,
+    getStageCompletion,
+    markStageComplete,
     recordVisit,
     getLastVisitedPage,
     getCareTeam,

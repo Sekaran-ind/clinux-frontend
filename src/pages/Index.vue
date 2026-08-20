@@ -6,6 +6,7 @@
 // idiomatic to the new framework rather than a literal port of imperative DOM code.
 import { onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { RadioGroupRoot, RadioGroupItem, RadioGroupIndicator } from 'reka-ui';
 import { useAuthStore } from '../stores/auth.js';
 import { useThemeStore } from '../stores/theme.js';
 
@@ -29,7 +30,13 @@ const toast = ref({ show: false, message: '' });
 const regError = ref('');
 const loginError = ref('');
 
-const regForm = reactive({ clinicName: '', adminName: '', designation: '', email: '', password: '', services: '', phone: '', city: '' });
+// facilityType is the unified onboarding journey's top-of-funnel fork -- a standalone individual
+// practitioner (no facility at all) goes through this exact same registration, just tagged so
+// the rest of the journey (HFR registration, team invites) knows to skip itself for them. See
+// clinuxflow-api's POST /api/auth/register comment and migrations/0005 for the full design.
+const regForm = reactive({
+  facilityType: 'facility', clinicName: '', adminName: '', designation: '', email: '', password: '', services: '', phone: '', city: '',
+});
 const loginForm = reactive({ email: '', password: '' });
 const profileForm = reactive({ clinicName: '', adminName: '', designation: '', careTeam: '', services: '', phone: '', city: '', address: '' });
 const contactForm = reactive({ name: '', clinic: '', email: '', message: '' });
@@ -69,7 +76,7 @@ async function registerClinic() {
   const { error, user } = await auth.register({ ...regForm });
   if (error) { regError.value = error; return; }
   showRegister.value = false;
-  Object.assign(regForm, { clinicName: '', adminName: '', designation: '', email: '', password: '', services: '', phone: '', city: '' });
+  Object.assign(regForm, { facilityType: 'facility', clinicName: '', adminName: '', designation: '', email: '', password: '', services: '', phone: '', city: '' });
   showToast(`Welcome, ${user.clinicName}! Let's set up your clinic profile.`);
   router.push('/onboarding');
 }
@@ -160,9 +167,40 @@ onUnmounted(stopAutoplay);
         <button @click="showRegister = false" class="w-9 h-9 rounded-full cf-card flex items-center justify-center hover:text-red-500"><i class="fas fa-times text-sm"></i></button>
       </div>
       <form @submit.prevent="registerClinic()" class="space-y-4">
-        <div><label class="cf-label">Clinic Name *</label><input class="cf-input" v-model="regForm.clinicName" placeholder="e.g. Apollo Diagnostic Centre" required /></div>
+        <!-- The unified journey's top-of-funnel fork: a standalone individual practitioner (no
+             facility at all) registers through this exact same form, just tagged so the rest of
+             onboarding skips every facility-only screen for them (HFR registration, team
+             invites). Reka UI's RadioGroupRoot -- keyboard nav + ARIA radiogroup semantics for
+             free, first real use of the new headless-primitives layer. -->
+        <div>
+          <label class="cf-label">I'm registering...</label>
+          <RadioGroupRoot v-model="regForm.facilityType" class="grid grid-cols-2 gap-3 mt-1">
+            <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="regForm.facilityType === 'facility' ? 'border-color:var(--color-primary)' : ''">
+              <RadioGroupItem value="facility" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
+                <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
+              </RadioGroupItem>
+              <div>
+                <div class="text-sm font-bold" style="color:var(--cf-text-strong)">A Facility</div>
+                <div class="text-xs" style="color:var(--cf-text)">Clinic, lab, hospital — with staff</div>
+              </div>
+            </label>
+            <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="regForm.facilityType === 'individual' ? 'border-color:var(--color-primary)' : ''">
+              <RadioGroupItem value="individual" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
+                <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
+              </RadioGroupItem>
+              <div>
+                <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Myself, Individually</div>
+                <div class="text-xs" style="color:var(--cf-text)">Standalone consultant, no facility</div>
+              </div>
+            </label>
+          </RadioGroupRoot>
+        </div>
+        <div>
+          <label class="cf-label">{{ regForm.facilityType === 'individual' ? 'Practice Name *' : 'Clinic Name *' }}</label>
+          <input class="cf-input" v-model="regForm.clinicName" :placeholder="regForm.facilityType === 'individual' ? 'e.g. Dr. Sarah Mehta — Cardiology Consult' : 'e.g. Apollo Diagnostic Centre'" required />
+        </div>
         <div class="grid grid-cols-2 gap-3">
-          <div><label class="cf-label">Admin Full Name *</label><input class="cf-input" v-model="regForm.adminName" placeholder="Dr. Sarah Mehta" required /></div>
+          <div><label class="cf-label">{{ regForm.facilityType === 'individual' ? 'Your Full Name *' : 'Admin Full Name *' }}</label><input class="cf-input" v-model="regForm.adminName" placeholder="Dr. Sarah Mehta" required /></div>
           <div><label class="cf-label">Designation</label><input class="cf-input" v-model="regForm.designation" placeholder="Chief of Medicine" /></div>
         </div>
         <div><label class="cf-label">Email Address *</label><input class="cf-input" type="email" v-model="regForm.email" placeholder="admin@clinic.com" required /></div>

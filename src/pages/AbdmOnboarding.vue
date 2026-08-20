@@ -91,6 +91,9 @@ const gatewayStatus = ref('offline');
 const hfr = reactive({
   step: 'not_started', trackingId: null, facilityId: null, searchResults: [],
   loading: { search: false, basic: false, additional: false, detailed: false, submit: false },
+  // Deferred registration -- see the panel's own comment. Defaults false (register now),
+  // unchanged from before this existed.
+  deferred: false,
 });
 
 const hfrStageLabel = computed(() => ({
@@ -476,7 +479,7 @@ function persistAbdmState() {
     safeHprState[id] = { step: st.step, txnId: st.txnId, maskedMobile: st.maskedMobile, hpidExists: st.hpidExists, hpidSuggestions: st.hpidSuggestions, selectedHpId: st.selectedHpId, createdHprId: st.createdHprId };
   });
   localStorage.setItem('cf_abdm_onboarding_session', JSON.stringify({
-    hfr: { step: hfr.step, trackingId: hfr.trackingId, facilityId: hfr.facilityId },
+    hfr: { step: hfr.step, trackingId: hfr.trackingId, facilityId: hfr.facilityId, deferred: hfr.deferred },
     hprState: safeHprState,
   }));
 }
@@ -522,26 +525,46 @@ onMounted(() => {
       </div>
 
       <!-- Hospital (single mode): ABDM Facility Registration sub-panel, always shown below the
-           form once a Hospital record exists -->
-      <div v-if="activeForm && activeForm.groupLinkId === 'section_hospital'" class="abdm-panel">
+           form once a Hospital record exists. Hidden entirely for a standalone individual
+           practitioner (facilityType === 'individual', see Register form's own fork +
+           migrations/0005) -- there's no facility to register with HFR at all; they go straight
+           to their own HPR registration under the Care Team panel below instead. -->
+      <div v-if="activeForm && activeForm.groupLinkId === 'section_hospital' && auth.currentUser?.facilityType !== 'individual'" class="abdm-panel">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
           <p class="cf-label" style="margin:0"><i class="fas fa-satellite-dish mr-1.5"></i>ABDM Facility Registration (HFR)</p>
-          <span class="abdm-stage-badge" :class="'abdm-stage-' + hfr.step">{{ hfrStageLabel }}</span>
+          <span class="abdm-stage-badge" :class="'abdm-stage-' + hfr.step">{{ hfr.deferred ? 'Deferred' : hfrStageLabel }}</span>
         </div>
-        <p v-show="!facilityManagerToken" style="font-size:.72rem;color:var(--cf-text);margin-bottom:.75rem">
-          <i class="fas fa-circle-exclamation mr-1" style="color:#F59E0B"></i>Log in as the acting Facility Manager on the <strong>Administrator Profile</strong> tab first — Basic Information and Submit need that token.
-        </p>
-        <div style="display:flex;flex-wrap:wrap;gap:.5rem">
-          <button class="abdm-step-btn" :disabled="hfr.loading.search" @click="hfrSearch()"><i class="fas" :class="hfr.loading.search ? 'fa-spinner fa-spin' : 'fa-magnifying-glass'"></i>Search Facility</button>
-          <button class="abdm-step-btn" :disabled="hfr.loading.basic || !facilityManagerToken" @click="hfrBasicInfo()"><i class="fas" :class="hfr.loading.basic ? 'fa-spinner fa-spin' : 'fa-file'"></i>Basic Information</button>
-          <button class="abdm-step-btn" :disabled="hfr.loading.additional || !hfr.trackingId" @click="hfrAdditionalInfo()"><i class="fas" :class="hfr.loading.additional ? 'fa-spinner fa-spin' : 'fa-file-circle-plus'"></i>Additional Information</button>
-          <button class="abdm-step-btn" :disabled="hfr.loading.detailed || !hfr.trackingId" @click="hfrDetailedInfo()"><i class="fas" :class="hfr.loading.detailed ? 'fa-spinner fa-spin' : 'fa-list-check'"></i>Detailed Information</button>
-          <button class="abdm-step-btn" :disabled="hfr.loading.submit || !hfr.trackingId || !facilityManagerToken" @click="hfrSubmit()"><i class="fas" :class="hfr.loading.submit ? 'fa-spinner fa-spin' : 'fa-paper-plane'"></i>Submit</button>
-        </div>
-        <div style="margin-top:.75rem;font-size:.75rem;color:var(--cf-text);display:flex;flex-direction:column;gap:.25rem">
-          <span v-show="hfr.trackingId">Tracking ID: <strong>{{ hfr.trackingId }}</strong></span>
-          <span v-show="hfr.facilityId">Facility ID: <strong>{{ hfr.facilityId }}</strong></span>
-        </div>
+
+        <!-- Deferred registration: the Hospital Profile fields above are collected exactly the
+             same either way (same drawer/record as Onboarding.vue) -- this toggle only decides
+             whether the ACTUAL ABDM network calls happen now or get put off until someone
+             explicitly comes back and flips it off. Nothing here is submitted while deferred. -->
+        <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;cursor:pointer;font-size:.78rem;color:var(--cf-text)">
+          <input type="checkbox" v-model="hfr.deferred" @change="persistAbdmState()" />
+          Register with ABDM later — just save these details for now
+        </label>
+
+        <template v-if="hfr.deferred">
+          <p style="font-size:.78rem;color:var(--cf-text);padding:.6rem;background:var(--cf-bg);border-radius:.5rem">
+            <i class="fas fa-clock mr-1.5" style="color:var(--color-primary)"></i>ABDM facility registration is deferred. Hospital Profile details are saved — come back here and untick the box above whenever you're ready to submit to HFR.
+          </p>
+        </template>
+        <template v-else>
+          <p v-show="!facilityManagerToken" style="font-size:.72rem;color:var(--cf-text);margin-bottom:.75rem">
+            <i class="fas fa-circle-exclamation mr-1" style="color:#F59E0B"></i>Log in as the acting Facility Manager on the <strong>Administrator Profile</strong> tab first — Basic Information and Submit need that token.
+          </p>
+          <div style="display:flex;flex-wrap:wrap;gap:.5rem">
+            <button class="abdm-step-btn" :disabled="hfr.loading.search" @click="hfrSearch()"><i class="fas" :class="hfr.loading.search ? 'fa-spinner fa-spin' : 'fa-magnifying-glass'"></i>Search Facility</button>
+            <button class="abdm-step-btn" :disabled="hfr.loading.basic || !facilityManagerToken" @click="hfrBasicInfo()"><i class="fas" :class="hfr.loading.basic ? 'fa-spinner fa-spin' : 'fa-file'"></i>Basic Information</button>
+            <button class="abdm-step-btn" :disabled="hfr.loading.additional || !hfr.trackingId" @click="hfrAdditionalInfo()"><i class="fas" :class="hfr.loading.additional ? 'fa-spinner fa-spin' : 'fa-file-circle-plus'"></i>Additional Information</button>
+            <button class="abdm-step-btn" :disabled="hfr.loading.detailed || !hfr.trackingId" @click="hfrDetailedInfo()"><i class="fas" :class="hfr.loading.detailed ? 'fa-spinner fa-spin' : 'fa-list-check'"></i>Detailed Information</button>
+            <button class="abdm-step-btn" :disabled="hfr.loading.submit || !hfr.trackingId || !facilityManagerToken" @click="hfrSubmit()"><i class="fas" :class="hfr.loading.submit ? 'fa-spinner fa-spin' : 'fa-paper-plane'"></i>Submit</button>
+          </div>
+          <div style="margin-top:.75rem;font-size:.75rem;color:var(--cf-text);display:flex;flex-direction:column;gap:.25rem">
+            <span v-show="hfr.trackingId">Tracking ID: <strong>{{ hfr.trackingId }}</strong></span>
+            <span v-show="hfr.facilityId">Facility ID: <strong>{{ hfr.facilityId }}</strong></span>
+          </div>
+        </template>
       </div>
 
       <!-- Care Team only: a selection list so a specific staff member's HPR sub-panel can be

@@ -9,6 +9,8 @@ import Cubo from '../components/Cubo.vue';
 import CornerstoneViewer from '../components/CornerstoneViewer.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import SessionShareModal from '../components/SessionShareModal.vue';
+import ActiveSessionsLanding from '../components/ActiveSessionsLanding.vue';
+import { getEncounterAssignmentStatus } from '../data/encounterCoordination.js';
 import VideoCallPanel from '../components/VideoCallPanel.vue';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useCuboStore } from '../stores/cubo.js';
@@ -68,6 +70,41 @@ const dataVersion = ref(0);
 // the full story (shared-server sync merges happen in the background on their own timer).
 formData.subscribeChanges(() => { dataVersion.value++; });
 const liveRecord = ref(null);
+
+// Landing view, same shape as Front Desk/Checkout's own "Active Sessions" list (see
+// clinical.listActiveSessions()'s own comment — the shared foundation across all three) — a
+// clinician arriving at Consultation Desk cold (fresh login, direct nav, no Front Desk handoff
+// this session) used to hit a dead end ("No active encounter... Start a visit from Front Desk
+// first") with no way to resume an already-open encounter from here. Defaults straight to the
+// consultation view when there's already an activeEncounterId (the normal Front Desk handoff
+// path, e.g. sendToConsultation()) so that existing flow is unaffected — only the previously
+// dead-end cold-start case now gets a real list instead.
+//
+// Now the SHARED ActiveSessionsLanding.vue (see clinux-active-sessions-... memory note) instead
+// of this page's own inline list -- Front Desk/Checkout mount the exact same component, so a
+// session picked here shows the identical 3-stage-action row it would anywhere else, not a
+// page-specific variant. ActiveSessionsLanding already calls clinical.setActive() itself before
+// emitting; this page only needs to decide where "Consultation" specifically routes to (stay
+// here) vs. the other two stages (hand off via the existing 'navigate' event).
+const screen = ref(clinical.activeEncounterId ? 'consultation' : 'sessions');
+
+// Consultation is assignment-based, not lock-based (see the design discussion this followed —
+// Front Desk/Checkout are shared worklists needing a lock; Consultation is routed to a SPECIFIC
+// specialist at Triage, and stays open to anyone if never routed at all). Blocks entry only when
+// it's routed to someone else — unassigned, or assigned to the caller, both proceed.
+async function goToStage(stage) {
+  if (stage !== 'consultation') {
+    emit('navigate', stage === 'onboarding' ? 'front-desk' : 'checkout');
+    return;
+  }
+  const assignment = await getEncounterAssignmentStatus(clinical.activeEncounterId, 'consultation');
+  if (assignment && assignment.accountId !== auth.currentUser?.id) {
+    log(`This case is routed to ${assignment.name || 'another specialist'} — not open to you.`, 'border-amber-500');
+    screen.value = 'sessions';
+    return;
+  }
+  screen.value = 'consultation';
+}
 
 // Runs once immediately (covers the normal case, encounter already present at mount) and again
 // any time `encounter` resolves/changes (covers the race above, and switching encounters).
@@ -398,15 +435,29 @@ function removeTeamMember(staffId) {
 // Was no way to reach Checkout from anywhere in the app (no nav entry, no button here) — Front
 // Desk's own sendToConsultation() is the pattern this mirrors.
 function sendToCheckout() {
+  // Marks the Consultation stage complete for the shared Active Sessions landing's 3-action
+  // badges (see clinical.js's markStageComplete) — not a new action, just recording that this
+  // existing hand-off happened.
+  if (encounter.value) clinical.markStageComplete(encounter.value.id, 'consultation');
   emit('navigate', 'checkout');
 }
 </script>
 
 <template>
-  <div v-if="!encounter" class="w-full border rounded-xl p-8 text-center m-6" style="border-color:var(--cf-border)">
+  <!-- Shared landing — see the script's own comment on why this replaced the page-specific list. -->
+  <div v-if="screen === 'sessions'" class="m-6">
+    <ActiveSessionsLanding @navigate-stage="goToStage" />
+  </div>
+
+  <!-- Graceful fallback: screen was set to 'consultation' (either the Front Desk handoff default,
+       or picking the Consultation action on the shared landing above) but the encounter itself
+       has since gone missing -- e.g. closed or deleted from another device in the meantime.
+       Routes back to THIS page's own sessions list rather than bouncing to Front Desk, since
+       there's no actual reason to leave the page. -->
+  <div v-else-if="!encounter" class="w-full border rounded-xl p-8 text-center m-6" style="border-color:var(--cf-border)">
     <p class="font-bold mb-1" style="color:var(--cf-text-strong)">No active encounter</p>
-    <p class="text-sm" style="color:var(--cf-text)">Start a visit from Front Desk first.</p>
-    <button class="btn-teal inline-block mt-4" @click="emit('navigate', 'front-desk')">Go to Front Desk</button>
+    <p class="text-sm" style="color:var(--cf-text)">It may have been closed elsewhere. Pick another session.</p>
+    <button class="btn-teal inline-block mt-4" @click="screen = 'sessions'">Back to Sessions</button>
   </div>
 
   <template v-else>
@@ -416,9 +467,12 @@ function sendToCheckout() {
 
     <!-- Top bar -->
     <div class="flex items-center justify-between px-4 py-3 border-b" style="border-color:var(--cf-border)">
-      <div>
-        <div class="font-bold" style="color:var(--cf-text-strong)">{{ patientName }}</div>
-        <div class="text-xs" style="color:var(--cf-text)">{{ chiefComplaint }}</div>
+      <div class="flex items-center gap-4">
+        <button class="btn-ghost text-xs" @click="screen = 'sessions'"><i class="fas fa-arrow-left"></i> Sessions</button>
+        <div>
+          <div class="font-bold" style="color:var(--cf-text-strong)">{{ patientName }}</div>
+          <div class="text-xs" style="color:var(--cf-text)">{{ chiefComplaint }}</div>
+        </div>
       </div>
       <div class="flex items-center gap-2">
         <select v-model="priority" @change="savePriority()" class="cf-input text-xs w-32">

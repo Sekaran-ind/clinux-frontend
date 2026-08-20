@@ -8,14 +8,17 @@ import Cubo from '../components/Cubo.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import SessionShareModal from '../components/SessionShareModal.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
+import ActiveSessionsLanding from '../components/ActiveSessionsLanding.vue';
 import {
   formData, listDataRecords, recordSummary, activeQuestionnaire, activeVersionNumber,
   saveDataRecord, getGroupInstances, formsLibrary,
 } from '../data/useSystemForms.js';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useCuboStore } from '../stores/cubo.js';
+import { useAuthStore } from '../stores/auth.js';
 import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 import { getEncounterCustomFormLinks, attachCustomFormRecord } from '../data/collections/encounterDocs.js';
+import { assignToSpecialist, getEncounterAssignmentStatus, acquireWorklistLock, releaseWorklistLock } from '../data/encounterCoordination.js';
 
 const PATIENT_FORM_ID = 'system-patient-profile-v1';
 
@@ -26,6 +29,7 @@ const PATIENT_FORM_ID = 'system-patient-profile-v1';
 const emit = defineEmits(['navigate']);
 const clinical = useClinicalStore();
 const cubo = useCuboStore();
+const auth = useAuthStore();
 const slotFillHighlights = useSlotFillHighlightsStore();
 // This tab hosts Cübo full-time in its own confined pane (below), same as Consultation
 // Desk/Checkout — start expanded rather than the collapsed FAB badge. Missing here before: a
@@ -74,13 +78,10 @@ const lhcFormHost = ref(null);
 // per the mobile-app spec; a no-op above the breakpoint, where both panes always show anyway.
 const mobileView = ref('chat'); // 'chat' | 'forms'
 
-// Landing view: the active-sessions list, not a silent single-encounter auto-resume (there can
-// be more than one open visit at once — staff pick which one, or start a new check-in).
+// Landing view: the SHARED Active Sessions list (see ActiveSessionsLanding.vue) instead of this
+// page's own — there can be more than one open visit at once, and a session's 3 stage actions
+// now navigate identically regardless of which of the 3 pages you started from.
 const screen = ref('sessions'); // 'sessions' | 'wizard'
-const activeSessions = computed(() => {
-  dataVersion.value;
-  return clinical.listActiveSessions();
-});
 
 if (clinical.activeEncounterId) clinical.recordVisit(clinical.activeEncounterId, 'front-desk');
 
@@ -92,12 +93,28 @@ function startNewSession() {
   screen.value = 'wizard';
 }
 
-function resumeSession(session) {
-  encounterRecordId.value = session.id;
-  clinical.setActive(session.id);
-  clinical.recordVisit(session.id, 'front-desk');
-  currentStep.value = 1; // Encounter step — a predictable resume point regardless of progress.
-  screen.value = 'wizard';
+// ActiveSessionsLanding already calls clinical.setActive() on the picked session before emitting
+// this — 'onboarding' resumes right here (this IS the Onboarding/Front Desk page); the other two
+// stages hand off via the same 'navigate' event sendToConsultation() already uses.
+// Front Desk is a shared worklist (see the design discussion this followed) — any staff member
+// can pick up any session, so this acquires a short-lived lock rather than checking a specific
+// assignee, purely so two people can't work the same check-in simultaneously. A crashed/closed
+// device is covered by the lock's own TTL expiry server-side, not anything client-side here.
+async function goToStage(stage) {
+  if (stage === 'onboarding') {
+    const encounterId = clinical.activeEncounterId;
+    const { success, lockedBy } = await acquireWorklistLock(encounterId, 'onboarding');
+    if (!success) {
+      showToast(`Currently being worked on by ${lockedBy} — try again shortly.`);
+      return;
+    }
+    encounterRecordId.value = encounterId;
+    clinical.recordVisit(encounterRecordId.value, 'front-desk');
+    currentStep.value = 1; // Encounter step — a predictable resume point regardless of progress.
+    screen.value = 'wizard';
+    return;
+  }
+  emit('navigate', stage === 'consultation' ? 'consultation-desk' : 'checkout');
 }
 
 // Single entry point for EVERY step transition — the breadcrumb's own click and every
@@ -112,6 +129,37 @@ function goToStep(idx) {
   currentStep.value = idx;
   const stepId = steps[idx]?.id;
   if (stepId === 'encounter' || stepId === 'vitals' || stepId === 'triage') openStep(stepId);
+  if (stepId === 'triage') loadSpecialistOptions();
+}
+
+// Optional Triage-phase specialist routing (see the FrontDesk.vue design discussion this
+// followed) — deliberately server-authoritative, not local-first, since a routing decision has
+// to survive the specialist's device being offline when it's made. Staff + affiliates are the
+// only valid assignees (clinuxflow-api enforces this server-side too, not just here).
+const staffOptions = ref([]);
+const affiliateOptions = ref([]);
+const selectedSpecialistId = ref('');
+const assigningSpecialist = ref(false);
+const currentAssignment = ref(null);
+
+async function loadSpecialistOptions() {
+  const [{ accounts }, { affiliates }] = await Promise.all([auth.fetchTeam(), auth.fetchAffiliates()]);
+  staffOptions.value = accounts || [];
+  affiliateOptions.value = affiliates || [];
+  if (encounterRecordId.value) {
+    currentAssignment.value = await getEncounterAssignmentStatus(encounterRecordId.value, 'consultation');
+  }
+}
+
+async function routeToSpecialist() {
+  if (!selectedSpecialistId.value || !encounterRecordId.value) return;
+  assigningSpecialist.value = true;
+  const { error } = await assignToSpecialist(encounterRecordId.value, selectedSpecialistId.value);
+  assigningSpecialist.value = false;
+  if (error) { showToast(error); return; }
+  currentAssignment.value = await getEncounterAssignmentStatus(encounterRecordId.value, 'consultation');
+  selectedSpecialistId.value = '';
+  showToast('Routed to specialist.');
 }
 
 const patientSearchResults = computed(() => {
@@ -278,6 +326,13 @@ const vitalsRecords = computed(() => {
 });
 
 function sendToConsultation() {
+  // Marks the Onboarding stage complete for the shared Active Sessions landing's 3-action badges
+  // (see clinical.js's markStageComplete) — not a new action, just recording that this existing
+  // hand-off happened.
+  if (encounterRecordId.value) {
+    clinical.markStageComplete(encounterRecordId.value, 'onboarding');
+    releaseWorklistLock(encounterRecordId.value, 'onboarding');
+  }
   emit('navigate', 'consultation-desk');
 }
 
@@ -298,7 +353,8 @@ const shareRecord = computed(() => {
 // underneath is already resumed to the imported session by the time they close it.
 function onSessionImported(importedEncounterId) {
   dataVersion.value++;
-  resumeSession({ id: importedEncounterId });
+  clinical.setActive(importedEncounterId);
+  goToStage('onboarding');
   showToast('Session imported.');
 }
 </script>
@@ -328,30 +384,13 @@ function onSessionImported(importedEncounterId) {
 
     <!-- RIGHT: sessions list, or the wizard once a session's picked/started -->
     <div class="flex-1 overflow-y-auto p-6 space-y-3 content-pane">
-      <div v-if="screen === 'sessions'" class="max-w-[720px]">
-        <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-          <h2 class="text-2xl font-bold" style="color:var(--cf-text-strong)">Active Sessions</h2>
-          <div class="flex gap-2">
+      <div v-if="screen === 'sessions'">
+        <ActiveSessionsLanding @navigate-stage="goToStage">
+          <template #actions>
             <button class="btn-outline whitespace-nowrap text-sm" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Import Session</button>
             <button class="btn-teal whitespace-nowrap" @click="startNewSession()"><i class="fas fa-plus"></i> New Check-In</button>
-          </div>
-        </div>
-        <div v-if="activeSessions.length === 0" class="cf-card rounded-2xl p-5 text-sm" style="color:var(--cf-text)">
-          No active sessions right now. Start a new check-in above.
-        </div>
-        <div v-else class="flex flex-col gap-2">
-          <div v-for="s in activeSessions" :key="s.id" class="record-card flex items-center justify-between p-3">
-            <div>
-              <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ s.patientRef || 'Unknown patient' }}</span>
-              <span class="text-xs ml-2" style="color:var(--cf-text)">{{ s.chiefComplaint }}</span>
-              <div class="text-xs mt-0.5" style="color:var(--cf-text)">
-                <span class="badge badge-teal">{{ s.status }}</span>
-                <span v-if="s.priority === 'Emergency'" class="badge ml-1" style="background:#fee2e2;color:#b91c1c">Emergency</span>
-              </div>
-            </div>
-            <button class="btn-outline text-xs px-3 py-1.5" @click="resumeSession(s)">Resume</button>
-          </div>
-        </div>
+          </template>
+        </ActiveSessionsLanding>
       </div>
 
       <div v-else>
@@ -431,9 +470,38 @@ function onSessionImported(importedEncounterId) {
           <div class="cf-card rounded-2xl p-5">
             <p class="text-sm mb-4" style="color:var(--cf-text)">Set the case priority before sending the patient through to consultation.</p>
             <button class="btn-teal" @click="openStep('triage')"><i class="fas fa-stethoscope"></i> Set Triage Priority</button>
-            <div class="mt-6 pt-6" style="border-top:1px solid var(--cf-border)">
-              <button class="btn-teal" @click="goToStep(4)">Continue to Additional Forms <i class="fas fa-arrow-right ml-2"></i></button>
+          </div>
+
+          <!-- Optional specialist routing -- deliberately NOT required to proceed. Leaving this
+               unset falls back to today's behavior (Consultation stays a shared worklist any
+               specialist can pick up), same as Front Desk/Checkout already work. Only meaningful
+               once a real encounter exists to route. -->
+          <div class="cf-card rounded-2xl p-5 mt-3" v-if="encounterRecordId">
+            <p class="cf-label mb-2">Route to a Specialist (optional)</p>
+            <p class="text-xs mb-3" style="color:var(--cf-text)">
+              Leave unset to keep this case on the shared Consultation worklist, pickable by anyone.
+            </p>
+            <div v-if="currentAssignment" class="text-sm mb-3" style="color:var(--color-primary)">
+              <i class="fas fa-user-check mr-1.5"></i>Currently routed to {{ currentAssignment.name || 'a specialist' }}.
             </div>
+            <div class="flex gap-2">
+              <select class="cf-input" v-model="selectedSpecialistId">
+                <option value="">Select a specialist...</option>
+                <optgroup label="Staff">
+                  <option v-for="s in staffOptions" :key="s.id" :value="s.id">{{ s.adminName || s.email }}{{ s.designation ? ` — ${s.designation}` : '' }}</option>
+                </optgroup>
+                <optgroup label="Affiliates" v-if="affiliateOptions.length">
+                  <option v-for="a in affiliateOptions" :key="a.accountId" :value="a.accountId">{{ a.adminName || a.email }}{{ a.role ? ` — ${a.role}` : '' }}</option>
+                </optgroup>
+              </select>
+              <button class="btn-outline whitespace-nowrap" :disabled="!selectedSpecialistId || assigningSpecialist" @click="routeToSpecialist()">
+                <i class="fas" :class="assigningSpecialist ? 'fa-spinner fa-spin' : 'fa-route'"></i> Route
+              </button>
+            </div>
+          </div>
+
+          <div class="mt-3">
+            <button class="btn-teal" @click="goToStep(4)">Continue to Additional Forms <i class="fas fa-arrow-right ml-2"></i></button>
           </div>
         </div>
 

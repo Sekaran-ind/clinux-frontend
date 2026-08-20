@@ -6,6 +6,9 @@ import Cubo from '../components/Cubo.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import SessionShareModal from '../components/SessionShareModal.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
+import ActiveSessionsLanding from '../components/ActiveSessionsLanding.vue';
+import { buildDigilockerRecordPdf } from '../data/digilockerExport.js';
+import { acquireWorklistLock, releaseWorklistLock } from '../data/encounterCoordination.js';
 import {
   formData, activeQuestionnaire, activeVersionNumber,
   saveDataRecord, getAnswer, getGroupInstances,
@@ -56,20 +59,28 @@ const formKey = ref(0);
 
 const encounterId = computed(() => clinical.activeEncounterId);
 
-// The shared active-sessions list — Checkout never originates a session (no Add here), it only
-// picks up an existing one. dataVersion is the same reactivity trigger used elsewhere in this
-// file (bumped on every saveDrawer()/closeEncounter() call).
-const activeSessions = computed(() => {
-  dataVersion.value;
-  return clinical.listActiveSessions();
-});
-
+// The SHARED Active Sessions landing (see ActiveSessionsLanding.vue) — Checkout never originates
+// a session (no Add here), it only picks up an existing one.
 if (clinical.activeEncounterId) clinical.recordVisit(clinical.activeEncounterId, 'checkout');
 
-function resumeSession(session) {
-  clinical.setActive(session.id);
-  clinical.recordVisit(session.id, 'checkout');
-  screen.value = 'steps';
+// ActiveSessionsLanding already calls clinical.setActive() on the picked session before emitting
+// this — 'checkout' resumes right here (this IS the Checkout page); the other two stages hand
+// off via the same 'navigate' event this page's own header actions already use. Checkout is a
+// shared worklist same as Front Desk (see the design discussion this followed) — a short-lived
+// lock, not a specific assignee, just so two people can't process the same checkout at once.
+async function goToStage(stage) {
+  if (stage === 'checkout') {
+    const encounterId = clinical.activeEncounterId;
+    const { success, lockedBy } = await acquireWorklistLock(encounterId, 'checkout');
+    if (!success) {
+      showToast(`Currently being worked on by ${lockedBy} — try again shortly.`);
+      return;
+    }
+    clinical.recordVisit(encounterId, 'checkout');
+    screen.value = 'steps';
+    return;
+  }
+  emit('navigate', stage === 'onboarding' ? 'front-desk' : 'consultation-desk');
 }
 
 // Phase C: QR/text-key session transfer — see sessionShare.js. Checkout never originates a
@@ -85,7 +96,8 @@ const shareRecord = computed(() => {
 // See FrontDesk.vue's identical function for why this doesn't close the modal itself.
 function onSessionImported(importedEncounterId) {
   dataVersion.value++;
-  resumeSession({ id: importedEncounterId });
+  clinical.setActive(importedEncounterId);
+  goToStage('checkout');
   showToast('Session imported.');
 }
 
@@ -150,6 +162,32 @@ const billingRecords = computed(() => {
   return getGroupInstances(clinical.getEncounter(), 'section_billing');
 });
 
+// SPEC-09 §5's free-tier DigiLocker path: a well-formed PDF (visit summary + an embedded QR
+// re-encoding the record via sessionShare.js's existing transfer format) the patient downloads
+// and stores themselves via DigiLocker's own "Scan/Upload" feature -- no DigiLocker API
+// integration on ClinuxFlow's side at all. Available any time an encounter is open here, not
+// gated behind closing it, since a patient may want their copy before checkout finishes.
+const isGeneratingDigilockerPdf = ref(false);
+async function downloadDigilockerRecord() {
+  const encounter = clinical.getEncounter();
+  if (!encounter) { showToast('No active encounter to export.'); return; }
+  isGeneratingDigilockerPdf.value = true;
+  try {
+    const { blob, qrIncluded } = await buildDigilockerRecordPdf(encounter);
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = `health-record-${encounter.id}.pdf`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    showToast(qrIncluded ? 'Health record downloaded — ready for DigiLocker.' : 'Health record downloaded (too much data for a QR — a text transfer key was printed instead).');
+  } catch (err) {
+    showToast('Could not generate the health record PDF: ' + err.message);
+  } finally {
+    isGeneratingDigilockerPdf.value = false;
+  }
+}
+
 function closeEncounter() {
   const encounter = clinical.getEncounter();
   if (!encounter) { showToast('No active encounter to close.'); return; }
@@ -158,6 +196,12 @@ function closeEncounter() {
   if (item) item.answer = [{ valueCoding: { display: 'finished' } }];
   else qr.item[0].item.push({ linkId: 'encounter_status', answer: [{ valueCoding: { display: 'finished' } }] });
   saveDataRecord(ENCOUNTER_FORM_ID, encounter.version, qr, encounter.id);
+  // Marks the Checkout stage complete for the shared Active Sessions landing's 3-action badges
+  // (see clinical.js's markStageComplete) — separate call, not folded into the encounter_status
+  // write above, since markStageComplete re-reads the record fresh (it needs the encounter_status
+  // write to have already landed first).
+  clinical.markStageComplete(encounter.id, 'checkout');
+  releaseWorklistLock(encounter.id, 'checkout');
   clinical.clearActive();
   screen.value = 'done';
 }
@@ -210,32 +254,20 @@ function closeEncounter() {
       <div class="max-w-[900px]">
 
         <div v-if="screen === 'sessions'">
-          <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-            <h2 class="text-2xl font-bold" style="color:var(--cf-text-strong)">Active Sessions</h2>
-            <button class="btn-outline whitespace-nowrap text-sm" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Import Session</button>
-          </div>
-          <div v-if="activeSessions.length === 0" class="cf-card" style="border-radius:1rem;padding:2rem;text-align:center">
-            <i class="fas fa-user-clock" style="font-size:2rem;color:var(--cf-border);display:block;margin-bottom:.75rem"></i>
-            <p style="font-weight:700;color:var(--cf-text-strong);margin-bottom:.3rem">No active encounter</p>
-            <p style="font-size:.85rem;color:var(--cf-text);margin-bottom:1rem">Start a visit at the Front Desk before checking out.</p>
-            <button class="btn-primary" @click="emit('navigate', 'front-desk')">Go to Front Desk</button>
-          </div>
-          <div v-else class="flex flex-col gap-2">
-            <div v-for="s in activeSessions" :key="s.id" class="record-card flex items-center justify-between p-3 cursor-pointer" @click="resumeSession(s)">
-              <div>
-                <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ s.patientRef || 'Unknown patient' }}</span>
-                <span class="text-xs ml-2" style="color:var(--cf-text)">{{ s.chiefComplaint }}</span>
-                <div class="text-xs mt-0.5"><span class="badge badge-teal">{{ s.status }}</span></div>
-              </div>
-              <button class="btn-outline text-xs px-3 py-1.5" @click.stop="resumeSession(s)">Checkout</button>
-            </div>
-          </div>
+          <ActiveSessionsLanding @navigate-stage="goToStage">
+            <template #actions>
+              <button class="btn-outline whitespace-nowrap text-sm" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Import Session</button>
+            </template>
+          </ActiveSessionsLanding>
         </div>
 
         <div v-if="screen === 'steps'">
           <div class="flex items-center justify-between mb-6 flex-wrap gap-2">
             <h2 class="text-2xl font-bold" style="color:var(--cf-text-strong)">Checkout</h2>
             <div class="flex gap-2">
+              <button class="btn-outline text-sm" @click="downloadDigilockerRecord()" :disabled="isGeneratingDigilockerPdf">
+                <i :class="isGeneratingDigilockerPdf ? 'fas fa-spinner fa-spin' : 'fas fa-download'"></i> Health Record (DigiLocker)
+              </button>
               <button class="btn-outline text-sm" @click="shareModalOpen = true"><i class="fas fa-share-nodes"></i> Share / Sync</button>
               <button class="btn-primary" @click="closeEncounter()"><i class="fas fa-flag-checkered"></i> Close Encounter & Checkout</button>
             </div>

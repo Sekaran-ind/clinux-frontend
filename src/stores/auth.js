@@ -53,6 +53,10 @@ export const useAuthStore = defineStore('auth', () => {
       body: JSON.stringify({
         clinicName: regForm.clinicName, email: regForm.email, password: regForm.password,
         adminName: regForm.adminName, designation: regForm.designation,
+        // 'facility' | 'individual' -- the unified onboarding journey's top-of-funnel fork (see
+        // clinuxflow-api's own POST /api/auth/register comment). Omitted defaults server-side to
+        // 'facility', unchanged from before this existed.
+        facilityType: regForm.facilityType,
       }),
     }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
 
@@ -132,5 +136,36 @@ export const useAuthStore = defineStore('auth', () => {
     persist();
   }
 
-  return { currentUser, register, login, logout, saveProfile, refreshSession, fetchTeam, inviteTeammate };
+  // Affiliates are an EXISTING independent practitioner's own account, linked to THIS clinic as
+  // a visiting/affiliate consultant -- never a new login (contrast with inviteTeammate() above,
+  // which does create one). See clinuxflow-api's POST/GET/DELETE /api/facility/affiliates and
+  // migrations/0005's own comment for why this is a separate relationship type from staff.
+  async function fetchAffiliates() {
+    const res = await apiFetch(`${API_BASE}/api/facility/affiliates`).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+    if (!res.success) return { error: res.error };
+    return { affiliates: res.affiliates };
+  }
+
+  async function linkAffiliate({ practitionerEmail, role }) {
+    const res = await apiFetch(`${API_BASE}/api/facility/affiliates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ practitionerEmail, role }),
+    }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+
+    if (!res.success) return { error: res.error };
+    return { affiliate: res.affiliate };
+  }
+
+  async function revokeAffiliate(accountId) {
+    const res = await apiFetch(`${API_BASE}/api/facility/affiliates/${encodeURIComponent(accountId)}`, { method: 'DELETE' })
+      .then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+    if (!res.success) return { error: res.error };
+    return { success: true };
+  }
+
+  return {
+    currentUser, register, login, logout, saveProfile, refreshSession, fetchTeam, inviteTeammate,
+    fetchAffiliates, linkAffiliate, revokeAffiliate,
+  };
 });

@@ -35,14 +35,31 @@ const lhcFormHost = ref(null);
 // record instead of its own separate formId (see clinux-provider-composition-merge memory
 // note) — Hospital's own card has no repeating count, its "status" is just whether the one
 // required field is filled in yet.
-const journeyCards = [
-  { groupLinkId: 'section_hospital', mode: 'single', icon: 'fas fa-hospital', color: '#3B82F6', bg: 'rgba(59,130,246,.1)', title: 'Hospital Profile', desc: 'Your clinic profile as a FHIR Organization resource.' },
-  { groupLinkId: 'section_staff', mode: 'repeatable', icon: 'fas fa-user-md', color: '#00D4B2', bg: 'rgba(0,212,178,.1)', title: 'Care Team', desc: 'Add physicians, nurses and staff as FHIR Practitioner records.' },
+//
+// A computed, not a plain const, so a standalone individual practitioner (facilityType ===
+// 'individual', see the Register form's own fork + migrations/0005) sees labels that actually
+// describe them rather than always assuming a multi-staff facility — the underlying FHIR data
+// (still Organization/Practitioner/HealthcareService) is unchanged, this is presentation only.
+// Deliberately does NOT remove the Care Team card for individuals -- a solo practitioner may
+// still have an assistant or two; "0 added" is a perfectly honest, harmless state to show them,
+// not worth a bigger restructure to hide.
+const isIndividual = computed(() => onboarding.registeredUser?.facilityType === 'individual');
+const journeyCards = computed(() => [
+  {
+    groupLinkId: 'section_hospital', mode: 'single', icon: 'fas fa-hospital', color: '#3B82F6', bg: 'rgba(59,130,246,.1)',
+    title: isIndividual.value ? 'Practice Profile' : 'Hospital Profile',
+    desc: isIndividual.value ? 'Your consultation practice as a FHIR Organization resource.' : 'Your clinic profile as a FHIR Organization resource.',
+  },
+  {
+    groupLinkId: 'section_staff', mode: 'repeatable', icon: 'fas fa-user-md', color: '#00D4B2', bg: 'rgba(0,212,178,.1)',
+    title: isIndividual.value ? 'Assistants (optional)' : 'Care Team',
+    desc: isIndividual.value ? 'Add any assistants or support staff, if you have them.' : 'Add physicians, nurses and staff as FHIR Practitioner records.',
+  },
   { groupLinkId: 'section_services_matrix', mode: 'repeatable', icon: 'fas fa-stethoscope', color: '#8B5CF6', bg: 'rgba(139,92,246,.1)', title: 'Services', desc: "List the services your clinic offers." },
   { groupLinkId: 'section_hours', mode: 'repeatable', icon: 'fas fa-clock', color: '#F59E0B', bg: 'rgba(245,158,11,.1)', title: 'Office Hours', desc: 'Add operating hours, one day-range at a time.' },
   { groupLinkId: 'section_consent', mode: 'repeatable', icon: 'fas fa-file-signature', color: '#EF4444', bg: 'rgba(239,68,68,.1)', title: 'Legal Consents', desc: 'Add the consent types your clinic collects from patients.' },
   { action: 'designer', icon: 'fas fa-layer-group', color: '#06B6D4', bg: 'rgba(6,182,212,.1)', title: 'Open Designer', desc: 'Manage versions, training and the full data grid for every form.' },
-];
+]);
 
 seedSystemForms(API_BASE).catch(() => {});
 
@@ -122,7 +139,7 @@ function saveDrawerRecord() {
 function goToReview() {
   if (!getAnswer(onboarding.getProviderRecord(), 'hospital_name')) {
     showToast('Please complete your Hospital Profile first.');
-    openDrawer(journeyCards[0]);
+    openDrawer(journeyCards.value[0]);
     return;
   }
   screen.value = 'review';

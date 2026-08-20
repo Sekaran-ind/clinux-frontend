@@ -77,6 +77,17 @@ async function probe(base) {
   }
 }
 
+// On-demand health check, independent of ensureSharedModeDetected()'s cached one-time promise —
+// used by the connection-status control (ClinicHome.vue's ops-nav) to gate "Switch to Live
+// Server" on an actual, current, positive health check rather than optimistically flipping the
+// preference and finding out after a reload whether it worked. Deliberately does NOT mutate
+// SHARED_MODE/apiBase itself — this is a read-only check, not a mode change.
+export async function checkServerHealth() {
+  const preferRelative = typeof window !== 'undefined' && window.__CLINUX_SHARED_SERVER__ === true;
+  if (preferRelative && (await probe(''))) return true;
+  return probe(FIXED_LOCALHOST_BASE);
+}
+
 // Resolves once, to whether shared mode is active — safe to call many times (every collection
 // calls this independently); only the FIRST call actually probes, every later call reuses that
 // same in-flight/settled promise.

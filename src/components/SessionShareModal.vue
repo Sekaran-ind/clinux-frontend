@@ -40,7 +40,10 @@ async function generate() {
       : await buildEncounterSharePayload(props.record);
     sessionKey.value = key;
     try {
-      qrDataUrl.value = await QRCode.toDataURL(key, { errorCorrectionLevel: 'L', margin: 2, width: 320 });
+      // width:480 -- see digilockerExport.js's identical call for the live measurement behind
+      // this number (320px left a realistic ~1000-1300 char transfer key decoding successfully
+      // only ~25% of the time against a real QR decoder; 480px roughly doubled that).
+      qrDataUrl.value = await QRCode.toDataURL(key, { errorCorrectionLevel: 'L', margin: 2, width: 480 });
     } catch (qrErr) {
       // This data compressed to something too large for a scannable QR (lots of vitals
       // readings/SOAP notes, or a large staff/services directory) — the text key has no such

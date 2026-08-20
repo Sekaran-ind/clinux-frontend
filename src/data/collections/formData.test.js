@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getAnswer, getAnswers, recordSummary, getGroupInstances, withGroupFields, patchGroupInstanceField, formData } from './formData.js';
+import { getAnswer, getAnswers, recordSummary, getGroupInstances, withGroupFields, patchGroupInstanceField, appendGroupInstance, formData } from './formData.js';
 
 // getAnswer/getAnswers/recordSummary are pure functions over a FHIR QuestionnaireResponse-shaped
 // record ({ data: { item: [...] } }) — tested directly with plain fixtures, no TanStack DB/
@@ -124,6 +124,22 @@ describe('withGroupFields', () => {
         const result = withGroupFields({ item: [] }, 'section_billing', { billing_total: '500' });
         expect(getAnswer({ data: result }, 'billing_total')).toBe('500');
     });
+
+    // Real bug found live: clinical.js's getEncounter() reads through useLiveQuery, which hands
+    // back a Vue-reactive Proxy, not a plain object. structuredClone() cannot clone a Proxy at
+    // all — it threw DataCloneError, uncaught, which killed Cübo's whole slot-fill dispatch
+    // mid-flight (formSlotEngine.js's applyFills() calls this with exactly that reactive
+    // encounter.data) before the code that stops its progress indicator ever ran — reproduced
+    // live via a real Vue reactive() wrapper below, not just asserted from reading the fix.
+    it('handles a Vue-reactive (Proxy-wrapped) recordData without throwing', async () => {
+        const { reactive } = await import('vue');
+        const data = reactive({
+            item: [{ linkId: 'section_encounter', item: [{ linkId: 'encounter_status', answer: [{ valueString: 'arrived' }] }] }],
+        });
+        expect(() => withGroupFields(data, 'section_encounter', { encounter_chief_complaint: 'chest pain' })).not.toThrow();
+        const result = withGroupFields(data, 'section_encounter', { encounter_chief_complaint: 'chest pain' });
+        expect(getAnswer({ data: result }, 'encounter_chief_complaint')).toBe('chest pain');
+    });
 });
 
 describe('patchGroupInstanceField', () => {
@@ -160,5 +176,48 @@ describe('patchGroupInstanceField', () => {
 
     it('does nothing for a record id that does not exist', () => {
         expect(() => patchGroupInstanceField('rec-does-not-exist', 'section_staff', 0, { staff_hprid: 'x' })).not.toThrow();
+    });
+});
+
+describe('appendGroupInstance', () => {
+    // SPEC-09's controlled-input registration forms use this instead of LForms extraction — see
+    // clinux-lforms-coded-field-data-loss-bug memory note for why: a plain v-model value has no
+    // "click a dropdown to confirm" step to silently fail at, unlike LForms' coded fields.
+    it('appends a new instance without disturbing existing ones, and returns its index', () => {
+        const id = 'rec-append-instance-test';
+        formData.insert({
+            id, formId: 'system-provider-composition-v1', version: 1,
+            data: { item: [{ linkId: 'section_staff', item: [{ linkId: 'staff_first_name', answer: [{ valueString: 'Alice' }] }] }] },
+            savedAt: new Date().toISOString(),
+        });
+
+        const newIndex = appendGroupInstance(id, 'section_staff', { staff_first_name: 'Priya', staff_specialty: 'Cardiology' });
+        expect(newIndex).toBe(1);
+
+        const rec = formData.get(id);
+        const instances = getGroupInstances(rec, 'section_staff');
+        expect(instances).toHaveLength(2);
+        expect(getAnswer({ data: instances[0] }, 'staff_first_name')).toBe('Alice');
+        expect(getAnswer({ data: instances[1] }, 'staff_first_name')).toBe('Priya');
+        expect(getAnswer({ data: instances[1] }, 'staff_specialty')).toBe('Cardiology');
+
+        formData.delete(id);
+    });
+
+    it('omits blank/undefined field values instead of storing empty answers', () => {
+        const id = 'rec-append-blank-test';
+        formData.insert({ id, formId: 'system-provider-composition-v1', version: 1, data: { item: [] }, savedAt: new Date().toISOString() });
+
+        appendGroupInstance(id, 'section_staff', { staff_first_name: 'Priya', staff_middle_name: '' });
+
+        const rec = formData.get(id);
+        const instance = getGroupInstances(rec, 'section_staff')[0];
+        expect((instance.item || []).some((f) => f.linkId === 'staff_middle_name')).toBe(false);
+
+        formData.delete(id);
+    });
+
+    it('returns -1 and does nothing for a record id that does not exist', () => {
+        expect(appendGroupInstance('rec-does-not-exist', 'section_staff', { staff_first_name: 'x' })).toBe(-1);
     });
 });

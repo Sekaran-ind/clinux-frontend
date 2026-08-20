@@ -4,30 +4,68 @@
 // admin's full HFR/HPR registration console, 767 lines of Aadhaar/OTP flows, currently reachable
 // only by typing its URL). This page has exactly two jobs: (1) let a new teammate add THEIR OWN
 // entry to the Staff directory — name/role/specialization/qualification + the HPR identifiers,
-// if they already have them — and (2) bring over the clinic's existing profile via the QR/text-
-// key transfer (see sessionShare.js's buildProviderProfileSharePayload/decodeProviderProfileShareKey),
-// since a fresh device otherwise shows the sandbox demo clinic instead of the real one (see
+// if they already have them — and (2) bring over the clinic's existing profile, since a fresh
+// device otherwise shows the sandbox demo clinic instead of the real one (see
 // clinux-mobile-sync-multiuser-video-roadmap memory note's Phase D gap).
 //
-// Reuses the SAME Provider-composition questionnaire + drawer/LhcFormHost pattern Onboarding.vue
-// already uses (LhcFormHost renders the WHOLE document regardless of which card opened it — an
-// already-accepted tradeoff in this codebase, not a new one) — scrollToLinkId is what makes this
-// feel staff-focused rather than generic: it auto-scrolls straight to the Staff Details section
-// instead of landing on Hospital Profile at the top.
-import { ref } from 'vue';
+// (2) used to be QR/text-key only, which meant a colleague physically needed another logged-in
+// device in front of them just to accept an email invite from home. Now it's automatic: the
+// existing LAN shared-server sync (sharedServerSync.js) already pulls this in for free if this
+// device is on the clinic's own network; for anywhere else, a direct authenticated fetch against
+// clinuxflow-api's own GET /api/provider-composition (see migrations/0005) does the same job
+// without needing another device present at all. QR/text-key stays available as a manual
+// fallback (SessionImportModal below) for the genuinely offline case — no LAN, no
+// clinuxflow-api reachable — not deleted, just no longer the primary path.
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import LhcFormHost from '../components/LhcFormHost.vue';
+import AbdmFieldForm from '../components/AbdmFieldForm.vue';
+import { STAFF_FIELDS } from '../data/abdmSchema.js';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import { useAuthStore } from '../stores/auth.js';
-import { activeQuestionnaire, seedSystemForms, getGroupInstances } from '../data/useSystemForms.js';
-import { API_BASE } from '../config.js';
+import { seedSystemForms, getGroupInstances, getAnswer, patchGroupInstanceField, appendGroupInstance } from '../data/useSystemForms.js';
+import { API_BASE, apiFetch } from '../config.js';
 
 const router = useRouter();
 const onboarding = useOnboardingStore();
 const auth = useAuthStore();
 
 seedSystemForms(API_BASE).catch(() => {});
+
+// 'idle' | 'checking' | 'imported' | 'not_found' | 'error' -- surfaced in the UI so a teammate
+// isn't left guessing whether the profile pull is still happening, worked, or genuinely has
+// nothing to find yet (e.g. the admin hasn't finished Onboarding.vue at all). Only attempts this
+// if there's no local Provider record already -- never overwrites a device's own existing data,
+// same caution importProviderProfile()'s QR path already takes.
+const autoImportStatus = ref('idle');
+
+async function tryDirectProviderCompositionFetch() {
+  if (onboarding.getProviderRecord()) { autoImportStatus.value = 'idle'; return; }
+  autoImportStatus.value = 'checking';
+  const res = await apiFetch(`${API_BASE}/api/provider-composition`).catch(() => null);
+  if (!res) { autoImportStatus.value = 'error'; return; }
+  if (res.status === 404) { autoImportStatus.value = 'not_found'; return; }
+  const body = await res.json().catch(() => null);
+  if (!body?.success) { autoImportStatus.value = 'error'; return; }
+
+  onboarding.importProviderProfile({
+    formId: onboarding.PROVIDER_FORM_ID,
+    version: activeVersionNumber(onboarding.PROVIDER_FORM_ID),
+    data: body.data,
+    recordId: null, // no local record exists yet (checked above) -- this creates one, doesn't upsert an existing id
+    branding: {},
+  });
+  autoImportStatus.value = 'imported';
+  showToast("Brought in your clinic's profile.");
+}
+
+onMounted(() => {
+  // A short delay, not immediate -- gives the LAN shared-server sync (which runs on its own
+  // ensureSharedModeDetected() probe + poll cycle already) a real chance to have populated this
+  // first if this device IS on the clinic's own network, so the direct fetch below only ends up
+  // doing real work for the case it's actually needed for: a device that isn't.
+  setTimeout(tryDirectProviderCompositionFetch, 1500);
+});
 
 const toast = ref({ show: false, msg: '' });
 let toastTimer = null;
@@ -38,11 +76,10 @@ function showToast(msg) {
 }
 
 const drawerOpen = ref(false);
-const drawerQuestionnaire = ref(null);
-const drawerRecord = ref(null);
-const formKey = ref(0);
-const lhcFormHost = ref(null);
+const staffFormRecord = ref(null); // { data: instance } | null -- pre-fills AbdmFieldForm when editing; null for a fresh "add myself" entry
+const staffForm = ref(null); // AbdmFieldForm's exposed { values, missingRequired() }
 const importModalOpen = ref(false);
+const saveError = ref('');
 
 // Every entry currently on the Staff directory — just for the "N teammate(s) already listed"
 // count below, not identity-matched to this account (section_staff has no accountId field of
@@ -54,17 +91,90 @@ function staffCount() {
 
 function openStaffDrawer() {
   drawerOpen.value = true;
-  drawerQuestionnaire.value = activeQuestionnaire(onboarding.PROVIDER_FORM_ID);
-  drawerRecord.value = onboarding.getProviderRecord() || onboarding.buildSeedFromRegistration();
+  staffFormRecord.value = null; // always a fresh entry -- this page's own job is "add THIS teammate", never editing an existing one
+  saveError.value = '';
 }
 function closeDrawer() {
   drawerOpen.value = false;
 }
+
+// SPEC-09 (docs/SPEC-09-ABDM-ANCHORED-ONBOARDING-REBUILD.md): controlled-input save via
+// appendGroupInstance, replacing LForms extraction (saveProviderRecord/extractResponse) entirely
+// for this flow. Fixes a real, live-confirmed bug — see clinux-lforms-coded-field-data-loss-bug
+// memory note — where a coded/autocomplete LForms field (Specialty) silently discarded a typed
+// value unless a dropdown suggestion was explicitly clicked. A plain v-model value in
+// AbdmFieldForm has no such confirmation step to fail at.
 function saveDrawer() {
-  const ok = onboarding.saveProviderRecord('staffOnboardingFormContainer');
-  if (!ok) { showToast('Could not read the entered data.'); return; }
-  formKey.value++;
+  const missing = staffForm.value?.missingRequired() || [];
+  if (missing.length > 0) {
+    // Inline per-field errors (AbdmFieldForm's own errorFor()) do the actual explaining now --
+    // touchAll() reveals them for fields the user never visited. This banner is just a single
+    // "something's not ready yet" pointer so a blocked Save isn't silently a no-op, not a
+    // duplicate of the field-by-field detail anymore.
+    staffForm.value.touchAll();
+    saveError.value = 'A few required fields still need your input above.';
+    return;
+  }
+  saveError.value = '';
+  const recordId = onboarding.ensureProviderRecord();
+  const newIndex = appendGroupInstance(recordId, 'section_staff', staffForm.value.values);
+  onboarding.dataVersion++;
   showToast('Saved — thanks for joining the team!');
+  drawerOpen.value = false;
+  prepareSpecialtyTag(newIndex);
+}
+
+// --- Wikidata-assisted specialty tagging (SPEC-06 §6 / SPEC-08 Phase 1) — this is the concrete
+// "how will this be used in the main flow" resolution for the staff-specialization Wikidata
+// tagging that was paused earlier in this project: onboarding-time, once, not a runtime feature.
+const specialtyTagCandidates = ref(null); // null = not searched yet / picker closed
+const specialtyTagLoading = ref(false);
+const specialtyTagApplied = ref(false);
+const currentSpecialtyText = ref('');
+let savedStaffInstanceIndex = -1;
+
+// newIndex comes straight from appendGroupInstance()'s own return value now — no more guessing
+// "last instance" the way the LForms-extraction path had to.
+function prepareSpecialtyTag(newIndex) {
+  specialtyTagCandidates.value = null;
+  specialtyTagApplied.value = false;
+  savedStaffInstanceIndex = newIndex;
+  if (savedStaffInstanceIndex < 0) { currentSpecialtyText.value = ''; return; }
+  const instances = getGroupInstances(onboarding.getProviderRecord(), 'section_staff');
+  currentSpecialtyText.value = getAnswer({ data: instances[savedStaffInstanceIndex] }, 'staff_specialty') || '';
+}
+
+async function suggestSpecialtyWikidataTags() {
+  if (!currentSpecialtyText.value) return;
+  specialtyTagLoading.value = true;
+  specialtyTagCandidates.value = null;
+  try {
+    const res = await apiFetch(`${API_BASE}/api/nlp/wikidata-search?term=${encodeURIComponent(currentSpecialtyText.value)}`);
+    const body = await res.json().catch(() => null);
+    specialtyTagCandidates.value = body?.success ? body.candidates : [];
+  } catch (e) {
+    specialtyTagCandidates.value = [];
+  } finally {
+    specialtyTagLoading.value = false;
+  }
+}
+
+async function applySpecialtyWikidataTag(candidate) {
+  specialtyTagCandidates.value = null;
+  if (savedStaffInstanceIndex < 0 || !onboarding.providerRecordId) return;
+  try {
+    const res = await apiFetch(`${API_BASE}/api/nlp/wikidata-concept?qid=${encodeURIComponent(candidate.qid)}`);
+    const body = await res.json().catch(() => null);
+    if (!body?.success) return;
+    patchGroupInstanceField(onboarding.providerRecordId, 'section_staff', savedStaffInstanceIndex, {
+      staff_specialty_wikidata_qid: candidate.qid,
+      staff_specialty_wikidata_aliases: body.concept.aliases.join(', '),
+    });
+    specialtyTagApplied.value = true;
+    showToast('Specialty tagged.');
+  } catch (e) {
+    // Silent — tagging is a nice-to-have on top of an already-saved entry, not a blocker.
+  }
 }
 
 // Deliberately does NOT close the modal here -- SessionImportModal shows its own "Clinic
@@ -73,6 +183,7 @@ function saveDrawer() {
 // the modal shut before anyone ever saw that message — the same bug already fixed once in
 // Onboarding.vue and once in FrontDesk.vue/Checkout.vue's encounter-import handler.
 function onProfileImported() {
+  autoImportStatus.value = 'imported';
   showToast('Clinic profile imported.');
 }
 
@@ -94,10 +205,34 @@ function finish() {
     </div>
     <div class="drawer-body">
       <div class="preview-panel">
-        <LhcFormHost v-if="drawerOpen && drawerQuestionnaire" :key="formKey" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="staffOnboardingFormContainer" scroll-to-link-id="section_staff" />
-        <p v-else-if="drawerOpen" class="text-sm" style="color:var(--cf-text)">
-          This form isn't available yet — clinuxflow-api may not be reachable to seed it. Confirm it's running, then reopen this drawer.
-        </p>
+        <AbdmFieldForm v-if="drawerOpen" ref="staffForm" :fields="STAFF_FIELDS" :record="staffFormRecord" />
+        <p v-if="saveError" style="font-size:.75rem;color:#dc2626;margin-top:.6rem"><i class="fas fa-circle-exclamation"></i> {{ saveError }}</p>
+
+        <!-- Post-save Wikidata specialty tagging -- see prepareSpecialtyTag()'s own comment for
+             why this runs after save rather than inline in the LForms-rendered fields above. -->
+        <div v-if="currentSpecialtyText && !specialtyTagApplied" class="cf-card" style="margin-top:1rem;padding:1rem;border-radius:.75rem;position:relative">
+          <p style="font-size:.78rem;color:var(--cf-text-strong);font-weight:600;margin-bottom:.3rem">Tag your specialty: <span style="color:var(--color-primary)">{{ currentSpecialtyText }}</span></p>
+          <p style="font-size:.7rem;color:var(--cf-text);margin-bottom:.6rem">Optional — helps this app recognize related terms for you. You always confirm the match yourself.</p>
+          <button
+            type="button" @click="suggestSpecialtyWikidataTags()" :disabled="specialtyTagLoading"
+            class="btn-outline text-sm" style="display:flex;align-items:center;gap:.4rem"
+          >
+            <i :class="specialtyTagLoading ? 'fas fa-spinner fa-spin' : 'fas fa-wand-magic-sparkles'"></i>
+            <span>Suggest from Wikidata</span>
+          </button>
+          <div v-if="specialtyTagCandidates" style="margin-top:.6rem;border:1px solid var(--cf-border);border-radius:.5rem;padding:.35rem">
+            <p v-if="specialtyTagCandidates.length === 0" style="font-size:.72rem;color:var(--cf-text);padding:.35rem">No Wikidata match found.</p>
+            <button
+              v-for="c in specialtyTagCandidates" :key="c.qid"
+              type="button" @click="applySpecialtyWikidataTag(c)"
+              style="display:block;width:100%;text-align:left;padding:.4rem .5rem;border:none;background:transparent;cursor:pointer;border-radius:.35rem;font-size:.72rem"
+            >
+              <strong style="color:var(--cf-text-strong)">{{ c.label }}</strong>
+              <span style="color:var(--cf-text)"> — {{ c.description || 'no description' }}</span>
+            </button>
+          </div>
+        </div>
+        <p v-else-if="specialtyTagApplied" style="font-size:.75rem;color:var(--color-primary);margin-top:1rem"><i class="fas fa-check"></i> Specialty tagged.</p>
       </div>
     </div>
     <div class="drawer-footer">
@@ -123,13 +258,28 @@ function finish() {
 
       <div class="cf-card rounded-2xl p-5 mb-4">
         <div class="flex items-center justify-between mb-2">
-          <h3 class="font-bold" style="color:var(--cf-text-strong)"><i class="fas fa-qrcode mr-2" style="color:var(--color-primary)"></i>Import the Clinic's Profile</h3>
+          <h3 class="font-bold" style="color:var(--cf-text-strong)"><i class="fas fa-cloud-arrow-down mr-2" style="color:var(--color-primary)"></i>Clinic Profile</h3>
         </div>
-        <p class="text-sm mb-3" style="color:var(--cf-text)">
-          Scan or paste the key another teammate on this same clinic generated from their own device
-          (via their profile menu's "Share Clinic Profile"). Skip this if your device already has it.
+
+        <p v-if="autoImportStatus === 'checking'" class="text-sm mb-3" style="color:var(--cf-text)">
+          <i class="fas fa-spinner fa-spin mr-1.5"></i>Bringing in your clinic's profile...
         </p>
-        <button class="btn-outline text-sm" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Scan / Paste to Import</button>
+        <p v-else-if="autoImportStatus === 'imported'" class="text-sm mb-3" style="color:var(--color-primary)">
+          <i class="fas fa-check mr-1.5"></i>Your clinic's profile is on this device.
+        </p>
+        <p v-else-if="autoImportStatus === 'not_found'" class="text-sm mb-3" style="color:var(--cf-text)">
+          Nothing's been set up for this clinic yet — once an admin completes Onboarding, revisit this page and it'll pull in automatically. You can still add your own Staff details below in the meantime.
+        </p>
+        <p v-else-if="autoImportStatus === 'error'" class="text-sm mb-3" style="color:var(--cf-text)">
+          <i class="fas fa-circle-exclamation mr-1.5" style="color:#F59E0B"></i>Couldn't reach the clinic's profile automatically right now.
+        </p>
+        <p v-else class="text-sm mb-3" style="color:var(--cf-text)">
+          Checked automatically — nothing to do here normally.
+        </p>
+
+        <!-- QR/text-key stays as a manual fallback for the genuinely offline case (no LAN
+             shared-server, clinuxflow-api unreachable) -- demoted, not removed. -->
+        <button v-if="autoImportStatus !== 'imported'" class="btn-outline text-sm" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Or Scan / Paste a Transfer Key Instead</button>
       </div>
 
       <div class="cf-card rounded-2xl p-5 mb-4">

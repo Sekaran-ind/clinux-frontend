@@ -1,5 +1,6 @@
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
+import { VueQueryPlugin } from '@tanstack/vue-query';
 import { ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
 
 // AG Grid's module system needs registering once, globally, before any <AgGridVue> mounts —
@@ -45,6 +46,12 @@ await Promise.all(collections.map((c) => c.preload()));
 const app = createApp(App);
 app.use(createPinia());
 app.use(router);
+// TanStack Query — used by ActiveSessionsLanding.vue's infinite-scroll session timeline
+// (useInfiniteQuery). The "backend" it pages through is the local TanStack DB collection above,
+// not a network call — Query's infinite-scroll primitive doesn't care whether its page-fetcher
+// is async-over-network or a synchronous local slice, so this is a legitimate use even though
+// there's no server round-trip involved.
+app.use(VueQueryPlugin);
 app.mount('#app');
 
 // Revalidates a stored session against the server on every app load — picks up a tier change

@@ -642,6 +642,51 @@ function syncKeywordsIntoYaml() {
   }
 }
 
+// --- Wikidata-assisted keyword suggestions (SPEC-06 §6 / SPEC-08 Phase 1) — design-time
+// semantic tagging, free/Cloud-tier-safe (not gated behind requirePaidTier() server-side).
+// Never auto-applies a match: Wikidata is general-knowledge, not a clinical terminology, so a
+// "closest match" can be wrong or absent for clinically-precise terms — the author always picks
+// from real candidates, same discipline as everywhere else NLP touches this app (the deterministic
+// /shortcut escape hatch exists for exactly this kind of ambiguity risk).
+const wikidataCandidates = reactive({}); // linkId -> array | null (null = picker closed)
+const wikidataLoading = reactive({}); // linkId -> boolean
+
+async function suggestWikidataTags(field) {
+  wikidataLoading[field.linkId] = true;
+  wikidataCandidates[field.linkId] = null;
+  try {
+    const res = await apiFetch(`${API_BASE}/api/nlp/wikidata-search?term=${encodeURIComponent(field.text)}`);
+    const body = await res.json().catch(() => null);
+    wikidataCandidates[field.linkId] = body?.success ? body.candidates : [];
+  } catch (e) {
+    wikidataCandidates[field.linkId] = [];
+  } finally {
+    wikidataLoading[field.linkId] = false;
+  }
+}
+
+// Merges the confirmed concept's aliases into the field's EXISTING keyword input rather than
+// overwriting it — an author may have already typed keywords by hand before asking for
+// suggestions, and this shouldn't discard that work.
+async function applyWikidataConcept(field, candidate) {
+  wikidataCandidates[field.linkId] = null;
+  try {
+    const res = await apiFetch(`${API_BASE}/api/nlp/wikidata-concept?qid=${encodeURIComponent(candidate.qid)}`);
+    const body = await res.json().catch(() => null);
+    if (!body?.success) return;
+    const existing = (keywordInputs[field.linkId] || '').split(',').map((k) => k.trim()).filter(Boolean);
+    const merged = [...new Set([...existing, ...body.concept.aliases])];
+    keywordInputs[field.linkId] = merged.join(', ');
+  } catch (e) {
+    // Silent — the author can just type keywords manually, same fallback as if this feature
+    // didn't exist at all; a Wikidata hiccup shouldn't block form training.
+  }
+}
+
+function dismissWikidataCandidates(linkId) {
+  wikidataCandidates[linkId] = null;
+}
+
 // ─── Data Records (Data Explorer) ───
 // Actual filled-out data captured using a form — distinct from the Forms Library, which holds
 // form *templates*.
@@ -1154,7 +1199,28 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
               <p style="font-size:.8rem;font-weight:600;color:var(--cf-text-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ field.text }}</p>
               <p style="font-size:.65rem;color:var(--cf-text);font-family:'JetBrains Mono',monospace">{{ field.linkId }}</p>
             </div>
-            <input type="text" v-model="keywordInputs[field.linkId]" class="cf-input" placeholder="Add keywords…" />
+            <div style="display:flex;gap:.35rem;position:relative">
+              <input type="text" v-model="keywordInputs[field.linkId]" class="cf-input" placeholder="Add keywords…" style="flex:1;min-width:0" />
+              <button
+                type="button" @click="suggestWikidataTags(field)" :disabled="wikidataLoading[field.linkId]"
+                title="Suggest keywords from Wikidata"
+                style="flex-shrink:0;width:28px;height:28px;border-radius:.4rem;border:1px solid var(--cf-border);background:var(--cf-bg-alt);cursor:pointer;display:flex;align-items:center;justify-content:center"
+              >
+                <i :class="wikidataLoading[field.linkId] ? 'fas fa-spinner fa-spin' : 'fas fa-wand-magic-sparkles'" style="font-size:.75rem;color:var(--color-primary)"></i>
+              </button>
+              <div v-if="wikidataCandidates[field.linkId]" style="position:absolute;z-index:20;top:100%;left:0;right:0;margin-top:.25rem;background:var(--cf-bg);border:1px solid var(--cf-border);border-radius:.5rem;box-shadow:0 8px 20px rgba(0,0,0,.15);padding:.35rem">
+                <p v-if="wikidataCandidates[field.linkId].length === 0" style="font-size:.72rem;color:var(--cf-text);padding:.35rem">No Wikidata match found — enter keywords manually.</p>
+                <button
+                  v-for="c in wikidataCandidates[field.linkId]" :key="c.qid"
+                  type="button" @click="applyWikidataConcept(field, c)"
+                  style="display:block;width:100%;text-align:left;padding:.4rem .5rem;border:none;background:transparent;cursor:pointer;border-radius:.35rem;font-size:.72rem"
+                >
+                  <strong style="color:var(--cf-text-strong)">{{ c.label }}</strong>
+                  <span style="color:var(--cf-text)"> — {{ c.description || 'no description' }}</span>
+                </button>
+                <button type="button" @click="dismissWikidataCandidates(field.linkId)" style="font-size:.68rem;color:var(--cf-text);background:transparent;border:none;cursor:pointer;padding:.3rem .5rem">Cancel</button>
+              </div>
+            </div>
           </div>
           <p style="font-size:.8rem;color:var(--cf-text);text-align:center;padding:.5rem 0" v-show="formFields().length === 0">Compile a form in Step 1 first — there are no fields to train yet.</p>
         </div>

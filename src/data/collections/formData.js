@@ -1,3 +1,4 @@
+import { toRaw } from 'vue';
 import { createLocalCollection } from '../collectionFactory.js';
 
 // Replaces clinixflow's cf_form_data localStorage key. That key held a QuestionnaireResponse
@@ -98,6 +99,31 @@ export function patchGroupInstanceField(recordId, groupLinkId, instanceIndex, fi
   });
 }
 
+// Appends a brand-new repeating-group instance (e.g. one new Staff member) built from a flat
+// { linkId: value } map — the create counterpart to patchGroupInstanceField's edit-in-place.
+// SPEC-09's controlled-input registration forms use this instead of LForms extraction: no
+// silent-discard risk (see clinux-lforms-coded-field-data-loss-bug memory note), since there's
+// no "click a dropdown to confirm" step for a plain v-model value to fall through. Requires the
+// record to already exist (same convention as patchGroupInstanceField) — callers create it via
+// saveDataRecord() first if needed. Returns the new instance's index within that group, or -1 if
+// the record doesn't exist.
+export function appendGroupInstance(recordId, groupLinkId, fieldValues) {
+  if (!formData.has(recordId)) return -1;
+  let newIndex = -1;
+  formData.update(recordId, (draft) => {
+    draft.data.item = draft.data.item || [];
+    const existingCount = draft.data.item.filter((item) => item.linkId === groupLinkId).length;
+    newIndex = existingCount;
+    draft.data.item.push({
+      linkId: groupLinkId,
+      item: Object.entries(fieldValues)
+        .filter(([, value]) => value !== '' && value !== null && value !== undefined)
+        .map(([linkId, value]) => ({ linkId, answer: [{ valueString: String(value) }] })),
+    });
+  });
+  return newIndex;
+}
+
 // LForms represents any choice/coded answer as valueCoding even when the Questionnaire's
 // answerOption was authored as plain valueString choices — reading only valueString/etc.
 // without this fallback silently returns '' for every Dropdown/MultiSelect answer. Ported
@@ -153,7 +179,15 @@ export function getGroupInstances(record, groupLinkId) {
 // recordData in place) matters because LhcFormHost's watch() only re-renders on a new object
 // reference, not on in-place mutation of the same one.
 export function withGroupFields(recordData, groupLinkId, fieldValues) {
-  const cloned = structuredClone(recordData || { item: [] });
+  // toRaw() first — real bug found live: a caller reading its record through a reactive source
+  // (clinical.js's getEncounter(), backed by useLiveQuery -- see formSlotEngine.js's applyFills())
+  // hands this a Vue-reactive Proxy, not a plain object. structuredClone() cannot clone a Proxy
+  // at all -- it throws DataCloneError, uncaught, which killed Cübo's whole slot-fill dispatch
+  // mid-flight (this runs before the code that stops the "Thinking/Planning/Doing/Verifying"
+  // progress indicator, so it got stuck showing that forever instead of ever reaching "Filled N
+  // field(s)"). toRaw() is a no-op on an already-plain object, so every other existing caller of
+  // this function is unaffected either way.
+  const cloned = structuredClone(toRaw(recordData) || { item: [] });
   cloned.item = cloned.item || [];
   let group = cloned.item.find((item) => item.linkId === groupLinkId);
   if (!group) {

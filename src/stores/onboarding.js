@@ -120,6 +120,17 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     return true;
   }
 
+  // Creates an empty Provider record if one doesn't exist yet — for SPEC-09's controlled-input
+  // registration flows (AbdmFieldForm.vue), which append/patch group instances directly
+  // (appendGroupInstance/patchGroupInstanceField) instead of extracting a whole LForms-rendered
+  // document via saveProviderRecord() above. Idempotent: a no-op once a record already exists.
+  function ensureProviderRecord() {
+    if (!providerRecordId.value) {
+      providerRecordId.value = saveDataRecord(PROVIDER_FORM_ID, activeVersionNumber(PROVIDER_FORM_ID), { item: [] }, null);
+    }
+    return providerRecordId.value;
+  }
+
   // Office Hours instances are arbitrary day-ranges; expands them into the fixed 7-day array
   // clinic-home.html's hours table expects. Instances are bare {linkId,item} group instances now
   // (see getGroupInstances), not full records — they share the ONE parent record's single
@@ -258,7 +269,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   return {
     PROVIDER_FORM_ID,
     registeredUser, branding, publishedClinic, providerRecordId, dataVersion,
-    getProviderRecord, buildSeedFromRegistration, saveBranding, saveProviderRecord, buildClinicProfile, publish,
+    getProviderRecord, buildSeedFromRegistration, saveBranding, saveProviderRecord, ensureProviderRecord, buildClinicProfile, publish,
     importProviderProfile,
   };
 });
