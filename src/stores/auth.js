@@ -46,28 +46,22 @@ export const useAuthStore = defineStore('auth', () => {
     persist();
   }
 
+  // SPEC-11: sign-up collects only email/password/role now -- role ('hospital_admin' |
+  // 'health_professional' | 'admin_and_health_professional') is the new top-of-funnel fork,
+  // replacing facilityType (still set server-side, just no longer client-supplied). clinicName/
+  // adminName/designation/services/phone/city are no longer collected at registration at all --
+  // clinicName starts as a server-derived placeholder, replaced for real once the new Hospital/
+  // HFR journey runs (see updateClinicName() below); services/phone/city stay local-only extras,
+  // untouched here since nothing collects them at sign-up anymore either.
   async function register(regForm) {
     const res = await apiFetch(`${API_BASE}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        clinicName: regForm.clinicName, email: regForm.email, password: regForm.password,
-        adminName: regForm.adminName, designation: regForm.designation,
-        // 'facility' | 'individual' -- the unified onboarding journey's top-of-funnel fork (see
-        // clinuxflow-api's own POST /api/auth/register comment). Omitted defaults server-side to
-        // 'facility', unchanged from before this existed.
-        facilityType: regForm.facilityType,
-      }),
+      body: JSON.stringify({ email: regForm.email, password: regForm.password, role: regForm.role }),
     }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
 
     if (!res.success) return { error: res.error };
     setSession(res.account, res.token);
-    // services/phone/city are local-only extras the server doesn't model.
-    users.update(res.account.id, (draft) => Object.assign(draft, {
-      services: regForm.services || '', phone: regForm.phone || '', city: regForm.city || '',
-    }));
-    currentUser.value = users.get(res.account.id);
-    persist();
     return { user: currentUser.value };
   }
 
@@ -126,6 +120,36 @@ export const useAuthStore = defineStore('auth', () => {
     return { account: res.account };
   }
 
+  // SPEC-11: replaces the placeholder clinicName registration left behind with the real facility
+  // name, once the new Hospital/HFR journey captures hospital_name — updates the server (so it
+  // survives a fresh login/refreshSession) AND the local session immediately (so ClinicHome's
+  // user-menu/nav don't wait for a round trip to stop showing the placeholder).
+  async function updateClinicName(clinicName) {
+    const res = await apiFetch(`${API_BASE}/api/auth/clinic-name`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clinicName }),
+    }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+
+    if (!res.success) return { error: res.error };
+    saveProfile({ clinicName: res.clinicName });
+    return { clinicName: res.clinicName };
+  }
+
+  // Real backend for the register/login/change-password small closed loop (see
+  // clinux-planDefinition-runtime-built memory note) — PATCH /api/auth/change-password didn't
+  // exist anywhere in this app before this pass. Mirrors updateClinicName's exact shape above.
+  async function changePassword(currentPassword, newPassword) {
+    const res = await apiFetch(`${API_BASE}/api/auth/change-password`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+
+    if (!res.success) return { error: res.error };
+    return { success: true };
+  }
+
   function saveProfile(profileForm) {
     if (!currentUser.value) return;
     const updated = { ...currentUser.value, ...profileForm };
@@ -165,7 +189,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   return {
-    currentUser, register, login, logout, saveProfile, refreshSession, fetchTeam, inviteTeammate,
+    currentUser, register, login, logout, saveProfile, updateClinicName, changePassword, refreshSession, fetchTeam, inviteTeammate,
     fetchAffiliates, linkAffiliate, revokeAffiliate,
   };
 });

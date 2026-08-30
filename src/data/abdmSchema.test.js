@@ -38,6 +38,17 @@ describe('HOSPITAL_FIELDS / STAFF_FIELDS', () => {
       'staff_hp_subcategory_code', 'staff_state_code', 'staff_district_code', 'staff_council', 'staff_abdm_role']
       .forEach((id) => expect(staffLinkIds).toContain(id));
   });
+
+  // SPEC-11: Hospital's real data spans 3 separate non-repeating YAML groups (confirmed by
+  // reading system-provider-composition-v1.yaml directly, not assumed) -- HospitalOnboarding.vue
+  // depends on every HOSPITAL_FIELDS entry declaring the correct one, or a field silently gets
+  // written somewhere buildClinicProfile()/abdmAdapter.js never look for it again.
+  it('every HOSPITAL_FIELDS entry declares a real Hospital groupLinkId, matching the compiled provider-composition YAML', () => {
+    const validGroups = ['section_hospital', 'section_hospital_abdm_facility_type', 'section_hospital_abdm_location'];
+    HOSPITAL_FIELDS.forEach((f) => {
+      expect(validGroups, `${f.linkId} has an invalid/missing groupLinkId`).toContain(f.groupLinkId);
+    });
+  });
 });
 
 describe('getFieldSet', () => {

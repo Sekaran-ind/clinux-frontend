@@ -83,8 +83,21 @@ const DEMO_CLINIC = {
   apptConfig: { onlineBooking: true },
 };
 
-// Demo data for when no onboarding has been done yet — same fallback the original had.
-const clinic = computed(() => (onboarding.publishedClinic?.name ? onboarding.publishedClinic : DEMO_CLINIC));
+// A logged-in account with nothing published yet gets an actionable empty state (§hero below)
+// instead of DEMO_CLINIC's fake-looking marketing content -- a real, previously-reported defect:
+// showing "Apollo Diagnostics" as if it were this account's own live page is actively misleading,
+// not a harmless placeholder. Unauthenticated visitors (a genuine public link click before the
+// clinic ever published) still get DEMO_CLINIC -- there's no useful "go register" action to offer
+// someone who isn't logged in, and the alternative (a bare empty page) is worse for them.
+// Deliberately checks auth.currentUser directly, not isAdmin -- isAdmin's own definition reads
+// clinic.value.name, and this computed feeds clinic itself; going through isAdmin here would be
+// circular. In practice the two are equivalent for a logged-in account anyway (isAdmin's own
+// check falls back to "has an email" for any signed-in user, per its own comment above).
+const needsSetup = computed(() => !!auth.currentUser && !onboarding.publishedClinic?.name);
+const clinic = computed(() => {
+  if (onboarding.publishedClinic?.name) return onboarding.publishedClinic;
+  return needsSetup.value ? {} : DEMO_CLINIC;
+});
 
 // isAdmin: was clinixflow's own fuzzy heuristic (clinicName prefix match OR just having an
 // email) — kept as-is since it's what the original did, even though it's a loose check.
@@ -97,6 +110,21 @@ const isAdmin = computed(() => {
 if (clinic.value.brandColor) {
   document.documentElement.style.setProperty('--brand', clinic.value.brandColor);
 }
+
+// SPEC-11: role-gated visibility for the two self-service prerequisite journeys (HFR/HPR) in the
+// user menu below — Hospital Admin and Admin-and-Health-Professional see the HFR journey,
+// Health Professional and Admin-and-Health-Professional see the HPR journey (already
+// StaffOnboarding.vue, unchanged). Defensively true when role is ever missing (it shouldn't be —
+// D1 defaults it — but showing both beats silently stranding a legitimate user with no
+// discoverable path to either journey via this menu).
+const showsHfrJourney = computed(() => {
+  const role = auth.currentUser?.role;
+  return !role || role === 'hospital_admin' || role === 'admin_and_health_professional';
+});
+const showsHprJourney = computed(() => {
+  const role = auth.currentUser?.role;
+  return !role || role === 'health_professional' || role === 'admin_and_health_professional';
+});
 
 // Admin-gated "Live Now" dashboard (Active Sessions / Upcoming Appointments, switchable) — this
 // route has no requiresAuth (confirmed in router/index.js), so isAdmin here is a cosmetic/
@@ -311,7 +339,8 @@ function sendMessage() {
               <button class="user-menu-item" @click="openClinicView('front-desk'); userMenuOpen = false"><i class="fas fa-user-clock" style="color:var(--brand)"></i>Front Desk</button>
               <button class="user-menu-item" @click="teamModalOpen = true; userMenuOpen = false"><i class="fas fa-users" style="color:var(--brand)"></i>Team</button>
               <button v-show="onboarding.providerRecordId" class="user-menu-item" @click="shareProfileModalOpen = true; userMenuOpen = false"><i class="fas fa-share-nodes" style="color:var(--brand)"></i>Share Clinic Profile</button>
-              <RouterLink to="/staff-onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-user-md" style="color:var(--brand)"></i>Staff Onboarding</RouterLink>
+              <RouterLink v-if="showsHfrJourney" to="/hospital-onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-hospital" style="color:var(--brand)"></i>Register Your Facility (HFR)</RouterLink>
+              <RouterLink v-if="showsHprJourney" to="/staff-onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-user-md" style="color:var(--brand)"></i>Register Yourself (HPR)</RouterLink>
               <RouterLink to="/onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-pen" style="color:var(--brand)"></i>Edit Profile</RouterLink>
               <RouterLink to="/designer" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-cog" style="color:var(--brand)"></i>Settings</RouterLink>
               <RouterLink to="/ai-engine" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-brain" style="color:var(--brand)"></i>AI Engine</RouterLink>
@@ -331,7 +360,23 @@ function sendMessage() {
       <div class="hero-orb" style="width:500px;height:500px;top:10%;right:-5%"></div>
     </div>
     <div class="hero-content">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:3rem;align-items:center" class="hero-grid">
+      <!-- Real, previously-reported defect: a logged-in account with nothing published yet used
+           to fall straight through to DEMO_CLINIC here, so the page looked like a real, live
+           clinic page (fake staff, fake services) instead of what it actually was -- nothing set
+           up. This is the fix: an honest, actionable empty state instead. -->
+      <div v-if="needsSetup" style="max-width:640px;margin:0 auto;text-align:center;padding:2rem 0">
+        <span class="eyebrow">Let's get your clinic page live</span>
+        <h1 style="font-size:2.25rem;font-weight:800;color:var(--text-strong);line-height:1.2;letter-spacing:-1px;margin-bottom:1rem">Nothing's published yet.</h1>
+        <p style="font-size:1rem;color:var(--text);line-height:1.75;margin-bottom:2rem">
+          Complete registration below — your clinic page goes live automatically as soon as your
+          facility details are saved.
+        </p>
+        <div style="display:flex;flex-wrap:wrap;gap:.875rem;justify-content:center">
+          <RouterLink v-if="showsHfrJourney" to="/hospital-onboarding" class="btn btn-brand" style="font-size:1rem;padding:.875rem 2rem"><i class="fas fa-hospital"></i>Register Your Facility (HFR)</RouterLink>
+          <RouterLink v-if="showsHprJourney" to="/staff-onboarding" class="btn btn-outline" style="font-size:.95rem;padding:.875rem 1.75rem"><i class="fas fa-user-md"></i>Register Yourself (HPR)</RouterLink>
+        </div>
+      </div>
+      <div v-else style="display:grid;grid-template-columns:1fr 1fr;gap:3rem;align-items:center" class="hero-grid">
         <div>
           <span class="eyebrow">{{ clinic.type || 'Healthcare Partner' }}</span>
           <h1 style="font-size:3rem;font-weight:800;color:var(--text-strong);line-height:1.1;letter-spacing:-1.5px;margin-bottom:1rem">

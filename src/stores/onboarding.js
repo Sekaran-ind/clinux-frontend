@@ -124,8 +124,19 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   // registration flows (AbdmFieldForm.vue), which append/patch group instances directly
   // (appendGroupInstance/patchGroupInstanceField) instead of extracting a whole LForms-rendered
   // document via saveProviderRecord() above. Idempotent: a no-op once a record already exists.
+  //
+  // Real bug found live (SPEC-11): providerRecordId is a plain ref, set once and then trusted —
+  // if the record it points to stops existing (data cleared mid-session without a page reload,
+  // e.g. this app's own "still pre-pilot, clear all data" testing habit; or a stale value left
+  // over from a different clinicId's session), this used to skip re-creating one, since the ref
+  // was still truthy. Every caller downstream then got back an id pointing at nothing:
+  // HospitalOnboarding.vue's saveDrawer() crashed outright (getProviderRecord() correctly
+  // returned null, and `record.data` on a null record threw); StaffOnboarding.vue's saveDrawer()
+  // didn't crash but silently saved nothing at all (appendGroupInstance() no-ops for an unknown
+  // recordId) while still showing a "Saved" toast. formData.has() verifies the id still resolves
+  // to a real record before trusting it, fixing both call sites at their shared source.
   function ensureProviderRecord() {
-    if (!providerRecordId.value) {
+    if (!providerRecordId.value || !formData.has(providerRecordId.value)) {
       providerRecordId.value = saveDataRecord(PROVIDER_FORM_ID, activeVersionNumber(PROVIDER_FORM_ID), { item: [] }, null);
     }
     return providerRecordId.value;

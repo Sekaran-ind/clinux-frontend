@@ -118,6 +118,14 @@ function saveDrawer() {
   saveError.value = '';
   const recordId = onboarding.ensureProviderRecord();
   const newIndex = appendGroupInstance(recordId, 'section_staff', staffForm.value.values);
+  // appendGroupInstance() silently no-ops (returns -1) for a recordId that doesn't resolve to a
+  // real record — ensureProviderRecord() now guards against its own cached id going stale (see
+  // its own comment), so this should be unreachable in practice, but a save genuinely failing
+  // should never still claim "Saved" — that was a real, live-found gap this closes defensively.
+  if (newIndex < 0) {
+    saveError.value = 'Could not save — please try again.';
+    return;
+  }
   onboarding.dataVersion++;
   showToast('Saved — thanks for joining the team!');
   drawerOpen.value = false;

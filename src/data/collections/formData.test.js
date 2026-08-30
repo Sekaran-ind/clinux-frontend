@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getAnswer, getAnswers, recordSummary, getGroupInstances, withGroupFields, patchGroupInstanceField, appendGroupInstance, formData } from './formData.js';
+import { getAnswer, getAnswers, recordSummary, getGroupInstances, withGroupFields, patchGroupInstanceField, appendGroupInstance, saveDataRecord, formData } from './formData.js';
 
 // getAnswer/getAnswers/recordSummary are pure functions over a FHIR QuestionnaireResponse-shaped
 // record ({ data: { item: [...] } }) — tested directly with plain fixtures, no TanStack DB/
@@ -125,6 +125,13 @@ describe('withGroupFields', () => {
         expect(getAnswer({ data: result }, 'billing_total')).toBe('500');
     });
 
+    it('omits blank/undefined field values instead of storing empty answers, matching appendGroupInstance', () => {
+        const result = withGroupFields({ item: [] }, 'section_hospital', { hospital_name: 'Malar Hospital', hospital_legalname: '' });
+        const group = result.item.find((i) => i.linkId === 'section_hospital');
+        expect((group.item || []).some((f) => f.linkId === 'hospital_legalname')).toBe(false);
+        expect(getAnswer({ data: result }, 'hospital_name')).toBe('Malar Hospital');
+    });
+
     // Real bug found live: clinical.js's getEncounter() reads through useLiveQuery, which hands
     // back a Vue-reactive Proxy, not a plain object. structuredClone() cannot clone a Proxy at
     // all — it threw DataCloneError, uncaught, which killed Cübo's whole slot-fill dispatch
@@ -219,5 +226,32 @@ describe('appendGroupInstance', () => {
 
     it('returns -1 and does nothing for a record id that does not exist', () => {
         expect(appendGroupInstance('rec-does-not-exist', 'section_staff', { staff_first_name: 'x' })).toBe(-1);
+    });
+});
+
+describe('saveDataRecord', () => {
+    // Real bug found live (SPEC-11): window.LForms.Util.mergeFHIRDataIntoLForms() silently merges
+    // NOTHING (no thrown error, every field just renders blank) when the record data isn't shaped
+    // like a real FHIR QuestionnaireResponse resource — resourceType/status have to be present, a
+    // bare { item: [...] } isn't enough. Every controlled-input write path (appendGroupInstance,
+    // withGroupFields, ensureProviderRecord's own seed) builds/patches plain { item: [...] }
+    // objects with neither field, unlike LForms' own extraction (getFormFHIRData) which always
+    // included them — invisible until a Provider record saved this way was viewed through
+    // Designer.vue's still-LForms-rendered entity drawer. Confirmed live: a real Hospital record
+    // with correct data in localStorage rendered every field blank in that drawer until this fix.
+    it('always stamps resourceType/status onto the saved data, even when the caller omits them', () => {
+        const id = saveDataRecord('system-provider-composition-v1', 1, { item: [{ linkId: 'hospital_name', answer: [{ valueString: 'Malar Hospital' }] }] }, null);
+        const rec = formData.get(id);
+        expect(rec.data.resourceType).toBe('QuestionnaireResponse');
+        expect(rec.data.status).toBe('completed');
+        expect(getAnswer(rec, 'hospital_name')).toBe('Malar Hospital');
+        formData.delete(id);
+    });
+
+    it('never overwrites a resourceType/status the caller already set (e.g. real LForms extraction)', () => {
+        const id = saveDataRecord('system-encounter-composition-v1', 1, { resourceType: 'QuestionnaireResponse', status: 'in-progress', item: [] }, null);
+        const rec = formData.get(id);
+        expect(rec.data.status).toBe('in-progress');
+        formData.delete(id);
     });
 });

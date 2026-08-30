@@ -4,6 +4,8 @@ import Onboarding from '../pages/Onboarding.vue';
 import ClinicHome from '../pages/ClinicHome.vue';
 import AbdmOnboarding from '../pages/AbdmOnboarding.vue';
 import StaffOnboarding from '../pages/StaffOnboarding.vue';
+import HospitalOnboarding from '../pages/HospitalOnboarding.vue';
+import HospitalOnboardingChat from '../pages/HospitalOnboardingChat.vue';
 import Designer from '../pages/Designer.vue';
 import { useAuthStore } from '../stores/auth.js';
 import { resolveGuard } from './guardLogic.js';
@@ -35,6 +37,14 @@ const routes = [
   // the clinic's existing profile) — distinct from /onboarding (the admin's full clinic setup)
   // and /onboarding-abdm (the admin's full HFR/HPR registration console).
   { path: '/staff-onboarding', name: 'staff-onboarding', component: StaffOnboarding, meta: { requiresAuth: true } },
+  // The HFR half of SPEC-11's prerequisite-layer onboarding — role-gated at the UI-card level in
+  // ClinicHome.vue's user menu (Hospital Admin / Admin-and-Health-Professional see it, Health
+  // Professional doesn't), same "cosmetic/defense-in-depth, not a router-level role guard"
+  // precedent /staff-onboarding already established — no meta.requiresRole added here either.
+  { path: '/hospital-onboarding', name: 'hospital-onboarding', component: HospitalOnboarding, meta: { requiresAuth: true } },
+  // SPEC-14 (docs/SPEC-14-HFSM-RUNTIME-AND-CHAT-FIRST-CAPTURE.md) §7 — additive proof-of-concept,
+  // side by side with the drawer flow above, not a replacement of it yet.
+  { path: '/hospital-onboarding/chat', name: 'hospital-onboarding-chat', component: HospitalOnboardingChat, meta: { requiresAuth: true } },
   // Unauthenticated visitors can still reach this page, constrained to Sandbox Data — see
   // clinux-authenticated-vs-sandbox-mode memory note. The real Forms Library tab (Provider-
   // composition data) is gated inside Designer.vue itself instead of at the router level, since

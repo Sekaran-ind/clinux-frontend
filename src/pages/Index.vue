@@ -30,13 +30,15 @@ const toast = ref({ show: false, message: '' });
 const regError = ref('');
 const loginError = ref('');
 
-// facilityType is the unified onboarding journey's top-of-funnel fork -- a standalone individual
-// practitioner (no facility at all) goes through this exact same registration, just tagged so
-// the rest of the journey (HFR registration, team invites) knows to skip itself for them. See
-// clinuxflow-api's POST /api/auth/register comment and migrations/0005 for the full design.
-const regForm = reactive({
-  facilityType: 'facility', clinicName: '', adminName: '', designation: '', email: '', password: '', services: '', phone: '', city: '',
-});
+// SPEC-11: sign-up is deliberately minimal now -- email/password/role only. Role is the new
+// top-of-funnel fork (replacing the old facilityType picker) -- it determines which self-service
+// HFR (facility) and/or HPR (professional) registration journeys ClinicHome offers afterward, not
+// which fields THIS form collects. clinicName/adminName/designation/services/phone/city are no
+// longer captured at sign-up at all -- the real facility identity is captured later by the new
+// Hospital/HFR journey (HospitalOnboarding.vue), and the Edit Profile modal below still handles
+// services/phone/city for an existing account. See clinuxflow-api's POST /api/auth/register
+// comment and migrations/0008 for the full design.
+const regForm = reactive({ email: '', password: '', confirmPassword: '', role: '' });
 const loginForm = reactive({ email: '', password: '' });
 const profileForm = reactive({ clinicName: '', adminName: '', designation: '', careTeam: '', services: '', phone: '', city: '', address: '' });
 const contactForm = reactive({ name: '', clinic: '', email: '', message: '' });
@@ -71,14 +73,28 @@ function showToast(msg) {
   setTimeout(() => (toast.value.show = false), 3000);
 }
 
+const ROLE_LABELS = {
+  hospital_admin: 'Hospital Admin',
+  health_professional: 'Health Professional',
+  admin_and_health_professional: 'Admin & Health Professional',
+};
+
 async function registerClinic() {
   regError.value = '';
+  // RadioGroupRoot is a headless ARIA radiogroup, not a native <input required> -- it doesn't
+  // participate in native HTML5 form validation the way password/email's `required`/`minlength`
+  // already do below, so role-required needs its own explicit check. Same for the password-match
+  // check, which no native attribute expresses at all.
+  if (!regForm.role) { regError.value = 'Please select how you’re registering.'; return; }
+  if (regForm.password !== regForm.confirmPassword) { regError.value = 'Passwords do not match.'; return; }
   const { error, user } = await auth.register({ ...regForm });
   if (error) { regError.value = error; return; }
   showRegister.value = false;
-  Object.assign(regForm, { facilityType: 'facility', clinicName: '', adminName: '', designation: '', email: '', password: '', services: '', phone: '', city: '' });
-  showToast(`Welcome, ${user.clinicName}! Let's set up your clinic profile.`);
-  router.push('/onboarding');
+  Object.assign(regForm, { email: '', password: '', confirmPassword: '', role: '' });
+  // Deliberately NOT "Welcome, {clinicName}" anymore -- clinicName is just a placeholder until
+  // the new Hospital/HFR journey replaces it with the real hospital_name (see SPEC-11).
+  showToast(`Welcome${user.role ? ', ' + ROLE_LABELS[user.role] : ''}! Let's get you set up.`);
+  router.push('/clinic-home');
 }
 
 async function loginClinic() {
@@ -161,57 +177,53 @@ onUnmounted(stopAutoplay);
     <div class="modal-box" @click.stop>
       <div class="flex items-center justify-between mb-6">
         <div>
-          <h2 class="text-xl font-bold cf-text-strong" style="font-family:'Poppins',sans-serif">Register Your Clinic</h2>
-          <p class="text-sm cf-text mt-1">Create your ClinüxFlow workspace</p>
+          <h2 class="text-xl font-bold cf-text-strong" style="font-family:'Poppins',sans-serif">Create Your Account</h2>
+          <p class="text-sm cf-text mt-1">You'll set up your facility and/or professional details next</p>
         </div>
         <button @click="showRegister = false" class="w-9 h-9 rounded-full cf-card flex items-center justify-center hover:text-red-500"><i class="fas fa-times text-sm"></i></button>
       </div>
       <form @submit.prevent="registerClinic()" class="space-y-4">
-        <!-- The unified journey's top-of-funnel fork: a standalone individual practitioner (no
-             facility at all) registers through this exact same form, just tagged so the rest of
-             onboarding skips every facility-only screen for them (HFR registration, team
-             invites). Reka UI's RadioGroupRoot -- keyboard nav + ARIA radiogroup semantics for
-             free, first real use of the new headless-primitives layer. -->
+        <!-- SPEC-11: role replaces facilityType as the top-of-funnel fork -- it routes which
+             self-service HFR/HPR registration journeys ClinicHome offers afterward (see
+             docs/SPEC-11-ABDM-M1-M4-ALIGNMENT.md), not what THIS form collects. Reka UI's
+             RadioGroupRoot, same pattern the old facilityType picker used. -->
         <div>
-          <label class="cf-label">I'm registering...</label>
-          <RadioGroupRoot v-model="regForm.facilityType" class="grid grid-cols-2 gap-3 mt-1">
-            <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="regForm.facilityType === 'facility' ? 'border-color:var(--color-primary)' : ''">
-              <RadioGroupItem value="facility" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
+          <label class="cf-label">I'm registering as... *</label>
+          <RadioGroupRoot v-model="regForm.role" class="grid grid-cols-1 gap-3 mt-1">
+            <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="regForm.role === 'hospital_admin' ? 'border-color:var(--color-primary)' : ''">
+              <RadioGroupItem value="hospital_admin" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
                 <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
               </RadioGroupItem>
               <div>
-                <div class="text-sm font-bold" style="color:var(--cf-text-strong)">A Facility</div>
-                <div class="text-xs" style="color:var(--cf-text)">Clinic, lab, hospital — with staff</div>
+                <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Hospital Admin</div>
+                <div class="text-xs" style="color:var(--cf-text)">I administer a facility's operations</div>
               </div>
             </label>
-            <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="regForm.facilityType === 'individual' ? 'border-color:var(--color-primary)' : ''">
-              <RadioGroupItem value="individual" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
+            <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="regForm.role === 'health_professional' ? 'border-color:var(--color-primary)' : ''">
+              <RadioGroupItem value="health_professional" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
                 <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
               </RadioGroupItem>
               <div>
-                <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Myself, Individually</div>
-                <div class="text-xs" style="color:var(--cf-text)">Standalone consultant, no facility</div>
+                <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Health Professional</div>
+                <div class="text-xs" style="color:var(--cf-text)">I work at a facility someone else runs</div>
+              </div>
+            </label>
+            <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="regForm.role === 'admin_and_health_professional' ? 'border-color:var(--color-primary)' : ''">
+              <RadioGroupItem value="admin_and_health_professional" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
+                <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
+              </RadioGroupItem>
+              <div>
+                <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Admin and Health Professional</div>
+                <div class="text-xs" style="color:var(--cf-text)">I run and practice at my own facility</div>
               </div>
             </label>
           </RadioGroupRoot>
         </div>
-        <div>
-          <label class="cf-label">{{ regForm.facilityType === 'individual' ? 'Practice Name *' : 'Clinic Name *' }}</label>
-          <input class="cf-input" v-model="regForm.clinicName" :placeholder="regForm.facilityType === 'individual' ? 'e.g. Dr. Sarah Mehta — Cardiology Consult' : 'e.g. Apollo Diagnostic Centre'" required />
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div><label class="cf-label">{{ regForm.facilityType === 'individual' ? 'Your Full Name *' : 'Admin Full Name *' }}</label><input class="cf-input" v-model="regForm.adminName" placeholder="Dr. Sarah Mehta" required /></div>
-          <div><label class="cf-label">Designation</label><input class="cf-input" v-model="regForm.designation" placeholder="Chief of Medicine" /></div>
-        </div>
-        <div><label class="cf-label">Email Address *</label><input class="cf-input" type="email" v-model="regForm.email" placeholder="admin@clinic.com" required /></div>
+        <div><label class="cf-label">Email Address *</label><input class="cf-input" type="email" v-model="regForm.email" placeholder="you@clinic.com" required /></div>
         <div><label class="cf-label">Password *</label><input class="cf-input" type="password" v-model="regForm.password" placeholder="Min 8 characters" required minlength="8" /></div>
-        <div><label class="cf-label">Services Offered</label><input class="cf-input" v-model="regForm.services" placeholder="Radiology, Cardiology, Orthopaedics..." /></div>
-        <div class="grid grid-cols-2 gap-3">
-          <div><label class="cf-label">Phone</label><input class="cf-input" v-model="regForm.phone" placeholder="+91 9000000000" /></div>
-          <div><label class="cf-label">City</label><input class="cf-input" v-model="regForm.city" placeholder="Bengaluru" /></div>
-        </div>
+        <div><label class="cf-label">Confirm Password *</label><input class="cf-input" type="password" v-model="regForm.confirmPassword" placeholder="Re-enter your password" required minlength="8" /></div>
         <p v-show="regError" class="text-red-500 text-sm font-medium">{{ regError }}</p>
-        <button type="submit" class="btn-primary w-full mt-2"><i class="fas fa-hospital-user mr-2"></i>Create Clinic Account</button>
+        <button type="submit" class="btn-primary w-full mt-2"><i class="fas fa-hospital-user mr-2"></i>Create Account</button>
         <p class="text-center text-sm cf-text">Already registered? <button type="button" @click="showRegister = false; showLogin = true" class="font-bold" style="color:var(--color-primary)">Sign in</button></p>
       </form>
     </div>

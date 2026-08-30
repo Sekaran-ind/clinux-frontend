@@ -37,10 +37,29 @@ export function listDataRecords(formId) {
     .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
 }
 
-// Upserts one record. Pass existingRecordId to update in place; omit to always insert a new one.
+// Real bug found live (SPEC-11): window.LForms.Util.mergeFHIRDataIntoLForms() silently merges
+// NOTHING -- no error, no thrown exception, every field just renders blank -- when the FIRST
+// argument isn't shaped like a real FHIR QuestionnaireResponse *resource* (resourceType + status
+// present), a bare `{ item: [...] }` isn't enough. extractResponse()'s LForms-extraction path
+// (window.LForms.Util.getFormFHIRData(...)) always produced a real resource, so this was
+// invisible for as long as every save went through LForms. It stopped being invisible the moment
+// SPEC-09's controlled-input flows (appendGroupInstance, withGroupFields, ensureProviderRecord's
+// own seed) started building/patching record data as plain JS objects instead -- confirmed live:
+// a Hospital record saved via HospitalOnboarding.vue had the right data in localStorage, but
+// Designer.vue's "view this entity" drawer (still LForms-rendered, reused across every Provider
+// entity) showed every field blank regardless. Same class of bug session-wide, not specific to
+// Hospital -- Staff/Encounter/SOAP/Billing records saved via the same non-LForms write paths are
+// equally exposed. Fixed at this single choke point (every save in the whole app funnels through
+// here) rather than patching each write path individually -- only fills in what's missing, never
+// overwrites a real LForms-extracted resourceType/status that's already correct.
 export function saveDataRecord(formId, version, questionnaireResponse, existingRecordId) {
   const id = existingRecordId || 'rec-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
-  const record = { id, formId, version, clinicId: currentClinicId(), data: questionnaireResponse, savedAt: new Date().toISOString() };
+  const data = {
+    resourceType: 'QuestionnaireResponse',
+    status: 'completed',
+    ...questionnaireResponse,
+  };
+  const record = { id, formId, version, clinicId: currentClinicId(), data, savedAt: new Date().toISOString() };
 
   if (formData.has(id)) {
     formData.update(id, (draft) => Object.assign(draft, record));
@@ -196,14 +215,20 @@ export function withGroupFields(recordData, groupLinkId, fieldValues) {
   }
   group.item = group.item || [];
 
-  Object.entries(fieldValues).forEach(([linkId, value]) => {
-    let field = group.item.find((item) => item.linkId === linkId);
-    if (!field) {
-      field = { linkId };
-      group.item.push(field);
-    }
-    field.answer = [{ valueString: value }];
-  });
+  // Skips blank/undefined values instead of storing an explicit empty-string answer — matches
+  // appendGroupInstance()'s own established convention (see its "omits blank/undefined field
+  // values" test) for the same reason: an untouched optional field should look untouched, not
+  // "answered with nothing."
+  Object.entries(fieldValues)
+    .filter(([, value]) => value !== '' && value !== null && value !== undefined)
+    .forEach(([linkId, value]) => {
+      let field = group.item.find((item) => item.linkId === linkId);
+      if (!field) {
+        field = { linkId };
+        group.item.push(field);
+      }
+      field.answer = [{ valueString: value }];
+    });
 
   return cloned;
 }
