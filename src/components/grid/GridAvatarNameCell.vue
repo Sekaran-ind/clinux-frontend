@@ -1,6 +1,6 @@
 <script setup>
 // Shared AG Grid cellRenderer for the "colored-initial avatar + name" column pattern used across
-// AiEngineSandbox.vue's Patients/Staff tables. AG Grid Vue3 cellRenderers are real Vue components
+// AiEngine.vue's Patients/Staff tables. AG Grid Vue3 cellRenderers are real Vue components
 // receiving a single `params` prop (the cell's params object, .value/.data/.colDef etc.) — this
 // is the column-def-driven equivalent of what PrimeVue's #body template slots did inline before.
 const props = defineProps({ params: { type: Object, required: true } });

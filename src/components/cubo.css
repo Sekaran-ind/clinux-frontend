@@ -297,3 +297,73 @@
     0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
     30% { opacity: 1; transform: translateY(-2px); }
 }
+
+/* SPEC-20's unauthenticated entry menu, still used two places: Cübo's own nav strip (Cubo.vue,
+   narrow — 2-column grid) and, since SPEC-22 §5.1, the host page's nav-suggestion links + the
+   .cubo-inline-form-card wrapper around whichever form the host page's content pane renders (see
+   entryFormRegistry.js). Deliberately wider/plainer than the narrow chat-bubble styling above
+   (max-w-[85%], colored background) — a real form or a menu of choices needs its own room. */
+.cubo-entry-menu-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 0.6rem;
+    border: 1px solid var(--cf-border, #e2e8f0);
+    background: white;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.cubo-entry-menu-btn:hover {
+    border-color: var(--color-primary, #00d4b2);
+    background: rgba(0, 212, 178, 0.08);
+}
+.dark .cubo-entry-menu-btn {
+    background: #0f172a;
+    border-color: #334155;
+    color: #e2e8f0;
+}
+/* Cübo's nav strip highlights whichever entry action is currently shown in the host page's
+   content pane (entryWorkflow.activeEntryAction) — the two panes are DOM siblings, this is the
+   only visual link between them. */
+.cubo-entry-menu-btn-active {
+    border-color: var(--color-primary, #00d4b2);
+    background: rgba(0, 212, 178, 0.12);
+    color: var(--color-primary, #00d4b2);
+}
+.cubo-inline-form-card {
+    background: white;
+    border: 1px solid var(--cf-border, #e2e8f0);
+    border-radius: 0.75rem;
+    padding: 1rem;
+}
+.dark .cubo-inline-form-card {
+    background: #0f172a;
+    border-color: #334155;
+}
+
+/* ── THREE_PANE's own responsive collapse — "collapsed into a single pane... based on the
+   viewport of the device" (explicit instruction). Same idiom as src/style.css's .chat-forms-shell
+   2-way toggle (Front Desk/Consultation Desk/Checkout), extended to 3 states via a mode-<x> class
+   on .cubo-3pane-shell (see Cubo.vue's wrapperOuterClass) instead of just 2 mobile-mode-* classes
+   — the panes are already flex-col (stacked) below Tailwind's own 768px `md:` breakpoint via
+   Cubo.vue's own template classes, so this only needs to HIDE the two inactive ones and show the
+   tab strip; no separate breakpoint value to keep in sync with, it rides the same one. ── */
+.cubo-3pane-mobile-tabs { display: none; }
+.cubo-3pane-mobile-tabs button {
+    flex: 1; display: flex; align-items: center; justify-content: center; gap: .4rem;
+    padding: .6rem; font-size: .72rem; font-weight: 600; color: #9ca3af;
+    background: transparent; border: none; border-bottom: 2px solid transparent; cursor: pointer;
+}
+.cubo-3pane-mobile-tabs button.active { color: var(--color-primary, #00d4b2); border-bottom-color: var(--color-primary, #00d4b2); }
+@media (max-width: 767px) {
+    .cubo-3pane-mobile-tabs { display: flex; }
+    .cubo-3pane-shell.mode-threads .cubo-3pane-chat-col,
+    .cubo-3pane-shell.mode-threads .cubo-3pane-content-col { display: none; }
+    .cubo-3pane-shell.mode-chat .cubo-3pane-threads-col,
+    .cubo-3pane-shell.mode-chat .cubo-3pane-content-col { display: none; }
+    .cubo-3pane-shell.mode-content .cubo-3pane-threads-col,
+    .cubo-3pane-shell.mode-content .cubo-3pane-chat-col { display: none; }
+}

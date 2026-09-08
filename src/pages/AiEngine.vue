@@ -1,21 +1,36 @@
 <script setup>
-// Extracted from the former standalone AiEngine.vue as part of merging it into Designer.vue (see
-// clinux-ai-engine-designer-merge-tanstack-table memory note) — this component owns everything
-// AiEngine.vue did EXCEPT its custom nav bar, its height:100vh viewport-lock shell, and the
-// <Cubo> mount itself: those are now the parent (Designer.vue)'s job, since the whole point of
-// the merge is one shared left-Cubo/right-content layout instead of two separate pages each
-// with their own. classifyAndExecute() is exposed so Designer.vue's single Cubo instance can
-// forward its cubo-api-submit emit into this component regardless of which tab is active.
+// Standalone AI Engine page — SPEC-19 (docs/SPEC-19-LOCAL-FIRST-LOCAL-SERVER-AND-FEDERATED-
+// MODES.md) §12's AI Engine + Sandbox redesign, first slice: the SPEC-15 §3 three-pane surface
+// (left: nav, middle: Cübo, right: structured data) applied to this page, which previously lived
+// as a "Sandbox Data" tab inside Designer.vue (see clinux-ai-engine-designer-merge-tanstack-table
+// memory note). Explicit instruction: Designer and AI Engine are separate pages again, no shared
+// tab-switching or cross-page Cübo-emit-forwarding — this page owns its own <Cubo> instance
+// directly and handles its cubo-api-submit emit locally, no template-ref bouncing through a
+// parent the way the merged version needed.
 //
-// Confirmed with the user when this merge was planned: this stays a fully isolated sandbox
-// (own TanStack DB collections, own aiEngineNlp.js demo) — NOT migrated onto the real
-// formData/system-patient-profile-v1 records Front Desk uses, and NOT the shared
-// formSlotEngine.js. Nothing here can affect real patient data.
-import { computed, defineExpose, nextTick, onMounted, reactive, ref } from 'vue';
+// Still a fully isolated sandbox — own TanStack DB (IndexedDB-backed, see
+// src/data/indexedDbCollectionFactory.js and the clinux-local-first-federated-modes-spec19 memory
+// note) collections, own aiEngineNlp.js demo classifier — NOT the real formData/
+// system-patient-profile-v1 records Front Desk uses, and NOT the shared formSlotEngine.js.
+// Nothing here can affect real patient data.
+//
+// Left-pane nav below is a deliberately honest, minimal analog of SPEC-16's real Task/notebook
+// navigator, not that navigator itself — SPEC-16 §6 step 1 is explicit that notebooks need real
+// persisted Task/PlanDefinition instances, which don't exist anywhere yet, and this sandbox has
+// no workflow graph at all (just three independent entity registries). A flat category list with
+// live counts is the closest useful equivalent for a context with nothing to sequence.
+//
+// Also deferred from the full SPEC-15 design, deliberately, per the "3-pane shell first" scope
+// this slice was built to: §4's URL pop-out for dense content (the AG Grid stays embedded inline
+// in the right pane), §5's markdown-rendered narrative, §6's section-level cards, §7's retirement
+// of formSlotEngine.js (this page never used it anyway — its own aiEngineNlp.js classifier is
+// separate, unaffected either way).
+import { computed, defineExpose, onMounted, reactive, ref } from 'vue';
 import { useLiveQuery } from '@tanstack/vue-db';
 import { debounce } from '@tanstack/pacer';
 import { AgGridVue } from 'ag-grid-vue3';
 import { themeQuartz } from 'ag-grid-community';
+import Cubo from '../components/Cubo.vue';
 import GridAvatarNameCell from '../components/grid/GridAvatarNameCell.vue';
 import GridBadgeCell from '../components/grid/GridBadgeCell.vue';
 import GridActionsCell from '../components/grid/GridActionsCell.vue';
@@ -32,7 +47,10 @@ const defaultColDef = { resizable: true, sortable: true, filter: true };
 const STAFF_ROLE_BADGE_CLASSES = { Doctor: 'badge-doctor', Nurse: 'badge-nurse', Administrator: 'badge-admin', 'Chief of Medicine': 'badge-doctor', Receptionist: 'badge-tech', Radiologist: 'badge-tech' };
 const ENCOUNTER_STATUS_BADGE_CLASSES = { arrived: 'badge-arrived', 'in-progress': 'badge-in-progress', finished: 'badge-finished', cancelled: 'badge-cancelled' };
 
-const accordion = reactive({ patients: true, staff: false, encounters: false });
+// Replaces the old three-independently-toggleable accordion sections with a single left-pane
+// selection — one category visible at a time, full height, matching the three-pane shell instead
+// of a stacked-accordion single column.
+const selectedCategory = ref('patients'); // 'patients' | 'staff' | 'encounters'
 const dbSearchInput = ref('');
 const dbSearch = ref(''); // debounced mirror of dbSearchInput — see below
 const toast = ref({ show: false, msg: '' });
@@ -122,9 +140,9 @@ onMounted(async () => {
 });
 
 /* ───────────────── CÜBO → NLP → TOOL PIPELINE ─────────────────
-   Called by Designer.vue's onCuboSubmit (forwarded from its single <Cubo> mount's
-   cubo-api-submit emit) — the user's message is already appended to the active Cübo thread by
-   the time this runs. classifyAndExecute() is this component's actual "runCommand()": nlp.js
+   Handles this page's own <Cubo> instance's cubo-api-submit emit directly now (no more
+   Designer.vue ref-forwarding) — the user's message is already appended to the active Cübo
+   thread by the time this runs. classifyAndExecute() is this page's actual "runCommand()": nlp.js
    picks the intent + enum entities, aiEngineNlp.js's regex extractors pick the free-text slots,
    executeIntent() runs the tool against the TanStack DB collections, and the result is posted
    back into the SAME Cübo thread as an assistant reply. */
@@ -148,6 +166,9 @@ async function classifyAndExecute(detail) {
   }
   cubo.addCuboMessage('assistant', resultMsg);
 }
+// Kept exposed even though no parent ref uses it any more (this page owns its own Cübo mount
+// directly) — harmless, and a cheap escape hatch if something ever needs to drive this
+// programmatically again.
 defineExpose({ classifyAndExecute });
 
 function executeIntent(intent, r) {
@@ -162,7 +183,7 @@ function executeIntent(intent, r) {
         color: nextColor(aiEnginePatients.toArray),
         savedAt: new Date().toISOString(),
       });
-      accordion.patients = true;
+      selectedCategory.value = 'patients';
       return `Patient "${name}" registered.`;
     }
     case 'update_patient': {
@@ -192,7 +213,7 @@ function executeIntent(intent, r) {
         color: nextColor(aiEngineStaff.toArray),
         savedAt: new Date().toISOString(),
       });
-      accordion.staff = true;
+      selectedCategory.value = 'staff';
       return `Staff "${name}" (${r.staffRole || 'Doctor'}) added to the care team.`;
     }
     case 'update_staff': {
@@ -224,7 +245,7 @@ function executeIntent(intent, r) {
         }),
         savedAt: new Date().toISOString(),
       });
-      accordion.encounters = true;
+      selectedCategory.value = 'encounters';
       return `Encounter logged for "${getAnswer(patientRec, 'patient_name')}".`;
     }
     case 'update_encounter': {
@@ -303,6 +324,19 @@ const filteredEncounters = computed(() => {
     (getAnswer(e, 'encounter_chief_complaint') || '').toLowerCase().includes(q) ||
     (getAnswer(e, 'encounter_status') || '').toLowerCase().includes(q));
 });
+
+// Left-pane nav model — see this file's own header comment on why this is a flat category list,
+// not SPEC-16's real Task/notebook tree.
+const categories = computed(() => [
+  { key: 'patients', label: 'Patients', icon: 'fa-user-injured', iconBg: 'rgba(239,68,68,.1)', iconColor: '#EF4444', count: filteredPatients.value.length },
+  { key: 'staff', label: 'Care Team / Staff', icon: 'fa-user-md', iconBg: 'rgba(59,130,246,.1)', iconColor: '#3B82F6', count: filteredStaff.value.length },
+  { key: 'encounters', label: 'Encounters', icon: 'fa-stethoscope', iconBg: 'rgba(139,92,246,.1)', iconColor: '#8B5CF6', count: filteredEncounters.value.length },
+]);
+function openAddModalForSelected() {
+  if (selectedCategory.value === 'patients') openPatientModal();
+  else if (selectedCategory.value === 'staff') openStaffModal();
+  else openEncounterModal();
+}
 
 /* ───────────────── AG Grid column defs — one valueGetter per column since every row is a bare
    FHIR QuestionnaireResponse-shaped record (getAnswer(row, linkId)), not a flat object AG Grid
@@ -435,7 +469,7 @@ function askDelete(type, id, label) {
 </script>
 
 <template>
-  <div class="ai-sandbox-root">
+  <div class="ai-engine-root flex-1 flex overflow-hidden">
     <!-- ─────────────────── MODAL: Add/Edit Patient ─────────────────── -->
     <div class="modal-backdrop" v-show="modals.patient.show" @click.self="modals.patient.show = false">
       <div class="modal-box" @click.stop v-show="modals.patient.show">
@@ -588,107 +622,81 @@ function askDelete(type, id, label) {
       <span>{{ toast.msg }}</span>
     </div>
 
-    <div class="right-panel-header">
-      <div>
-        <div class="panel-title">
-          <div style="width:28px;height:28px;border-radius:.4rem;background:rgba(0,212,178,.12);display:flex;align-items:center;justify-content:center">
-            <i class="fas fa-database" style="color:var(--color-primary);font-size:.75rem"></i>
+    <!-- ═══════════════════ LEFT PANE: category nav ═══════════════════ -->
+    <div class="nav-pane">
+      <div class="nav-pane-header">
+        <div class="panel-title" style="font-size:.9rem">
+          <div style="width:26px;height:26px;border-radius:.4rem;background:rgba(0,212,178,.12);display:flex;align-items:center;justify-content:center">
+            <i class="fas fa-database" style="color:var(--color-primary);font-size:.7rem"></i>
           </div>
           Sandbox Data
         </div>
-        <p class="panel-sub" style="margin-top:.15rem">Isolated demo storage — talk to Cübo or use the Add buttons below. Unrelated to real patient/staff/encounter records.</p>
-      </div>
-      <div class="db-toolbar">
-        <div style="display:flex;align-items:center;gap:.4rem;padding:.25rem .625rem;border:1px solid var(--border);border-radius:99px;background:var(--bg-panel)">
+        <div style="display:flex;align-items:center;gap:.4rem;margin-top:.6rem">
           <div class="worker-status-dot" :class="ready ? 'ws-online' : 'ws-pending'"></div>
-          <span style="font-size:.72rem;font-family:'JetBrains Mono',monospace;color:var(--text)">{{ ready ? 'Engine ready' : 'Loading…' }}</span>
-        </div>
-        <div class="search-bar" style="width:180px">
-          <i class="fas fa-search"></i>
-          <input class="cf-input" data-sandbox-search :value="dbSearchInput" @input="onSearchInput($event.target.value)" placeholder="Search all records…" />
+          <span style="font-size:.68rem;font-family:'JetBrains Mono',monospace;color:var(--text)">{{ ready ? 'Engine ready' : 'Loading…' }}</span>
         </div>
       </div>
+      <button
+        v-for="cat in categories" :key="cat.key"
+        class="nav-cat-btn" :class="selectedCategory === cat.key ? 'active' : ''"
+        @click="selectedCategory = cat.key"
+      >
+        <div class="accord-icon" :style="`background:${cat.iconBg}`"><i class="fas" :class="cat.icon" :style="`color:${cat.iconColor}`"></i></div>
+        <span class="nav-cat-label">{{ cat.label }}</span>
+        <span class="accord-count">{{ cat.count }}</span>
+      </button>
+      <p class="nav-pane-footer">Isolated demo storage — talk to Cübo or use the Add button. Unrelated to real patient/staff/encounter records.</p>
     </div>
 
-    <div class="right-panel-body">
+    <!-- ═══════════════════ MIDDLE PANE: Cübo ═══════════════════ -->
+    <div class="cubo-pane cubo-inline-host">
+      <Cubo category="ai-engine" page-context="ClinüxFlow AI Engine — natural-language sandbox patient/staff/encounter management." @cubo-api-submit="classifyAndExecute" />
+    </div>
 
-      <!-- ── PATIENTS ACCORDION ── -->
-      <div class="accord-section" :class="accordion.patients ? 'open' : ''">
-        <div class="accord-header" @click="accordion.patients = !accordion.patients">
-          <div style="display:flex;align-items:center;gap:.1rem">
-            <div class="accord-icon" style="background:rgba(239,68,68,.1)"><i class="fas fa-user-injured" style="color:#EF4444"></i></div>
-            <span class="accord-title">Patients</span>
-            <span class="accord-count" style="margin-left:.5rem">{{ filteredPatients.length }}</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:.625rem">
-            <button class="btn-add" @click.stop="openPatientModal()" title="Add patient">
-              <i class="fas fa-plus text-xs"></i>Add
-            </button>
-            <i class="fas fa-chevron-down accord-chevron"></i>
-          </div>
+    <!-- ═══════════════════ RIGHT PANE: structured data ═══════════════════ -->
+    <div class="data-pane">
+      <div class="right-panel-header">
+        <div>
+          <div class="panel-title">{{ categories.find((c) => c.key === selectedCategory)?.label }}</div>
         </div>
-        <div class="accord-body" :class="accordion.patients ? 'show' : ''">
-          <AgGridVue
-            :theme="gridTheme" :rowData="filteredPatients" :columnDefs="patientColumnDefs" :defaultColDef="defaultColDef"
-            pagination :paginationPageSize="10" domLayout="autoHeight" :getRowId="(p) => p.data.id"
-            overlayNoRowsTemplate="No patient records. Tell Cübo to add one, or click + Add above."
-          />
+        <div class="db-toolbar">
+          <div class="search-bar" style="width:180px">
+            <i class="fas fa-search"></i>
+            <input class="cf-input" data-sandbox-search :value="dbSearchInput" @input="onSearchInput($event.target.value)" placeholder="Search records…" />
+          </div>
+          <button class="btn-add" @click="openAddModalForSelected()"><i class="fas fa-plus text-xs"></i>Add</button>
         </div>
       </div>
 
-      <!-- ── STAFF ACCORDION ── -->
-      <div class="accord-section" :class="accordion.staff ? 'open' : ''">
-        <div class="accord-header" @click="accordion.staff = !accordion.staff">
-          <div style="display:flex;align-items:center;gap:.1rem">
-            <div class="accord-icon" style="background:rgba(59,130,246,.1)"><i class="fas fa-user-md" style="color:#3B82F6"></i></div>
-            <span class="accord-title">Care Team / Staff</span>
-            <span class="accord-count" style="margin-left:.5rem">{{ filteredStaff.length }}</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:.625rem">
-            <button class="btn-add" @click.stop="openStaffModal()"><i class="fas fa-plus text-xs"></i>Add</button>
-            <i class="fas fa-chevron-down accord-chevron"></i>
-          </div>
-        </div>
-        <div class="accord-body" :class="accordion.staff ? 'show' : ''">
-          <AgGridVue
-            :theme="gridTheme" :rowData="filteredStaff" :columnDefs="staffColumnDefs" :defaultColDef="defaultColDef"
-            pagination :paginationPageSize="10" domLayout="autoHeight" :getRowId="(p) => p.data.id"
-            overlayNoRowsTemplate="No staff records yet."
-          />
-        </div>
+      <div class="right-panel-body">
+        <AgGridVue
+          v-if="selectedCategory === 'patients'"
+          :theme="gridTheme" :rowData="filteredPatients" :columnDefs="patientColumnDefs" :defaultColDef="defaultColDef"
+          pagination :paginationPageSize="20" domLayout="normal" style="height:100%" :getRowId="(p) => p.data.id"
+          overlayNoRowsTemplate="No patient records. Tell Cübo to add one, or click + Add above."
+        />
+        <AgGridVue
+          v-else-if="selectedCategory === 'staff'"
+          :theme="gridTheme" :rowData="filteredStaff" :columnDefs="staffColumnDefs" :defaultColDef="defaultColDef"
+          pagination :paginationPageSize="20" domLayout="normal" style="height:100%" :getRowId="(p) => p.data.id"
+          overlayNoRowsTemplate="No staff records yet."
+        />
+        <AgGridVue
+          v-else
+          :theme="gridTheme" :rowData="filteredEncounters" :columnDefs="encounterColumnDefs" :defaultColDef="defaultColDef"
+          pagination :paginationPageSize="20" domLayout="normal" style="height:100%" :getRowId="(p) => p.data.id"
+          overlayNoRowsTemplate="No encounters logged yet."
+        />
       </div>
-
-      <!-- ── ENCOUNTERS ACCORDION ── -->
-      <div class="accord-section" :class="accordion.encounters ? 'open' : ''">
-        <div class="accord-header" @click="accordion.encounters = !accordion.encounters">
-          <div style="display:flex;align-items:center;gap:.1rem">
-            <div class="accord-icon" style="background:rgba(139,92,246,.1)"><i class="fas fa-stethoscope" style="color:#8B5CF6"></i></div>
-            <span class="accord-title">Encounters</span>
-            <span class="accord-count" style="margin-left:.5rem">{{ filteredEncounters.length }}</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:.625rem">
-            <button class="btn-add" @click.stop="openEncounterModal()"><i class="fas fa-plus text-xs"></i>Log</button>
-            <i class="fas fa-chevron-down accord-chevron"></i>
-          </div>
-        </div>
-        <div class="accord-body" :class="accordion.encounters ? 'show' : ''">
-          <AgGridVue
-            :theme="gridTheme" :rowData="filteredEncounters" :columnDefs="encounterColumnDefs" :defaultColDef="defaultColDef"
-            pagination :paginationPageSize="10" domLayout="autoHeight" :getRowId="(p) => p.data.id"
-            overlayNoRowsTemplate="No encounters logged yet."
-          />
-        </div>
-      </div>
-
     </div>
   </div>
 </template>
 
 <style scoped>
-/* Same self-contained token set AiEngine.vue had — kept as-is so every color/spacing value below
-   still resolves; scoped to .ai-sandbox-root instead of :global(:root) now that this no longer
-   owns the whole page (the merged Designer.vue page has its own tokens for its own chrome). */
-.ai-sandbox-root {
+/* Same self-contained token set the former AiEngineSandbox.vue had — kept as-is so every color/
+   spacing value below still resolves; this page owns its own chrome under App.vue's shared nav
+   (no hideAppNav, same convention Designer.vue uses), same as every other standalone route. */
+.ai-engine-root {
   --color-primary: #00D4B2;
   --color-secondary: #0A2540;
   --bg: #FAFCFF;
@@ -699,12 +707,8 @@ function askDelete(type, id, label) {
   --text-strong: #0A2540;
   --border: #CBD5E1;
   --border-soft: #E2E8F0;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
 }
-:global(.dark) .ai-sandbox-root {
+:global(.dark) .ai-engine-root {
   --bg: #080F1C;
   --bg-alt: #0D1A2E;
   --bg-panel: #0F2035;
@@ -714,6 +718,18 @@ function askDelete(type, id, label) {
   --border: #1E3A5F;
   --border-soft: #152840;
 }
+
+/* ── Three panes ── */
+.nav-pane { width: 240px; flex-shrink: 0; border-right: 1px solid var(--border); background: var(--bg-alt); padding: 1rem .75rem; display: flex; flex-direction: column; gap: .35rem; overflow-y: auto; }
+.nav-pane-header { padding: 0 .375rem .75rem; border-bottom: 1px solid var(--border-soft); margin-bottom: .35rem; }
+.nav-pane-footer { font-size: .68rem; color: var(--text); line-height: 1.5; padding: .75rem .375rem 0; margin-top: auto; }
+.cubo-pane { width: 380px; flex-shrink: 0; border-right: 1px solid var(--border); min-height: 420px; }
+.data-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; padding: 1rem 1.5rem; background: var(--bg); }
+
+.nav-cat-btn { display: flex; align-items: center; gap: .625rem; padding: .625rem .5rem; border-radius: .625rem; border: 1px solid transparent; background: transparent; cursor: pointer; text-align: left; transition: all .15s; }
+.nav-cat-btn:hover { background: var(--bg-panel); }
+.nav-cat-btn.active { background: var(--bg-panel); border-color: var(--color-primary); box-shadow: 0 0 0 1px rgba(0,212,178,.15); }
+.nav-cat-label { font-family: 'Poppins', sans-serif; font-weight: 600; font-size: .82rem; color: var(--text-strong); flex: 1; }
 
 .panel-title { font-size:1rem;font-weight:700;color:var(--text-strong);font-family:'Poppins',sans-serif;display:flex;align-items:center;gap:.6rem; }
 .panel-sub { font-size:.75rem;color:var(--text);margin-top:.2rem;line-height:1.4; }
@@ -733,34 +749,10 @@ function askDelete(type, id, label) {
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 
 .right-panel-header { padding:0 0 .75rem; border-bottom:1px solid var(--border); flex-shrink:0; display:flex;align-items:center;justify-content:space-between; }
-.right-panel-body { flex:1;overflow-y:auto;padding:.875rem 0; }
+.right-panel-body { flex:1;overflow:hidden;padding-top:.875rem; }
 
-.accord-section { border:1px solid var(--border);border-radius:.875rem;overflow:hidden;margin-bottom:.75rem;transition:border .2s; }
-.accord-section.open { border-color:var(--color-primary);box-shadow:0 0 0 1px rgba(0,212,178,.15); }
-.accord-header { padding:.875rem 1.125rem;display:flex;align-items:center;justify-content:space-between; cursor:pointer;background:var(--bg-alt);user-select:none;transition:background .15s; }
-.accord-header:hover { background:var(--bg-panel); }
-.open .accord-header { background:var(--bg-panel); }
 .accord-icon { width:32px;height:32px;border-radius:.5rem;display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0; }
-.accord-title { font-family:'Poppins',sans-serif;font-weight:700;font-size:.9rem;color:var(--text-strong);margin-left:.625rem; }
 .accord-count { font-size:.7rem;font-weight:700;padding:.15rem .55rem;border-radius:99px;background:rgba(0,212,178,.15);color:var(--color-primary);font-family:'Poppins',sans-serif; }
-.accord-chevron { font-size:.7rem;color:var(--text);transition:transform .25s; }
-.open .accord-chevron { transform:rotate(180deg);color:var(--color-primary); }
-.accord-body { display:none;border-top:1px solid var(--border); }
-.accord-body.show { display:block; }
-
-.muted { color:var(--text);font-size:.75rem; }
-.td-name { font-weight:600;font-family:'Poppins',sans-serif; }
-
-.row-actions { display:flex;gap:.35rem;align-items:center; }
-.btn-row { padding:.25rem .55rem;border-radius:.375rem;border:1px solid transparent;cursor:pointer;font-size:.7rem;font-weight:600;font-family:'Poppins',sans-serif;transition:all .15s;white-space:nowrap;display:inline-flex;align-items:center;gap:.25rem; }
-.btn-edit { border-color:var(--border);color:var(--text);background:transparent; }
-.btn-edit:hover { border-color:var(--color-primary);color:var(--color-primary);background:rgba(0,212,178,.08); }
-.btn-del { border-color:var(--border);color:var(--text);background:transparent; }
-.btn-del:hover { border-color:#EF4444;color:#EF4444;background:rgba(239,68,68,.08); }
-
-.empty-state { padding:2rem;text-align:center;color:var(--text); }
-.empty-state i { display:block;font-size:2rem;color:var(--border);margin-bottom:.75rem; }
-.empty-state p { font-size:.8rem;line-height:1.5; }
 
 .form-row-label { font-size:.72rem;font-weight:600;color:var(--text-strong);font-family:'Poppins',sans-serif;margin-bottom:.2rem;display:block; }
 .cf-select { width:100%;padding:.5rem .75rem;border-radius:.5rem;border:1.5px solid var(--border);background:var(--bg-input);color:var(--text-strong);font-size:.82rem;outline:none;font-family:'Inter',sans-serif; }
@@ -770,10 +762,9 @@ function askDelete(type, id, label) {
 :global(.dark) .btn-save { background:var(--color-primary);color:var(--color-secondary); }
 .btn-cancel { background:transparent;border:1px solid var(--border);color:var(--text);font-family:'Poppins',sans-serif;font-weight:600;padding:.45rem 1rem;border-radius:.45rem;cursor:pointer;font-size:.8rem;transition:all .15s; }
 .btn-cancel:hover { border-color:var(--color-primary);color:var(--color-primary); }
-.btn-add { background:rgba(0,212,178,.12);color:var(--color-primary);font-family:'Poppins',sans-serif;font-weight:700;padding:.35rem .875rem;border-radius:.45rem;border:1px solid rgba(0,212,178,.3);cursor:pointer;font-size:.76rem;transition:all .15s;display:flex;align-items:center;gap:.35rem; }
+.btn-add { background:rgba(0,212,178,.12);color:var(--color-primary);font-family:'Poppins',sans-serif;font-weight:700;padding:.5rem .875rem;border-radius:.45rem;border:1px solid rgba(0,212,178,.3);cursor:pointer;font-size:.76rem;transition:all .15s;display:flex;align-items:center;gap:.35rem;white-space:nowrap; }
 .btn-add:hover { background:rgba(0,212,178,.2); }
 
-.badge { display:inline-block;padding:.18rem .55rem;border-radius:99px;font-size:.67rem;font-weight:700;font-family:'Poppins',sans-serif;white-space:nowrap; }
 .badge-doctor     { background:rgba(59,130,246,.12); color:#3B82F6;  border:1px solid rgba(59,130,246,.25); }
 .badge-nurse      { background:rgba(139,92,246,.12); color:#8B5CF6;  border:1px solid rgba(139,92,246,.25); }
 .badge-admin      { background:rgba(245,158,11,.12);color:#F59E0B;   border:1px solid rgba(245,158,11,.25); }
@@ -798,7 +789,6 @@ function askDelete(type, id, label) {
 :global(.dark) .cf-toast { background:#0D2442;border:1px solid var(--color-primary); }
 
 .db-toolbar { display:flex;align-items:center;gap:.5rem; }
-.avatar { width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:.65rem;flex-shrink:0;font-family:'Poppins',sans-serif; }
 .search-bar { position:relative; }
 .search-bar input { padding-left:2rem;font-size:.78rem; }
 .search-bar i { position:absolute;left:.65rem;top:50%;transform:translateY(-50%);font-size:.72rem;color:var(--text);pointer-events:none; }

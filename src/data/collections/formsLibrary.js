@@ -43,6 +43,22 @@ export function activeQuestionnaire(formId) {
   return v ? v.questionnaire : null;
 }
 
+// A FHIR Questionnaire with just ONE of `questionnaire`'s top-level groups — used by Cübo's
+// group-at-a-time system-flow capture (SPEC-22 §5.4) so LhcFormHost renders exactly one section
+// of the real compiled Provider form instead of the whole 8-entity document Designer.vue's own
+// drawer shows. A Questionnaire with a single group item is a perfectly valid, complete FHIR
+// Questionnaire on its own — no special support needed from LForms/LhcFormHost, confirmed live
+// (renders, pre-fills from the full existing record, and extracts back a correctly-shaped
+// single-group QuestionnaireResponse — see mergeGroupResponseItem's own comment for the save
+// side). Returns null if the group isn't found, same "caller checks" convention activeQuestionnaire
+// itself uses.
+export function sliceQuestionnaireGroup(questionnaire, groupLinkId) {
+  if (!questionnaire) return null;
+  const groupItem = (questionnaire.item || []).find((i) => i.linkId === groupLinkId);
+  if (!groupItem) return null;
+  return { ...questionnaire, item: [groupItem] };
+}
+
 // Custom forms tagged journey: 'patient'|'hospital' in their YAML (compiled through onto the
 // active version's Questionnaire by clinuxflow-api's yaml-to-questionnaire.js) — lets Front
 // Desk surface exactly the forms meant for it instead of every custom form only ever being

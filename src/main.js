@@ -13,6 +13,7 @@ import './style.css';
 import App from './App.vue';
 import { router } from './router/index.js';
 import { formsLibrary, seedSystemForms } from './data/collections/formsLibrary.js';
+import { flowsLibrary, seedSystemFlows } from './data/collections/flowsLibrary.js';
 import { formData } from './data/collections/formData.js';
 import { chatThreads } from './data/collections/chatThreads.js';
 import {
@@ -24,6 +25,7 @@ import { publicAppointments } from './data/collections/publicAppointments.js';
 import { aiEnginePatients } from './data/collections/aiEnginePatients.js';
 import { aiEngineStaff } from './data/collections/aiEngineStaff.js';
 import { aiEngineEncounters } from './data/collections/aiEngineEncounters.js';
+import { taskActorSnapshots } from './data/collections/taskActorSnapshots.js';
 import { API_BASE } from './config.js';
 import { useAuthStore } from './stores/auth.js';
 import { warmUp as warmUpFormSlotEngine } from './nlp/formSlotEngine.js';
@@ -36,9 +38,10 @@ import { warmUp as warmUpFormSlotEngine } from './nlp/formSlotEngine.js';
 // before the router/app ever mounts so every synchronous read anywhere in the app is guaranteed
 // to see already-hydrated data.
 const collections = [
-  formsLibrary, formData, chatThreads, users, publicAppointments,
+  formsLibrary, flowsLibrary, formData, chatThreads, users, publicAppointments,
   encounterLogs, encounterStage, encounterConsent, prescriptions, encounterImages, encounterAnnotations, careTeam,
   aiEnginePatients, aiEngineStaff, aiEngineEncounters,
+  taskActorSnapshots,
 ];
 
 await Promise.all(collections.map((c) => c.preload()));
@@ -69,5 +72,13 @@ seedSystemForms(API_BASE).catch((err) => {
   // are enough to train against even if this network call itself failed. Fails soft on its own
   // (see formSlotEngine.js's warmUp()) — never blocks app startup either way.
   warmUpFormSlotEngine();
+});
+
+// SPEC-22 decision #2's real loader — same fire-and-forget, seed-once, tolerate-a-missing-backend
+// convention as seedSystemForms above. Deliberately NOT awaited/blocking — a consumer reading the
+// flows catalog before this resolves (a first-ever visit, slow network) just sees it empty until
+// the seed lands, same graceful-degradation contract seedSystemForms's own callers already accept.
+seedSystemFlows(API_BASE).catch((err) => {
+  console.warn('Could not reach clinuxflow-api to seed the system flows catalog:', err.message);
 });
 

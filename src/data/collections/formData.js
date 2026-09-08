@@ -143,6 +143,36 @@ export function appendGroupInstance(recordId, groupLinkId, fieldValues) {
   return newIndex;
 }
 
+// Real onboarding-UI audit/rebuild, Provider (Staff) — the FHIR-native counterpart to
+// appendGroupInstance above. Takes real FHIR QuestionnaireResponse group item(s) straight from
+// LhcFormHost.extract() (`{linkId, item:[{linkId, answer:[...]}]}`) instead of a flat
+// { linkId: value } map — appendGroupInstance's flat-map shape can only ever write valueString,
+// which is exactly why STAFF_FIELDS/AbdmFieldForm (this function's predecessor on the Staff
+// onboarding page) was missing fields the real compiled Questionnaire already had. Deliberately
+// APPENDS one-or-more brand-new instances rather than mergeGroupResponseItems' replace-the-whole-
+// group semantics — that helper is correct for Cübo's Hospital Setup checklist (which pre-fills
+// and re-submits EVERY existing instance together, see its own comment) but would silently DELETE
+// every other staff member's entry here, where the caller always renders the form blank (a new
+// teammate's own "add myself" — see StaffOnboarding.vue) and extract() returns only the new
+// entry/entries. Same existing-record precondition and index convention as appendGroupInstance —
+// returns the new instances' indexes within the group (usually a single-element array), or []
+// if the record doesn't exist.
+export function appendGroupResponseItem(recordId, groupLinkId, groupResponseItems) {
+  if (!formData.has(recordId)) return [];
+  const items = Array.isArray(groupResponseItems) ? groupResponseItems : [groupResponseItems];
+  const newIndexes = [];
+  formData.update(recordId, (draft) => {
+    draft.data.item = draft.data.item || [];
+    let existingCount = draft.data.item.filter((item) => item.linkId === groupLinkId).length;
+    items.forEach((item) => {
+      draft.data.item.push(item);
+      newIndexes.push(existingCount);
+      existingCount += 1;
+    });
+  });
+  return newIndexes;
+}
+
 // LForms represents any choice/coded answer as valueCoding even when the Questionnaire's
 // answerOption was authored as plain valueString choices — reading only valueString/etc.
 // without this fallback silently returns '' for every Dropdown/MultiSelect answer. Ported
@@ -230,6 +260,61 @@ export function withGroupFields(recordData, groupLinkId, fieldValues) {
       field.answer = [{ valueString: value }];
     });
 
+  return cloned;
+}
+
+// The record-side counterpart to formsLibrary.js's sliceQuestionnaireGroup — a record narrowed to
+// just ONE group, or an empty-item record if that group has no saved data yet. The two must be
+// used TOGETHER: real bug found live (not assumed), LForms' own mergeFHIRDataIntoLForms (called by
+// renderWithRecord/LhcFormHost) throws — "Cannot read properties of null (reading 'dataType')"
+// inside LForms' internal _processQRItemAndLFormsItem — when handed a record containing OTHER
+// groups the sliced Questionnaire has no matching item for. It does NOT gracefully skip them the
+// way a first pass at this session assumed; the record's own item list has to stay in sync with
+// whichever group(s) the rendered Questionnaire actually has. Read-only view — returns a new
+// object, never mutates `record`.
+//
+// Uses .filter() (every instance), not .find() (only the first) — a REPEATING group (Staff,
+// Services, ...) can have multiple existing saved instances sharing groupLinkId; an earlier
+// version of this used .find() and would have silently dropped every instance past the first when
+// pre-filling LhcFormHost for a repeating group's step. Correct and unchanged for a singular group
+// too — it only ever has one matching instance, so .filter() returns the same single-element (or
+// empty) result .find()-then-wrap did there.
+export function sliceRecordGroup(record, groupLinkId) {
+  if (!record) return null;
+  const groups = (record.data?.item || []).filter((item) => item.linkId === groupLinkId);
+  return { ...record, data: { ...record.data, item: groups } };
+}
+
+// Same shape/purpose as withGroupFields above — pure, returns a NEW recordData with one group
+// replaced-or-appended by linkId — but takes a REAL FHIR QuestionnaireResponse group item
+// (`{linkId, item: [{linkId, answer: [...]}]}`) instead of a flat `{linkId: value}` map. Built for
+// Cübo's group-at-a-time system-flow capture (SPEC-22 §5.2/§5.4): LhcFormHost.extract() on a
+// Questionnaire SLICED to one group (see formsLibrary.js's sliceQuestionnaireGroup) already
+// returns exactly this shape — going through withGroupFields' flat-map conversion first would
+// throw away real FHIR answer types (valueCoding, valueBoolean, multi-value answers) down to
+// valueString-only, the opposite of what a FHIR-compliant capture path is for. Same toRaw() +
+// structuredClone() + new-reference discipline as withGroupFields, same reasons.
+export function mergeGroupResponseItem(recordData, groupResponseItem) {
+  const cloned = structuredClone(toRaw(recordData) || { item: [] });
+  cloned.item = cloned.item || [];
+  const idx = cloned.item.findIndex((item) => item.linkId === groupResponseItem.linkId);
+  if (idx === -1) cloned.item.push(groupResponseItem);
+  else cloned.item[idx] = groupResponseItem;
+  return cloned;
+}
+
+// The REPEATING-group counterpart to mergeGroupResponseItem above — a repeating group's
+// LhcFormHost.extract() returns MULTIPLE QuestionnaireResponse items sharing one linkId (one per
+// instance the user has in the LForms UI, via its own native "+ Add another"/remove affordance),
+// which mergeGroupResponseItem's single find-replace-or-append can't represent (it would keep only
+// the last one, silently losing every other instance). Replaces the FULL SET of existing instances
+// for groupLinkId with the new set extracted — including replacing N saved instances with 0 if the
+// user removed all of them in this session, a real, allowed case (e.g. no Consent Details set up
+// yet). Same toRaw()/structuredClone()/new-reference discipline as its singular counterpart.
+export function mergeGroupResponseItems(recordData, groupLinkId, groupResponseItems) {
+  const cloned = structuredClone(toRaw(recordData) || { item: [] });
+  cloned.item = (cloned.item || []).filter((item) => item.linkId !== groupLinkId);
+  cloned.item.push(...groupResponseItems);
   return cloned;
 }
 

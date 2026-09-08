@@ -18,18 +18,26 @@ import { AgGridVue } from 'ag-grid-vue3';
 import { themeQuartz } from 'ag-grid-community';
 import GridActionsCell from '../components/grid/GridActionsCell.vue';
 import Cubo from '../components/Cubo.vue';
-import AiEngineSandbox from './AiEngineSandbox.vue';
 import {
   formData, formsLibrary, seedSystemForms, activeVersionNumber, activeQuestionnaire, SYSTEM_FORM_IDS,
   listDataRecords, saveDataRecord, deleteDataRecord, recordSummary,
   getAnswer, getGroupInstances,
   renderBlank, renderWithRecord, extractResponse,
 } from '../data/useSystemForms.js';
+import { flowsLibrary, seedSystemFlows, activePlanDefinition } from '../data/collections/flowsLibrary.js';
+import { rolesForRoom, setRolesForRoom } from '../data/collections/roomSettings.js';
+import { ROOM_DEFINITIONS, roomFlowId } from '../workflow/rooms.js';
 import { useThemeStore } from '../stores/theme.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useCuboStore } from '../stores/cubo.js';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import { API_BASE, apiFetch } from '../config.js';
+
+// The 4 real account roles (migrations/0008_add_account_role.sql — same set entryPlanDefinition.js's
+// own `roles` fields and ROOM_DEFINITIONS' defaultRoles already use) — the checklist a room's Roles
+// editor offers. Kept here, not re-derived from anywhere, since there's no single existing export
+// of "every real role" anywhere else in the codebase to import instead.
+const ACCOUNT_ROLES = ['hospital_admin', 'health_professional', 'admin_and_health_professional'];
 
 const router = useRouter();
 const theme = useThemeStore();
@@ -39,42 +47,93 @@ const cubo = useCuboStore();
 // Consents/Branches/Appointments) read and write the ONE shared Provider record the same way
 // Onboarding.vue's own journeyCards do — see clinux-provider-composition-merge memory note.
 const onboarding = useOnboardingStore();
-// This page hosts Cübo full-time (same choice ConsultationDesk.vue/Checkout.vue/FrontDesk.vue
-// already made), so start expanded rather than the collapsed FAB badge.
-cubo.currentLayout = 'EXPANDED';
+// UPDATE — Cübo is now a floating FAB here instead of an always-EXPANDED left pane (explicit
+// instruction, once Rooms/Design & Compile Room needed the full page width). No currentLayout
+// override at all — same as AiEngine.vue, this relies on the store's own real default ('FAB').
 
-// Merged from the former standalone AiEngine.vue (see clinux-ai-engine-designer-merge-tanstack-
-// table memory note) — one shared Cübo instance now serves both halves of this page; which half
-// its cubo-api-submit emit actually reaches is just a matter of which tab is showing.
+// SPEC-19 (docs/SPEC-19-LOCAL-FIRST-LOCAL-SERVER-AND-FEDERATED-MODES.md) §12's AI Engine +
+// Sandbox redesign: split back out into its own standalone page (src/pages/AiEngine.vue), per
+// explicit instruction — no shared tab/Cübo-instance/ref-forwarding dependency between the two
+// pages anymore, reversing the earlier AI Engine+Designer merge (clinux-ai-engine-designer-merge-
+// tanstack-table memory note). This file is Forms Library only now.
 //
-// This route has no requiresAuth guard (see clinux-authenticated-vs-sandbox-mode memory note) —
-// Sandbox Data is a deliberately isolated demo, safe for anyone to reach, but Forms Library holds
-// the real Provider-composition data, so an unauthenticated visitor only ever lands on/stays on
-// Sandbox Data; there is nothing behind Forms Library for them, so its own tab button is hidden
-// rather than shown-but-disabled.
-const primaryTab = ref(auth.currentUser ? 'formsLibrary' : 'sandbox'); // 'formsLibrary' | 'sandbox'
-// Logging out while on Forms Library (e.g. via another tab) must not leave a signed-out visitor
-// looking at real clinic data — same reasoning a moment ago, just reactive to a session change
-// instead of only checked once at mount.
-watch(() => auth.currentUser, (user) => {
-  if (!user) primaryTab.value = 'sandbox';
-});
-const aiEngineSandboxRef = ref(null);
-function onCuboSubmit(payload) {
-  aiEngineSandboxRef.value?.classifyAndExecute(payload);
-}
+// Forms Library holds the real Provider-composition data, so this route now requires auth (see
+// the router) — Sandbox Data's own "safe for anyone to reach" case moved to /ai-engine with it.
 
-// 'cards' (new default landing — see clinux-settings-page-entity-cards memory note) | 'table'
-// (drilled into one card's records/instances) | 'designer' (the Step 1/2 compile-and-train
-// workflow, reached via a card's context menu instead of always being the landing view).
-const currentView = ref('cards');
-// The card currently drilled into (table/designer view) — null while on the card grid itself.
+// SPEC-22 §5.8's Room-Architect redesign — the landing view is now the 5 Rooms, not raw forms.
+// 'rooms' (new default landing — Provider/Facility/Patient/Encounter/Account, see rooms.js) |
+// 'room' (drilled into one room's own entity cards — what 'cards' used to show ungrouped; see
+// clinux-settings-page-entity-cards memory note for that view's own original design) | 'table'
+// (drilled into one card's records/instances) | 'designer' (a single form/group's own Compile &
+// Preview / Training session, reached via a card's context menu) | 'room-designer' (a ROOM's own
+// Design & Compile Room / Forms Authoring session — a DIFFERENT YAML entirely: the room's
+// workflow-definition plan, not any one form's data-capture composition).
+const currentView = ref('rooms');
+// The card currently drilled into (table/designer view) — null while on a room's card grid itself.
 const activeCard = ref(null);
+// The room currently drilled into ('room'/'room-designer' views) — null while on the rooms grid.
+const activeRoom = ref(null);
 const currentStep = ref(0);
 const steps = [
   { id: 'compile', label: 'Compile & Preview' },
   { id: 'train', label: 'Training the Form' },
 ];
+// The room-designer's own 2-step session — deliberately separate from `steps`/`currentStep` above
+// (a room's workflow-definition YAML and a form's data-capture YAML are different documents, and
+// step 2 here is "Forms Authoring", not keyword training, so sharing state risked one view's
+// leftover data bleeding into the other's rendering).
+const roomStep = ref(0);
+const roomSteps = [
+  { id: 'compile', label: 'Design & Compile Room' },
+  { id: 'forms', label: 'Forms Authoring' },
+];
+
+// ─── Room-Architect: Design & Compile Room / Forms Authoring (SPEC-22 §5.8/§5.11) ───
+// Mirrors yamlInput/blueprintJson's own shape below, deliberately kept separate — a room's
+// workflow-definition YAML compiles into an AUTHORING FORM (a Questionnaire describing
+// PlanDefinition steps), not a data-capture form, and its own compiled preview needs a SEPARATE
+// container id (roomAuthoringFormContainer) so it can't collide with a data-form preview open at
+// the same time.
+const roomYamlInput = ref('');
+const roomBlueprintJson = ref(null); // the compiled AUTHORING FORM (Questionnaire), not the plan itself
+const roomExtractedPlan = ref(null); // the real PlanDefinition, once Extract Plan has run
+const roomExtractedWarnings = ref([]);
+const roomSaveError = ref('');
+const roomFlowExists = computed(() => {
+  flowsLibraryVersion.value;
+  return !!activeRoom.value && flowsLibrary.has(roomFlowId(activeRoom.value));
+});
+// The room's currently-SAVED plan (flowsLibrary's own activeVersion, via activePlanDefinition) —
+// what "Forms Authoring from this Room" walks. Distinct from roomExtractedPlan (a fresh, not-yet-
+// saved Compile & Extract result still sitting in the room-designer's own step 1) on purpose:
+// Forms Authoring should reflect what's actually durable, not an in-progress edit.
+const roomSavedPlanDefinition = computed(() => {
+  flowsLibraryVersion.value;
+  return activeRoom.value ? activePlanDefinition(roomFlowId(activeRoom.value)) : null;
+});
+// For each of the room's real saved actions: which existing card (if any) already renders it —
+// matched on groupLinkId (Provider-style group cards) or formId (standalone forms), scoped to
+// THIS room only. Honest "Not yet linked" when nothing matches, rather than guessing.
+const roomActionLinks = computed(() => {
+  const plan = roomSavedPlanDefinition.value;
+  if (!plan || !activeRoom.value) return [];
+  const cards = cardsForRoom(activeRoom.value.roomId);
+  return (plan.action || []).map((action) => ({
+    action,
+    card: cards.find((c) => c.groupLinkId === action.id || c.formId === action.id) || null,
+  }));
+});
+// Whether activeRoom's saved plan is actually connected to a LIVE Pinia/workflowRuntime store —
+// a real, honest distinction, not a formality: saving a plan for any room updates flowsLibrary (so
+// it survives, and Forms Authoring can read it), but nothing reads a room's flowId into a running
+// actor. UPDATE — this used to list 'facility' (hospitalSetupWorkflow.js read its flowId into a
+// live checklist actor); that store was retired along with the whole in-Cübo Hospital Setup
+// checklist — "for 3 onboarding journeys no plan definition or workflow is required, state
+// machine will be used only for clinical journeys" (explicit instruction). Facility/Provider/
+// Patient are real page routes now with no PlanDefinition involvement at all, by design, not a
+// gap — this stays empty for them. A future Encounter/clinical-journey room is the real candidate
+// to ever populate this again.
+const ROOM_RUNTIME_WIRED = [];
 
 const yamlInput = ref('');
 const blueprintJson = ref(null);
@@ -101,21 +160,24 @@ const currentVersionNumber = ref(null);
 // saveToLibrary()'s very first save, since the library's own version counter otherwise always
 // starts a new formId at v1 — see confirmNewForm()/saveToLibrary().
 const pendingStartVersion = ref(null);
+// Same "capture at New Form time, consume at first-save time" pattern pendingStartVersion already
+// established — roomId lives on the formsLibrary ROW (see newFormDraft's own comment), which only
+// actually gets created in saveToLibrary(), a separate step from confirmNewForm() below.
+const pendingRoomId = ref('');
 const newFormDrawerOpen = ref(false);
 // journey: '' | 'patient' | 'hospital' — see clinux-custom-forms-in-patient-hospital-journeys
 // memory note. Written into the generated YAML template's own journey: line, same field
-// clinuxflow-api's compiler now passes through onto the compiled Questionnaire.
-const newFormDraft = reactive({ formId: 'new-form-v1', title: 'New Form', version: 1, journey: '' });
+// clinuxflow-api's compiler now passes through onto the compiled Questionnaire. roomId (SPEC-22
+// §5.8, new, generalizes the same underlying idea past journey's original 2 values) is stored on
+// the formsLibrary ROW instead (not the YAML/Questionnaire — a room association is an authoring/
+// organizational fact, not clinical data the compiled form itself needs to carry) — see
+// confirmNewForm()'s own save call. Kept alongside journey rather than replacing it: journey
+// already drives real, shipped behavior (journeyFormIds(), Front Desk's Additional Forms step)
+// that a rename would risk breaking; roomId is derived FROM journey below for the 2 values that
+// overlap, so existing custom forms don't need a manual re-tag to gain SOME roomId coverage.
+const newFormDraft = reactive({ formId: 'new-form-v1', title: 'New Form', version: 1, journey: '', roomId: '' });
+const JOURNEY_TO_ROOM = { patient: 'patient', hospital: 'facility' };
 
-// Both drawers are page-level overlays (not scoped inside the Forms Library tab's own v-show
-// block), so leaving one open while switching to Sandbox Data would float over that tab's
-// content too, with its backdrop blocking every click there. Found during live verification of
-// this merge, not anticipated at design time.
-watch(primaryTab, () => {
-  previewDrawerOpen.value = false;
-  newFormDrawerOpen.value = false;
-  providerDrawerOpen.value = false;
-});
 const dataSaveLabel = ref('');
 const toast = ref({ show: false, msg: '' });
 let toastTimer = null;
@@ -130,6 +192,8 @@ function showToast(msg) {
 // uses for its own TanStack DB collections.
 const libraryVersion = ref(0);
 const dataVersion = ref(0);
+// Same idiom, for flowsLibrary/roomSettings — bumped by saveRoomPlan() and the room Roles editor.
+const flowsLibraryVersion = ref(0);
 // ALSO bumped by any formData change from ANY origin, not just this page's own explicit saves --
 // see onboarding.js's identical wiring for the full story (shared-server sync merges happen in
 // the background on their own timer, with nothing else in the app aware unless it subscribes).
@@ -142,6 +206,10 @@ const localExtractedFhirGraph = ref(null);
 onMounted(async () => {
   const changed = await seedSystemForms(API_BASE).catch(() => false);
   if (changed) libraryVersion.value++;
+  // Same seed-once, tolerate-a-missing-backend convention as seedSystemForms above — redundant
+  // with main.js's own app-boot call (that one's fire-and-forget; this await gives THIS page a
+  // real signal, via roomFlowExists, of whether a room's flow has loaded before it renders).
+  await seedSystemFlows(API_BASE).catch(() => false);
 
   const res = await apiFetch(`${API_BASE}/api/workflow/default-blueprint`).then((r) => r.json()).catch(() => ({ success: false }));
   if (res.success) {
@@ -187,6 +255,44 @@ watch(() => theme.isDark, (isDark) => {
   if (aceEditor) aceEditor.setTheme(isDark ? 'ace/theme/tomorrow_night' : 'ace/theme/tomorrow');
 });
 
+// ─── Room-Designer's own Ace Editor instance ───
+// A SECOND, separate ace.edit() instance rather than re-pointing the one above at roomYamlInput —
+// a room's workflow-definition YAML and a form's data-capture YAML are different documents that
+// can legitimately be open in two different browser tabs' worth of navigation state at once
+// (openCardDesigner vs. openRoomDesigner don't clear each other's state); sharing one editor
+// instance risked one view's content flashing into the other's on a fast switch.
+const roomAceYamlEditorEl = ref(null);
+let roomAceEditor = null;
+
+onMounted(() => {
+  roomAceEditor = ace.edit(roomAceYamlEditorEl.value, {
+    mode: 'ace/mode/yaml',
+    theme: theme.isDark ? 'ace/theme/tomorrow_night' : 'ace/theme/tomorrow',
+    fontSize: '13px',
+    tabSize: 2,
+    useSoftTabs: true,
+    useWorker: false,
+    showPrintMargin: false,
+  });
+  roomAceEditor.setValue(roomYamlInput.value || '', -1);
+
+  roomAceEditor.session.on('change', () => {
+    const val = roomAceEditor.getValue();
+    if (val !== roomYamlInput.value) roomYamlInput.value = val;
+  });
+
+  const resizeHandler = () => roomAceEditor.resize();
+  window.addEventListener('resize', resizeHandler);
+  onUnmounted(() => window.removeEventListener('resize', resizeHandler));
+});
+
+watch(roomYamlInput, (val) => {
+  if (roomAceEditor && roomAceEditor.getValue() !== val) roomAceEditor.setValue(val ?? '', -1);
+});
+watch(() => theme.isDark, (isDark) => {
+  if (roomAceEditor) roomAceEditor.setTheme(isDark ? 'ace/theme/tomorrow_night' : 'ace/theme/tomorrow');
+});
+
 // openDrawer:false is used only by the silent on-mount preload below — the card grid is now the
 // landing view (see clinux-settings-page-entity-cards memory note), so auto-opening the preview
 // drawer over it on every load would cover the very thing the user is meant to land on. Every
@@ -223,6 +329,101 @@ function renderBlueprintPreview() {
   if (blueprintJson.value) renderBlank(blueprintJson.value, 'formContainer');
 }
 
+// ─── Room-Designer: Design & Compile Room / Forms Authoring (SPEC-22 §5.8/§5.11) ───
+// Reuses the SAME real /api/workflow/compile endpoint compileWorkflow() above already uses —
+// confirmed resourceType-agnostic before relying on that (Designer.vue's own long-standing
+// design), so a workflow-definition YAML compiles through the identical, unmodified pipeline.
+// What comes back is the room's AUTHORING FORM (a Questionnaire describing PlanDefinition steps),
+// not the plan itself — see hospital-setup-workflow-response.js's own header comment (clinuxflow-api)
+// for why extraction is a separate step from compilation for this kind of YAML specifically.
+async function compileRoomWorkflow() {
+  roomExtractedPlan.value = null;
+  roomExtractedWarnings.value = [];
+  roomSaveError.value = '';
+
+  const res = await apiFetch(`${API_BASE}/api/workflow/compile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ yamlPayload: roomYamlInput.value }),
+  }).then((r) => r.json());
+
+  if (res.success) {
+    roomBlueprintJson.value = res.questionnaireJson;
+    await nextTick();
+    renderBlank(roomBlueprintJson.value, 'roomAuthoringFormContainer');
+  } else {
+    showToast('Compiler Error: ' + res.error);
+  }
+}
+
+// The real missing link, made real: reads the authoring form the user just filled in (LForms,
+// same extractResponse() every data-form save already uses) and sends it to the NEW
+// POST /api/workflow/extract (clinuxflow-api's real ComprehensiveLocalExtractor, wrapped) — the
+// first interactive caller of that extractor; every other caller (hospital-setup-workflow.test.js,
+// build-system-flows.js) only ever ran it build-time/test-time against a hand-built response.
+async function extractRoomPlan() {
+  if (!roomBlueprintJson.value) return;
+  roomSaveError.value = '';
+  const responseJson = extractResponse('roomAuthoringFormContainer');
+  if (!responseJson) {
+    roomSaveError.value = 'Could not read the filled-in form. Please try again.';
+    return;
+  }
+
+  const res = await apiFetch(`${API_BASE}/api/workflow/extract`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questionnaireJson: roomBlueprintJson.value, responseJson }),
+  }).then((r) => r.json());
+
+  if (!res.success) {
+    roomSaveError.value = 'Extraction error: ' + res.error;
+    return;
+  }
+  if (res.warnings && res.warnings.length) {
+    roomExtractedWarnings.value = res.warnings;
+  }
+  const plan = res.resources.find((r) => r.resourceType === 'PlanDefinition');
+  if (!plan) {
+    roomSaveError.value = 'Extraction produced no PlanDefinition — check the filled-in steps.';
+    return;
+  }
+  roomExtractedPlan.value = plan;
+}
+
+// Writes the extracted plan into flowsLibrary (a new version — same versions[] shape
+// tools/build-system-flows.js's own output already uses, so a room saved here and a room seeded
+// from the real backend catalog are indistinguishable to any reader). Real, stated honesty in the
+// toast message: no room's flowId is read by a live runtime store today — see
+// ROOM_RUNTIME_WIRED's own comment for why, and for which room type is the real future candidate.
+function saveRoomPlan() {
+  if (!activeRoom.value || !roomExtractedPlan.value) return;
+  const flowId = roomFlowId(activeRoom.value);
+  const existing = flowsLibrary.get(flowId);
+  const nextVersion = existing ? (existing.versions[existing.versions.length - 1]?.version || 0) + 1 : 1;
+  const versionEntry = {
+    version: nextVersion, status: 'active',
+    yaml: roomYamlInput.value, planDefinition: roomExtractedPlan.value,
+    savedAt: new Date().toISOString(),
+  };
+
+  if (existing) {
+    flowsLibrary.update(flowId, (draft) => {
+      draft.versions.push(versionEntry);
+      draft.activeVersion = nextVersion;
+    });
+  } else {
+    flowsLibrary.insert({ flowId, isSystem: false, archived: false, activeVersion: nextVersion, versions: [versionEntry] });
+  }
+
+  flowsLibraryVersion.value++;
+  const wired = ROOM_RUNTIME_WIRED.includes(activeRoom.value.roomId);
+  showToast(wired
+    ? `${activeRoom.value.title} plan saved — reload to pick it up in the running checklist.`
+    : `${activeRoom.value.title} plan saved. Not wired to a live runtime by design — Facility/Provider/Patient are real pages, not PlanDefinition-driven.`);
+  roomStep.value = 1; // jump to Forms Authoring so the newly-saved steps are immediately visible there
+}
+
 // ─── Forms Library maintenance (add / view / modify / archive — no deletion) ───
 
 function formEntry(formId) {
@@ -257,16 +458,34 @@ function matchesSearch(formId) {
 // yet) and Administrators (a filtered view into Staff by role, not its own FHIR resource — see
 // clinux-provider-composition-merge memory note). Fixed order/set, unlike the dynamic form cards
 // below, since these always exist regardless of what's in the forms library.
+//
+// `roomId` (SPEC-22 §5.8) — Facility and Provider split the OLD single Provider-composition card
+// grid apart, matching real ABDM HFR/HPR separation (user's own decision: "Services/Hours/Consent/
+// Location are all part of the system-provider-composition-v1 yaml definition... only exception is
+// Appointment which should be part of global action list"). Appointment stays tagged 'facility'
+// here regardless — the underlying data YAML doesn't need splitting (a room's actions just
+// reference section ids, they don't own the file), and the global-room relocation itself hasn't
+// been implemented yet (see clinux-spec22-four-foundational-decisions memory note's §5.8 entry) —
+// this reflects the real, currently-running shape, not the still-pending decision.
 const PROVIDER_CARDS = [
-  { id: 'hospital', kind: 'group', groupLinkId: 'section_hospital', mode: 'single', icon: 'fas fa-hospital', color: '#3B82F6', bg: 'rgba(59,130,246,.1)', title: 'Hospital Profile', desc: 'Your clinic profile as a FHIR Organization resource.' },
-  { id: 'staff', kind: 'group', groupLinkId: 'section_staff', mode: 'repeatable', icon: 'fas fa-user-md', color: '#00D4B2', bg: 'rgba(0,212,178,.1)', title: 'Care Team', desc: 'Physicians, nurses and staff as FHIR Practitioner records.' },
-  { id: 'admin', kind: 'group', groupLinkId: 'section_staff', mode: 'repeatable', roleFilter: 'Administrator', icon: 'fas fa-user-shield', color: '#6366F1', bg: 'rgba(99,102,241,.1)', title: 'Administrators', desc: 'Staff members with the Administrator role.' },
-  { id: 'services', kind: 'group', groupLinkId: 'section_services_matrix', mode: 'repeatable', icon: 'fas fa-stethoscope', color: '#8B5CF6', bg: 'rgba(139,92,246,.1)', title: 'Services', desc: 'Services your clinic offers.' },
-  { id: 'hours', kind: 'group', groupLinkId: 'section_hours', mode: 'repeatable', icon: 'fas fa-clock', color: '#F59E0B', bg: 'rgba(245,158,11,.1)', title: 'Office Hours', desc: 'Operating hours, one day-range at a time.' },
-  { id: 'consent', kind: 'group', groupLinkId: 'section_consent', mode: 'repeatable', icon: 'fas fa-file-signature', color: '#EF4444', bg: 'rgba(239,68,68,.1)', title: 'Legal Consents', desc: 'Consent types your clinic collects from patients.' },
-  { id: 'location', kind: 'group', groupLinkId: 'section_location', mode: 'repeatable', icon: 'fas fa-map-marker-alt', color: '#14B8A6', bg: 'rgba(20,184,166,.1)', title: 'Branches', desc: 'Additional clinic locations.' },
-  { id: 'appointment', kind: 'group', groupLinkId: 'section_appointment', mode: 'repeatable', icon: 'fas fa-calendar-alt', color: '#EC4899', bg: 'rgba(236,72,153,.1)', title: 'Appointments', desc: 'Booked appointment records.' },
+  { id: 'hospital', kind: 'group', groupLinkId: 'section_hospital', mode: 'single', roomId: 'facility', icon: 'fas fa-hospital', color: '#3B82F6', bg: 'rgba(59,130,246,.1)', title: 'Hospital Profile', desc: 'Your clinic profile as a FHIR Organization resource.' },
+  { id: 'staff', kind: 'group', groupLinkId: 'section_staff', mode: 'repeatable', roomId: 'provider', icon: 'fas fa-user-md', color: '#00D4B2', bg: 'rgba(0,212,178,.1)', title: 'Care Team', desc: 'Physicians, nurses and staff as FHIR Practitioner records.' },
+  { id: 'admin', kind: 'group', groupLinkId: 'section_staff', mode: 'repeatable', roleFilter: 'Administrator', roomId: 'provider', icon: 'fas fa-user-shield', color: '#6366F1', bg: 'rgba(99,102,241,.1)', title: 'Administrators', desc: 'Staff members with the Administrator role.' },
+  { id: 'services', kind: 'group', groupLinkId: 'section_services_matrix', mode: 'repeatable', roomId: 'facility', icon: 'fas fa-stethoscope', color: '#8B5CF6', bg: 'rgba(139,92,246,.1)', title: 'Services', desc: 'Services your clinic offers.' },
+  { id: 'hours', kind: 'group', groupLinkId: 'section_hours', mode: 'repeatable', roomId: 'facility', icon: 'fas fa-clock', color: '#F59E0B', bg: 'rgba(245,158,11,.1)', title: 'Office Hours', desc: 'Operating hours, one day-range at a time.' },
+  { id: 'consent', kind: 'group', groupLinkId: 'section_consent', mode: 'repeatable', roomId: 'facility', icon: 'fas fa-file-signature', color: '#EF4444', bg: 'rgba(239,68,68,.1)', title: 'Legal Consents', desc: 'Consent types your clinic collects from patients.' },
+  { id: 'location', kind: 'group', groupLinkId: 'section_location', mode: 'repeatable', roomId: 'facility', icon: 'fas fa-map-marker-alt', color: '#14B8A6', bg: 'rgba(20,184,166,.1)', title: 'Branches', desc: 'Additional clinic locations.' },
+  { id: 'appointment', kind: 'group', groupLinkId: 'section_appointment', mode: 'repeatable', roomId: 'facility', icon: 'fas fa-calendar-alt', color: '#EC4899', bg: 'rgba(236,72,153,.1)', title: 'Appointments', desc: 'Booked appointment records.' },
 ];
+
+// System forms aren't tagged with a roomId in their own formsLibrary row (they're seeded verbatim
+// from clinuxflow-api's system-forms-library.json, unmodified) — a small frontend-only lookup,
+// same idiom formIcon() below already uses for a similar per-formId special case, rather than a
+// backend/seed-data change for something purely organizational.
+const SYSTEM_FORM_ROOM_MAP = {
+  'system-patient-profile-v1': 'patient',
+  'system-encounter-composition-v1': 'encounter',
+};
 
 // Every other form in the library — Patient/Encounter (unsplit) plus any custom/user-created
 // forms — gets ONE card apiece, same single formId as the old sidebar row, just reached via a
@@ -282,6 +501,11 @@ function formLibraryCards() {
       icon: formIcon(r.formId), color: '#64748B', bg: 'rgba(100,116,139,.1)',
       title: formTitle(r.formId), desc: r.isSystem ? 'System form' : 'Custom form',
       isSystem: r.isSystem, archived: r.archived, bookmarked: r.bookmarked,
+      // SPEC-22 §5.8 — SYSTEM_FORM_ROOM_MAP for the 2 unsplit system forms; a custom form's own
+      // roomId (set via the '+ New Form' drawer, see newFormDraft/confirmNewForm) for everything
+      // else. Undefined (not shown under any room) for an older custom form saved before this
+      // field existed — real, honest, not backfilled with a guess.
+      roomId: SYSTEM_FORM_ROOM_MAP[r.formId] || r.roomId,
     }))
     .sort((a, b) => {
       if (a.bookmarked !== b.bookmarked) return a.bookmarked ? -1 : 1;
@@ -302,6 +526,16 @@ function allLibraryCards() {
   const q = formSearchQuery.value.trim().toLowerCase();
   const providerCards = q ? PROVIDER_CARDS.filter((c) => c.title.toLowerCase().includes(q)) : PROVIDER_CARDS;
   return [...providerCards, ...formLibraryCards()];
+}
+
+// SPEC-22 §5.8's Room-Architect redesign — every card, scoped to the ONE room currently open.
+// Same "Provider cards first, then dynamic form cards" ordering allLibraryCards() already used,
+// just filtered by roomId first. Real, honest gap surfaced by this filter, not hidden: an older
+// custom form saved before roomId existed has roomId===undefined, so it matches NO room here —
+// still reachable from its own room once re-saved/edited with a roomId, or (not built) a future
+// bulk-tagging pass; not silently guessed at.
+function cardsForRoom(roomId) {
+  return allLibraryCards().filter((c) => c.roomId === roomId);
 }
 
 // Reads a Provider group card's current instances off the ONE shared record — same
@@ -327,6 +561,15 @@ function instanceSummary(instance, index) {
 // formEntry(undefined) every render, not just when actually expanded.
 function versionsReversed(formId) {
   const entry = formEntry(formId);
+  return entry ? [...entry.versions].reverse() : [];
+}
+
+// Same shape/null-safety as versionsReversed above, for a ROOM's own workflow-YAML versions
+// (flowsLibrary, not formsLibrary) — the room-card context menu's "Show Versions" (SPEC-22 §5.12).
+function flowVersionsReversed(room) {
+  flowsLibraryVersion.value;
+  if (!room) return [];
+  const entry = flowsLibrary.get(roomFlowId(room));
   return entry ? [...entry.versions].reverse() : [];
 }
 
@@ -384,8 +627,7 @@ onMounted(() => {
     },
     '$mod+KeyK': (e) => {
       e.preventDefault();
-      const sel = primaryTab.value === 'sandbox' ? '[data-sandbox-search]' : '[data-library-search]';
-      document.querySelector(sel)?.focus();
+      document.querySelector('[data-library-search]')?.focus();
     },
     Escape: () => {
       if (previewDrawerOpen.value) previewDrawerOpen.value = false;
@@ -471,8 +713,102 @@ function openCardDesigner(card) {
 }
 
 function backToCards() {
-  currentView.value = 'cards';
+  // Returns to the currently-open ROOM's own card grid (not all the way back to the Rooms
+  // landing) — table/designer are always reached FROM a room now, so activeRoom is expected to
+  // still be set; falling back to 'rooms' defensively is honest if it somehow isn't, not a normal
+  // path.
+  currentView.value = activeRoom.value ? 'room' : 'rooms';
   activeCard.value = null;
+}
+
+// ─── Rooms: drill-in / back navigation (SPEC-22 §5.8) ───
+
+function openRoom(room) {
+  activeRoom.value = room;
+  currentView.value = 'room';
+}
+
+// ─── Rooms: role gating (SPEC-22 §5.8 — "we also need to design the roles who can be part of the
+// Room so we will be able to load them in the runtime") ───
+// Real, editable, persisted (roomSettings.js) — not the room CARD's own visibility on the Rooms
+// grid (every room stays visible/reachable to the person authoring it here regardless of role
+// gating; role gating is about which SIGNED-IN ACCOUNT ROLE a room is meant for at RUNTIME, e.g.
+// entryPlanDefinition.js's own facility_registration/staff_registration actions — Designer itself
+// is an authoring tool, not the gated surface).
+// Null-safe on `room` — v-show (unlike v-if) still evaluates its subtree's expressions even while
+// hidden (same real bug versionsReversed()'s own comment already documents for a different
+// function), and these are called from template blocks gated on `activeRoom` being truthy, which
+// is only true once the block is actually SHOWN, not before — a template call site with
+// `activeRoom` still null at initial render would otherwise throw reading room.roomId.
+function roomRoles(room) {
+  flowsLibraryVersion.value; // roomSettings shares no version ref of its own yet — piggybacks on this one, bumped by any room-editing action
+  if (!room) return [];
+  return rolesForRoom(room.roomId) || [];
+}
+function isRoleChecked(room, role) {
+  if (!room) return false;
+  const roles = rolesForRoom(room.roomId);
+  return !roles || roles.includes(role); // no roles saved yet = universal = every checkbox reads as checked
+}
+function toggleRoomRole(room, role) {
+  if (!room) return;
+  const current = rolesForRoom(room.roomId);
+  // Universal (null) -> toggling ANY one role off means "everyone except that one", i.e. start
+  // from the full real role set, not from an empty list (unchecking Nurse from "everyone" should
+  // leave the OTHER 2 roles checked, not zero).
+  const base = current || [...ACCOUNT_ROLES];
+  const next = base.includes(role) ? base.filter((r) => r !== role) : [...base, role];
+  setRolesForRoom(room.roomId, next);
+  flowsLibraryVersion.value++;
+}
+
+function backToRooms() {
+  currentView.value = 'rooms';
+  activeRoom.value = null;
+}
+
+// Opens a room's OWN Design & Compile Room / Forms Authoring session — a different YAML entirely
+// from a form/group's own data-capture composition (openCardDesigner above). Loads the room's
+// currently-saved plan (flowsLibrary, via roomFlowId) into the room-designer's own Ace editor if
+// one exists yet; otherwise seeds a blank workflow-definition scaffold, same "new form" spirit
+// buildBlankFormTemplate() already uses for data forms. `version`, when given (the room-card
+// context menu's "Load" — see flowVersionsReversed's own template usage), opens that SPECIFIC
+// saved version rather than whichever one is currently active — same distinction
+// loadVersionIntoEditor/setActiveVersion already draw for forms.
+function openRoomDesigner(room, version = null) {
+  activeRoom.value = room;
+  currentView.value = 'room-designer';
+  roomStep.value = 0;
+  roomExtractedPlan.value = null;
+  roomExtractedWarnings.value = [];
+  roomSaveError.value = '';
+
+  const flowId = roomFlowId(room);
+  const entry = flowsLibrary.get(flowId);
+  if (entry) {
+    const targetVersion = version ?? (entry.activeVersion || entry.versions[entry.versions.length - 1]?.version);
+    const v = entry.versions.find((x) => x.version === targetVersion);
+    roomYamlInput.value = v?.yaml || '';
+    roomBlueprintJson.value = null; // real compiled preview only appears after Compile is clicked again — the saved plan itself isn't the authoring-form Questionnaire
+  } else {
+    roomYamlInput.value = buildBlankRoomTemplate(flowId, room.title);
+    roomBlueprintJson.value = null;
+  }
+  nextTick(() => { if (roomAceEditor) roomAceEditor.setValue(roomYamlInput.value || '', -1); });
+}
+
+// Room-card context menu's "Set Active" (SPEC-22 §5.12) — mirrors setActiveVersion's own real
+// effect (which version's YAML/plan a room's "Design & Compile Room" opens to by default), for
+// flowsLibrary instead of formsLibrary.
+function setActiveRoomVersion(room, version) {
+  const flowId = roomFlowId(room);
+  if (!flowsLibrary.has(flowId)) return;
+  flowsLibrary.update(flowId, (draft) => { draft.activeVersion = version; });
+  flowsLibraryVersion.value++;
+}
+
+function backToRoom() {
+  currentView.value = 'room';
 }
 
 // ─── Provider Entity Drawer — whole-document add/view/edit for the 8 Provider cards ───
@@ -524,7 +860,10 @@ function setActiveVersion(formId, version) {
 // Add: opens the '+ New Form' slide-over to capture formId/title/starting version before
 // dropping a minimal valid scaffold into the editor — see confirmNewForm().
 function startNewForm() {
-  Object.assign(newFormDraft, { formId: 'new-form-v1', title: 'New Form', version: 1, journey: '' });
+  // Defaults to the room currently open, if any — "New Form" is only ever reached from within a
+  // room's own card grid now (see the room-view template), so the new form is almost always meant
+  // for THAT room; still overridable in the drawer itself.
+  Object.assign(newFormDraft, { formId: 'new-form-v1', title: 'New Form', version: 1, journey: '', roomId: activeRoom.value?.roomId || '' });
   previewDrawerOpen.value = false; // avoid stacking two drawer-backdrops at once
   newFormDrawerOpen.value = true;
 }
@@ -545,6 +884,74 @@ ${journey ? `journey: ${journey}\n` : ''}composition:
 `;
 }
 
+// The real workflow-definition authoring-form schema — same `section_workflow_plan` +
+// `section_workflow_action` (repeatable, with nested repeatable Depends On/Condition groups)
+// hospital-setup-workflow-v1.yaml's own real, tested composition uses (see
+// clinuxflow-api/src/lib/hospital-setup-workflow.test.js). A genuinely working scaffold, not a
+// stub — the SAME schema every real system-flow YAML in this app already compiles through.
+function buildBlankRoomTemplate(flowId, title) {
+  const safeTitle = String(title).replace(/"/g, '\\"');
+  return `formId: ${flowId}
+title: "${safeTitle} — System Flow"
+composition:
+  - resourceType: PlanDefinition
+    id: section_workflow_plan
+    label: "${safeTitle} Workflow"
+    fields:
+      - id: "plan_title"
+        path: "PlanDefinition.title"
+        label: "Workflow Title"
+        uiComponent: "TextInput"
+        required: true
+      - id: "plan_status"
+        path: "PlanDefinition.status"
+        label: "Status"
+        uiComponent: "Dropdown"
+        choices: ["draft", "active", "retired"]
+        required: true
+      - id: "plan_type"
+        path: "PlanDefinition.type"
+        label: "Type"
+        uiComponent: "Dropdown"
+        choices: ["workflow-definition", "order-set", "clinical-protocol"]
+        required: true
+
+  - resourceType: PlanDefinition
+    id: section_workflow_action
+    label: "Steps"
+    repeats: true
+    fields:
+      - id: "action_id"
+        path: "PlanDefinition.action.id"
+        label: "Step ID"
+        uiComponent: "TextInput"
+        required: true
+        description: "Set equal to the real section/group id it renders, if any — the binding between this sequence and the actual captured fields."
+      - id: "action_title"
+        path: "PlanDefinition.action.title"
+        label: "Step Name"
+        uiComponent: "TextInput"
+        required: true
+      - id: "action_related"
+        path: "PlanDefinition.action.relatedAction"
+        label: "Depends On"
+        type: "group"
+        repeats: true
+        fields:
+          - id: "relation_target_action_id"
+            path: "PlanDefinition.action.relatedAction.actionId"
+            label: "Depends On Step"
+            uiComponent: "TextInput"
+            required: true
+          - id: "relation_relationship"
+            path: "PlanDefinition.action.relatedAction.relationship"
+            label: "Relationship"
+            uiComponent: "Dropdown"
+            choices: ["before-start", "before", "before-end", "concurrent-with-start", "concurrent", "concurrent-with-end", "after-start", "after", "after-end"]
+            required: true
+`;
+}
+
 function confirmNewForm() {
   const formId = (newFormDraft.formId || '').trim();
   const title = (newFormDraft.title || '').trim();
@@ -555,6 +962,10 @@ function confirmNewForm() {
   }
   yamlInput.value = buildBlankFormTemplate(formId, title, newFormDraft.journey);
   pendingStartVersion.value = version;
+  // roomId wins if explicitly chosen; otherwise derive one from journey where the two overlap
+  // (JOURNEY_TO_ROOM), so a form tagged the old way still gets SOME room association — real,
+  // not a guess: 'hospital' genuinely means Facility, 'patient' genuinely means Patient.
+  pendingRoomId.value = newFormDraft.roomId || JOURNEY_TO_ROOM[newFormDraft.journey] || '';
   currentVersionNumber.value = null;
   currentStep.value = 0;
   currentView.value = 'designer';
@@ -810,7 +1221,8 @@ async function saveToLibrary(status = 'draft') {
 
   // Always save locally first, in the browser — this is the default, always-on library.
   if (!entry) {
-    formsLibrary.insert({ formId, isSystem: false, archived: false, bookmarked: false, activeVersion: nextVersion, versions: [versionRow] });
+    formsLibrary.insert({ formId, isSystem: false, archived: false, bookmarked: false, activeVersion: nextVersion, versions: [versionRow], roomId: pendingRoomId.value || undefined });
+    pendingRoomId.value = '';
   } else {
     formsLibrary.update(formId, (draft) => {
       draft.versions.push(versionRow);
@@ -934,6 +1346,12 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
       <label class="cf-label" style="display:block;margin-bottom:.3rem">Starting Version #</label>
       <input type="number" min="1" step="1" v-model.number="newFormDraft.version" class="cf-input" style="width:100%;margin-bottom:1.1rem" />
 
+      <label class="cf-label" style="display:block;margin-bottom:.3rem">Room</label>
+      <select v-model="newFormDraft.roomId" class="cf-input" style="width:100%;margin-bottom:1.1rem">
+        <option value="">None — not shown in any room's own card grid</option>
+        <option v-for="room in ROOM_DEFINITIONS" :key="room.roomId" :value="room.roomId">{{ room.title }}</option>
+      </select>
+
       <label class="cf-label" style="display:block;margin-bottom:.3rem">Journey (optional)</label>
       <select v-model="newFormDraft.journey" class="cf-input" style="width:100%">
         <option value="">None — only reachable from Designer's own Data Explorer</option>
@@ -974,48 +1392,115 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
     </div>
   </div>
 
+  <!-- Cübo as a floating FAB (not the old fixed 380px left pane, per explicit instruction) — the
+       Room Architect's own content (Rooms grid, a room's entities, Design & Compile Room) now
+       gets the full page width; Cübo is one click away rather than always eating a third of the
+       screen. Deliberately NOT wrapped in a `.cubo-inline-host` container — that class exists
+       specifically to force Cübo into a confined, non-floating box (see style.css's own
+       `.cubo-inline-host .cubo-wrapper` override), which is exactly the opposite of what FAB mode
+       needs here. No currentLayout override at all — same as AiEngine.vue, this just uses the
+       store's own real default ('FAB'). -->
+  <Cubo category="ai-engine" page-context="ClinüxFlow Room Architect — Rooms, form design, and library." />
+
   <div class="flex-1 flex overflow-hidden">
-    <!-- LEFT: Cübo, same confined-pane pattern as Front Desk/Consultation Desk/Checkout. One
-         shared instance now serves both tabs — onCuboSubmit() forwards to whichever one is
-         showing (only Sandbox Data actually consumes it; Forms Library ignores the emit). -->
-    <div class="w-[380px] shrink-0 flex flex-col border-r" style="border-color:var(--cf-border)">
-      <div class="cubo-inline-host flex-1" style="min-height:420px">
-        <Cubo category="ai-engine" page-context="ClinüxFlow Room Architect — form design/library on the Forms Library tab, natural-language sandbox patient/staff/encounter management on Sandbox Data." @cubo-api-submit="onCuboSubmit" />
+    <!-- Forms Library content — this route now requires auth (see the router), so no
+         "sandbox mode / sign in" fallback branch is needed here any more. -->
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
+      <div style="display:flex;gap:.5rem;padding:1rem 1.5rem 0;flex-shrink:0;position:relative;z-index:110">
+        <span class="btn-outline btn-teal" style="font-size:.78rem;cursor:default">
+          <i class="fas fa-pen-ruler" style="margin-right:.4rem"></i>Forms Library
+        </span>
+      </div>
+
+  <main style="flex:1;overflow:hidden;display:flex;justify-content:center">
+  <div style="max-width:1500px;width:100%;overflow-y:auto;padding:1.5rem">
+
+    <!-- ── Rooms grid (default landing, SPEC-22 §5.8) — Provider/Facility/Patient/Encounter/
+         Account, the top-level entities the Room Architect actually lists now. ── -->
+    <div v-show="currentView === 'rooms'">
+      <div style="margin-bottom:1.25rem">
+        <span class="cf-label" style="margin-bottom:.2rem;display:block">Rooms</span>
+        <p style="font-size:.8rem;color:var(--cf-text)">Every real workspace ClinüxFlow manages. Open a room to view its entities, design its workflow, or edit which account roles it applies to.</p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1rem">
+        <div v-for="room in ROOM_DEFINITIONS" :key="room.roomId" style="position:relative">
+        <button class="entry-card" @click="openRoom(room)">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:.5rem">
+            <div style="width:40px;height:40px;border-radius:.625rem;display:flex;align-items:center;justify-content:center;margin-bottom:.75rem" :style="`background:${room.bg}`">
+              <i :class="room.icon" :style="`color:${room.color};font-size:1rem`"></i>
+            </div>
+            <button class="icon-btn" style="margin-top:.1rem" @click.stop="toggleMenu(room.roomId)"><i class="fas fa-ellipsis-vertical"></i></button>
+          </div>
+          <p style="font-weight:700;font-size:.9rem;color:var(--cf-text-strong);font-family:'Poppins',sans-serif;margin-bottom:.3rem">{{ room.title }}</p>
+          <p style="font-size:.75rem;color:var(--cf-text);line-height:1.45;margin-bottom:.5rem">{{ room.desc }}</p>
+          <div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap">
+            <span class="badge" :class="cardsForRoom(room.roomId).length ? 'badge-teal' : 'badge-muted'">{{ cardsForRoom(room.roomId).length }} card{{ cardsForRoom(room.roomId).length === 1 ? '' : 's' }}</span>
+            <span class="badge" :class="roomFlowId(room) && flowsLibrary.has(roomFlowId(room)) ? 'badge-teal' : 'badge-muted'">{{ flowsLibrary.has(roomFlowId(room)) ? 'Plan designed' : 'No plan yet' }}</span>
+            <span class="badge badge-muted" v-show="!roomRoles(room).length">All roles</span>
+            <span class="badge badge-muted" v-show="roomRoles(room).length" v-for="r in roomRoles(room)" :key="r">{{ r.replace(/_/g, ' ') }}</span>
+          </div>
+        </button>
+        <!-- Same context-menu pattern the form cards use (SPEC-22 §5.12: "the rooms card should
+             be the same like forms card with designer/yaml view and show versions menu"). -->
+        <div class="context-menu" v-show="openMenuFormId === room.roomId" style="right:.5rem;top:2.6rem">
+          <button class="context-menu-item" @click="openRoomDesigner(room); closeMenu()"><i class="fas fa-pen-ruler"></i>Designer / YAML View</button>
+          <button class="context-menu-item" @click="toggleExpand(roomFlowId(room)); closeMenu()"><i class="fas fa-clock-rotate-left"></i>Show Versions</button>
+        </div>
+        <div v-show="libraryExpanded[roomFlowId(room)] && flowsLibrary.has(roomFlowId(room))" class="cf-card" style="margin-top:.4rem;padding:.6rem .75rem;border-radius:.6rem">
+          <div v-for="v in flowVersionsReversed(room)" :key="v.version" class="version-row">
+            <span>
+              <strong>v{{ v.version }}</strong>
+              <span class="badge" :class="v.status === 'active' ? 'badge-teal' : 'badge-muted'" style="font-size:.55rem;padding:.05rem .4rem;margin-left:.25rem">{{ (v.status || 'draft').toUpperCase() }}</span>
+              <span class="badge badge-teal" style="font-size:.55rem;padding:.05rem .4rem;margin-left:.25rem" v-show="v.version === flowsLibrary.get(roomFlowId(room))?.activeVersion">ACTIVE</span>
+              <span style="color:var(--cf-text)">{{ ' · ' + new Date(v.savedAt).toLocaleDateString() }}</span>
+            </span>
+            <div style="display:flex;gap:.3rem;flex-shrink:0">
+              <button class="btn-ghost" style="font-size:.62rem;padding:.2rem .45rem" @click="openRoomDesigner(room, v.version)">Load</button>
+              <button class="btn-outline" style="font-size:.62rem;padding:.2rem .45rem" v-show="v.version !== flowsLibrary.get(roomFlowId(room))?.activeVersion" @click="setActiveRoomVersion(room, v.version)">Set Active</button>
+            </div>
+          </div>
+        </div>
+        </div>
       </div>
     </div>
 
-    <!-- RIGHT: primary tabs + content -->
-    <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
-      <!-- z-index above .drawer-backdrop's 100 — otherwise a click here while either drawer is
-           open lands on the fixed, full-viewport backdrop instead (it would just close the
-           drawer rather than switch tabs) since these buttons sit at z-index:auto by default.
-           Found during live verification of this merge, not anticipated at design time. -->
-      <div style="display:flex;gap:.5rem;padding:1rem 1.5rem 0;flex-shrink:0;position:relative;z-index:110">
-        <button v-show="auth.currentUser" class="btn-outline" :class="primaryTab === 'formsLibrary' ? 'btn-teal' : ''" @click="primaryTab = 'formsLibrary'" style="font-size:.78rem">
-          <i class="fas fa-pen-ruler" style="margin-right:.4rem"></i>Forms Library
-        </button>
-        <span v-show="!auth.currentUser" style="font-size:.75rem;color:var(--cf-text);align-self:center;padding:0 .25rem">
-          <i class="fas fa-flask" style="margin-right:.35rem;color:var(--color-primary)"></i>Sandbox mode — <button class="btn-ghost" style="padding:0;font-size:.75rem;text-decoration:underline;display:inline" @click="router.push('/')">sign in</button> for your clinic's real data.
-        </span>
-        <button class="btn-outline" :class="primaryTab === 'sandbox' ? 'btn-teal' : ''" @click="primaryTab = 'sandbox'" style="font-size:.78rem">
-          <i class="fas fa-flask" style="margin-right:.4rem"></i>Sandbox Data
+    <!-- ── Room view (drilled into one room) — one card per entity that room owns, plus a real
+         Roles editor and the entry point into that room's own Design & Compile Room session. ── -->
+    <div v-show="currentView === 'room' && activeRoom">
+      <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.75rem">
+        <button class="btn-ghost" @click="backToRooms()" style="font-size:.78rem;display:flex;align-items:center;gap:.35rem"><i class="fas fa-arrow-left"></i>Rooms</button>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1rem">
+        <div style="display:flex;align-items:center;gap:.6rem">
+          <div style="width:36px;height:36px;border-radius:.625rem;display:flex;align-items:center;justify-content:center" :style="`background:${activeRoom?.bg}`">
+            <i :class="activeRoom?.icon" :style="`color:${activeRoom?.color};font-size:.9rem`"></i>
+          </div>
+          <div>
+            <span class="cf-label" style="display:block">{{ activeRoom?.title }}</span>
+            <p style="font-size:.78rem;color:var(--cf-text)">{{ activeRoom?.desc }}</p>
+          </div>
+        </div>
+        <button class="btn-teal" @click="openRoomDesigner(activeRoom)" style="padding:.5rem 1rem;font-size:.78rem;display:flex;align-items:center;gap:.4rem;white-space:nowrap">
+          <i class="fas fa-diagram-project"></i>Design &amp; Compile Room
         </button>
       </div>
 
-      <div v-show="primaryTab === 'sandbox'" style="flex:1;overflow:hidden;padding:1rem 1.5rem">
-        <AiEngineSandbox ref="aiEngineSandboxRef" />
+      <!-- Roles editor — SPEC-22 §5.8's "we also need to design the roles who can be part of the
+           Room" — real, persisted (roomSettings.js), not decorative. -->
+      <div class="cf-card" style="padding:.75rem 1rem;border-radius:.6rem;margin-bottom:1.25rem">
+        <span class="cf-label" style="display:block;margin-bottom:.4rem">Who can use this room</span>
+        <div style="display:flex;flex-wrap:wrap;gap:1rem">
+          <label v-for="role in ACCOUNT_ROLES" :key="role" style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--cf-text);cursor:pointer">
+            <input type="checkbox" :checked="isRoleChecked(activeRoom, role)" @change="toggleRoomRole(activeRoom, role)" />{{ role.replace(/_/g, ' ') }}
+          </label>
+        </div>
+        <p style="font-size:.7rem;color:var(--cf-text);margin-top:.4rem" v-show="!roomRoles(activeRoom).length">All roles checked — this room is universal (no gating).</p>
       </div>
 
-  <main v-show="primaryTab === 'formsLibrary'" style="flex:1;overflow:hidden;display:flex;justify-content:center">
-  <div style="max-width:1500px;width:100%;overflow-y:auto;padding:1.5rem">
-
-    <!-- ── Card grid (default landing) — one card per Provider entity plus one per Patient/
-         Encounter/custom form. See clinux-settings-page-entity-cards memory note. ── -->
-    <div v-show="currentView === 'cards'">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.75rem;margin-bottom:1.25rem">
         <div>
-          <span class="cf-label" style="margin-bottom:.2rem;display:block">Forms Library</span>
-          <p style="font-size:.8rem;color:var(--cf-text)">Every entity your clinic manages, plus every custom form you've designed. Click a card to view its records; use the menu for the Designer/YAML view.</p>
+          <span class="cf-label" style="margin-bottom:.2rem;display:block">Entities</span>
+          <p style="font-size:.8rem;color:var(--cf-text)">Click a card to view its records; use the menu for the Designer/YAML view.</p>
         </div>
         <div style="display:flex;align-items:center;gap:.5rem;flex-shrink:0">
           <label style="display:flex;align-items:center;gap:.35rem;font-size:.75rem;color:var(--cf-text);cursor:pointer"><input type="checkbox" v-model="libraryShowArchived" />Show Archived</label>
@@ -1030,7 +1515,7 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
       </div>
 
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:.9rem">
-        <div v-for="card in allLibraryCards()" :key="card.id" style="position:relative">
+        <div v-for="card in cardsForRoom(activeRoom?.roomId)" :key="card.id" style="position:relative">
           <button class="entry-card" @click="openCard(card)">
             <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:.5rem">
               <div style="width:36px;height:36px;border-radius:.625rem;display:flex;align-items:center;justify-content:center;margin-bottom:.75rem" :style="`background:${card.bg}`">
@@ -1090,9 +1575,9 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
     </div>
 
     <!-- ── Table view / Designer view (drilled into one card) ── -->
-    <div v-show="currentView !== 'cards'">
+    <div v-show="currentView === 'table' || currentView === 'designer'">
     <button class="btn-outline" @click="backToCards()" style="font-size:.75rem;padding:.4rem 1rem;margin-bottom:1.25rem;display:flex;align-items:center;gap:.4rem">
-      <i class="fas fa-arrow-left"></i>Back to Forms Library
+      <i class="fas fa-arrow-left"></i>Back to {{ activeRoom ? activeRoom?.title : 'Rooms' }}
     </button>
 
     <div v-show="currentView === 'designer'">
@@ -1308,6 +1793,84 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
     </div>
 
     </div>
+
+    <!-- ── Room-Designer: Design & Compile Room / Forms Authoring (SPEC-22 §5.8/§5.11) — a
+         DIFFERENT YAML/session entirely from the form-designer above: this compiles/extracts the
+         ROOM's own workflow-definition plan, not any one entity's data-capture composition. ── -->
+    <div v-show="currentView === 'room-designer' && activeRoom">
+      <button class="btn-outline" @click="backToRoom()" style="font-size:.75rem;padding:.4rem 1rem;margin-bottom:1.25rem;display:flex;align-items:center;gap:.4rem">
+        <i class="fas fa-arrow-left"></i>Back to {{ activeRoom?.title }}
+      </button>
+
+      <!-- ── Step Progress Bar (room-designer's own — see roomSteps/roomStep) ── -->
+      <div style="display:flex;align-items:center;justify-content:center;gap:1.25rem;margin-bottom:2rem">
+        <button class="step-nav-btn" @click="roomStep = Math.max(0, roomStep - 1)" :disabled="roomStep === 0" title="Previous step"><i class="fas fa-chevron-left"></i></button>
+        <template v-for="(s, i) in roomSteps" :key="s.id">
+          <div style="display:flex;align-items:center;gap:.5rem;cursor:pointer" @click="roomStep = i">
+            <div class="step-dot" :class="i === roomStep ? 'active' : (i < roomStep ? 'done' : 'pending')">{{ i + 1 }}</div>
+            <span style="font-size:.8rem;font-weight:700;color:var(--cf-text-strong)">{{ s.label }}</span>
+          </div>
+          <div v-if="i < roomSteps.length - 1" class="step-connector" :class="i < roomStep ? 'done' : ''"></div>
+        </template>
+        <button class="step-nav-btn" @click="roomStep = Math.min(roomSteps.length - 1, roomStep + 1)" :disabled="roomStep === roomSteps.length - 1" title="Next step"><i class="fas fa-chevron-right"></i></button>
+      </div>
+
+      <!-- ── Step 1: Design & Compile Room ── -->
+      <div v-show="roomStep === 0" class="step-panel">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+          <div>
+            <span class="cf-label" style="display:block">{{ activeRoom?.title }} — Workflow YAML</span>
+            <p style="font-size:.75rem;color:var(--cf-text)" v-show="!roomFlowExists">No plan authored yet for this room — starting from a blank scaffold.</p>
+            <p style="font-size:.75rem;color:var(--cf-text)" v-show="roomFlowExists && !ROOM_RUNTIME_WIRED.includes(activeRoom?.roomId)">Saved plans here aren't wired to a live runtime — Facility/Provider/Patient are real pages by design, not PlanDefinition-driven.</p>
+          </div>
+          <button class="btn-teal" @click="compileRoomWorkflow()" style="padding:.5rem 1rem;font-size:.78rem;display:flex;align-items:center;gap:.4rem"><i class="fas fa-hammer"></i>Compile</button>
+        </div>
+        <div ref="roomAceYamlEditorEl" style="height:380px;border-radius:.6rem;overflow:hidden;border:1px solid var(--cf-border)"></div>
+
+        <template v-if="roomBlueprintJson">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin:1.25rem 0 .5rem">
+            <span class="cf-label">Fill in the compiled steps form, then extract the real plan</span>
+            <button class="btn-outline" @click="extractRoomPlan()" style="padding:.45rem .9rem;font-size:.76rem;display:flex;align-items:center;gap:.4rem"><i class="fas fa-wand-magic-sparkles"></i>Extract Plan</button>
+          </div>
+          <div class="cf-card" style="padding:.75rem;border-radius:.6rem"><div id="roomAuthoringFormContainer"></div></div>
+        </template>
+
+        <p style="font-size:.75rem;color:#EF4444;margin-top:.6rem" v-show="roomSaveError">{{ roomSaveError }}</p>
+        <p style="font-size:.72rem;color:#F59E0B;margin-top:.4rem" v-show="roomExtractedWarnings.length">Extraction warnings: {{ roomExtractedWarnings.join('; ') }}</p>
+
+        <template v-if="roomExtractedPlan">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin:1.25rem 0 .5rem">
+            <span class="cf-label">Extracted plan — {{ roomExtractedPlan.action?.length || 0 }} action{{ roomExtractedPlan.action?.length === 1 ? '' : 's' }}</span>
+            <button class="btn-teal" @click="saveRoomPlan()" style="padding:.5rem 1rem;font-size:.78rem;display:flex;align-items:center;gap:.4rem"><i class="fas fa-save"></i>Save Room Plan</button>
+          </div>
+          <div class="cf-card" style="padding:.6rem .75rem;border-radius:.6rem">
+            <div v-for="a in roomExtractedPlan.action" :key="a.id" class="version-row">
+              <span><strong>{{ a.title }}</strong> <span style="color:var(--cf-text)">({{ a.id }})</span></span>
+              <span style="font-size:.68rem;color:var(--cf-text)" v-show="a.relatedAction?.length">after {{ a.relatedAction.map((r) => r.actionId).join(', ') }}</span>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ── Step 2: Forms Authoring from this Room — replaces "Training the Form" for a room's
+           own session; for each real saved action, which entity card (if any) already renders
+           it. ── -->
+      <div v-show="roomStep === 1" class="step-panel">
+        <span class="cf-label" style="display:block;margin-bottom:.4rem">Forms Authoring — {{ activeRoom?.title }}</span>
+        <p style="font-size:.78rem;color:var(--cf-text);margin-bottom:1rem" v-show="!roomSavedPlanDefinition">No saved plan for this room yet — compile and save one in Design &amp; Compile Room first.</p>
+        <div v-show="roomSavedPlanDefinition" class="cf-card" style="padding:.6rem .75rem;border-radius:.6rem">
+          <div v-for="entry in roomActionLinks" :key="entry.action.id" class="version-row">
+            <span>
+              <strong>{{ entry.action.title }}</strong>
+              <span style="color:var(--cf-text)"> ({{ entry.action.id }})</span>
+            </span>
+            <span v-if="entry.card" class="badge badge-teal" style="cursor:pointer" @click="openCard(entry.card)">Linked → {{ entry.card.title }}</span>
+            <span v-else class="badge badge-muted">Not yet linked</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
   </main>
     </div>

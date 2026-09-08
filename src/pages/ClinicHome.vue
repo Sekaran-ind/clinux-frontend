@@ -9,6 +9,7 @@ import { useRouter } from 'vue-router';
 import { useLiveQuery } from '@tanstack/vue-db';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useEntryWorkflowStore } from '../stores/entryWorkflow.js';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useThemeStore } from '../stores/theme.js';
 import { publicAppointments } from '../data/collections/publicAppointments.js';
@@ -29,6 +30,13 @@ const teamChatOpen = ref(false);
 
 const onboarding = useOnboardingStore();
 const auth = useAuthStore();
+// SPEC-22 §5.8 — logout is now a real, tracked entryWorkflow action (the fifth "room"), not a
+// bare store call — same runtime instance Cübo's own Next Action tab drives, so a sign-out from
+// either place produces the identical audit-logged transition and Cübo thread reset (§5.9).
+const entryWorkflow = useEntryWorkflowStore();
+function signOut() {
+  entryWorkflow.logout();
+}
 const clinical = useClinicalStore();
 const theme = useThemeStore();
 const router = useRouter();
@@ -339,13 +347,13 @@ function sendMessage() {
               <button class="user-menu-item" @click="openClinicView('front-desk'); userMenuOpen = false"><i class="fas fa-user-clock" style="color:var(--brand)"></i>Front Desk</button>
               <button class="user-menu-item" @click="teamModalOpen = true; userMenuOpen = false"><i class="fas fa-users" style="color:var(--brand)"></i>Team</button>
               <button v-show="onboarding.providerRecordId" class="user-menu-item" @click="shareProfileModalOpen = true; userMenuOpen = false"><i class="fas fa-share-nodes" style="color:var(--brand)"></i>Share Clinic Profile</button>
-              <RouterLink v-if="showsHfrJourney" to="/hospital-onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-hospital" style="color:var(--brand)"></i>Register Your Facility (HFR)</RouterLink>
+              <RouterLink v-if="showsHfrJourney" to="/onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-hospital" style="color:var(--brand)"></i>Register Your Facility (HFR)</RouterLink>
               <RouterLink v-if="showsHprJourney" to="/staff-onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-user-md" style="color:var(--brand)"></i>Register Yourself (HPR)</RouterLink>
               <RouterLink to="/onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-pen" style="color:var(--brand)"></i>Edit Profile</RouterLink>
               <RouterLink to="/designer" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-cog" style="color:var(--brand)"></i>Settings</RouterLink>
               <RouterLink to="/ai-engine" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-brain" style="color:var(--brand)"></i>AI Engine</RouterLink>
             </template>
-            <button class="user-menu-item" style="color:#EF4444" @click="auth.logout(); userMenuOpen = false"><i class="fas fa-sign-out-alt"></i>Sign Out</button>
+            <button class="user-menu-item" style="color:#EF4444" @click="signOut(); userMenuOpen = false"><i class="fas fa-sign-out-alt"></i>Sign Out</button>
           </div>
         </div>
         <RouterLink to="/" class="btn btn-outline btn-xs"><i class="fas fa-home"></i></RouterLink>
@@ -372,7 +380,7 @@ function sendMessage() {
           facility details are saved.
         </p>
         <div style="display:flex;flex-wrap:wrap;gap:.875rem;justify-content:center">
-          <RouterLink v-if="showsHfrJourney" to="/hospital-onboarding" class="btn btn-brand" style="font-size:1rem;padding:.875rem 2rem"><i class="fas fa-hospital"></i>Register Your Facility (HFR)</RouterLink>
+          <RouterLink v-if="showsHfrJourney" to="/onboarding" class="btn btn-brand" style="font-size:1rem;padding:.875rem 2rem"><i class="fas fa-hospital"></i>Register Your Facility (HFR)</RouterLink>
           <RouterLink v-if="showsHprJourney" to="/staff-onboarding" class="btn btn-outline" style="font-size:.95rem;padding:.875rem 1.75rem"><i class="fas fa-user-md"></i>Register Yourself (HPR)</RouterLink>
         </div>
       </div>

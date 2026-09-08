@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getAnswer, getAnswers, recordSummary, getGroupInstances, withGroupFields, patchGroupInstanceField, appendGroupInstance, saveDataRecord, formData } from './formData.js';
+import { getAnswer, getAnswers, recordSummary, getGroupInstances, withGroupFields, mergeGroupResponseItem, mergeGroupResponseItems, sliceRecordGroup, patchGroupInstanceField, appendGroupInstance, appendGroupResponseItem, saveDataRecord, formData } from './formData.js';
 
 // getAnswer/getAnswers/recordSummary are pure functions over a FHIR QuestionnaireResponse-shaped
 // record ({ data: { item: [...] } }) — tested directly with plain fixtures, no TanStack DB/
@@ -149,6 +149,132 @@ describe('withGroupFields', () => {
     });
 });
 
+describe('sliceRecordGroup', () => {
+    // Real bug found live (LForms threw "Cannot read properties of null (reading 'dataType')"
+    // rendering a step 2+ group with the FULL multi-group record) — see this function's own
+    // comment for the reproduction. These tests are the regression case.
+    it('narrows the record down to just the requested group, dropping every other group', () => {
+        const rec = record([
+            { linkId: 'section_hospital', item: [{ linkId: 'hospital_name', answer: [{ valueString: 'Malar' }] }] },
+            { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'Dr. Kumar' }] }] },
+        ]);
+        const sliced = sliceRecordGroup(rec, 'section_hospital');
+        expect(sliced.data.item).toHaveLength(1);
+        expect(sliced.data.item[0].linkId).toBe('section_hospital');
+    });
+
+    it('returns an empty-item record (not null) when the group has no saved data yet — a blank step, not a crash', () => {
+        const rec = record([{ linkId: 'section_hospital', item: [] }]);
+        const sliced = sliceRecordGroup(rec, 'section_hospital_abdm_facility_type');
+        expect(sliced.data.item).toEqual([]);
+    });
+
+    it('returns null for a null record, and does not mutate the original', () => {
+        expect(sliceRecordGroup(null, 'section_hospital')).toBeNull();
+        const rec = record([{ linkId: 'section_hospital', item: [] }, { linkId: 'section_staff', item: [] }]);
+        sliceRecordGroup(rec, 'section_hospital');
+        expect(rec.data.item).toHaveLength(2); // original untouched
+    });
+
+    it('returns EVERY existing instance of a repeating group, not just the first — real bug fixed live: an earlier .find()-based version silently dropped every instance past the first', () => {
+        const rec = record([
+            { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'Dr. Kumar' }] }] },
+            { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'Nurse Priya' }] }] },
+            { linkId: 'section_hospital', item: [] },
+        ]);
+        const sliced = sliceRecordGroup(rec, 'section_staff');
+        expect(sliced.data.item).toHaveLength(2);
+        expect(sliced.data.item.map((g) => getAnswer({ data: { item: g.item } }, 'staff_name'))).toEqual(['Dr. Kumar', 'Nurse Priya']);
+    });
+});
+
+describe('mergeGroupResponseItem', () => {
+    it('replaces an existing group by linkId with a real QuestionnaireResponse item, leaving other groups untouched', () => {
+        const data = {
+            item: [
+                { linkId: 'section_hospital', item: [{ linkId: 'hospital_name', answer: [{ valueString: 'old name' }] }] },
+                { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'Dr. Kumar' }] }] },
+            ],
+        };
+        const newGroup = { linkId: 'section_hospital', item: [{ linkId: 'hospital_name', answer: [{ valueString: 'new name' }] }] };
+        const result = mergeGroupResponseItem(data, newGroup);
+
+        expect(getAnswer({ data: result }, 'hospital_name')).toBe('new name');
+        expect(getAnswer({ data: result }, 'staff_name')).toBe('Dr. Kumar'); // untouched
+        expect(result.item.filter((i) => i.linkId === 'section_hospital').length).toBe(1); // replaced, not duplicated
+
+        // Pure — same discipline as withGroupFields.
+        expect(getAnswer({ data }, 'hospital_name')).toBe('old name');
+        expect(result).not.toBe(data);
+    });
+
+    it('appends the group when absent instead of requiring it to already exist', () => {
+        const result = mergeGroupResponseItem({ item: [] }, { linkId: 'section_hospital_abdm_location', item: [{ linkId: 'hospital_state_lgd_code', answer: [{ valueString: 'TN' }] }] });
+        expect(getAnswer({ data: result }, 'hospital_state_lgd_code')).toBe('TN');
+    });
+
+    it('preserves real FHIR answer types (not flattened to valueString) — the whole point vs. withGroupFields', () => {
+        const newGroup = {
+            linkId: 'section_hospital_abdm_facility_type',
+            item: [
+                { linkId: 'hospital_facility_type', answer: [{ valueCoding: { code: 'HOSP', display: 'Hospital' } }] },
+                { linkId: 'hospital_operational_status', answer: [{ valueBoolean: true }] },
+            ],
+        };
+        const result = mergeGroupResponseItem({ item: [] }, newGroup);
+        const group = result.item.find((i) => i.linkId === 'section_hospital_abdm_facility_type');
+        expect(group.item[0].answer[0].valueCoding).toEqual({ code: 'HOSP', display: 'Hospital' });
+        expect(group.item[1].answer[0].valueBoolean).toBe(true);
+    });
+
+    it('handles a Vue-reactive (Proxy-wrapped) recordData without throwing', async () => {
+        const { reactive } = await import('vue');
+        const data = reactive({ item: [{ linkId: 'section_hospital', item: [] }] });
+        const newGroup = { linkId: 'section_hospital', item: [{ linkId: 'hospital_name', answer: [{ valueString: 'Malar Hospital' }] }] };
+        expect(() => mergeGroupResponseItem(data, newGroup)).not.toThrow();
+        const result = mergeGroupResponseItem(data, newGroup);
+        expect(getAnswer({ data: result }, 'hospital_name')).toBe('Malar Hospital');
+    });
+});
+
+describe('mergeGroupResponseItems', () => {
+    it('replaces ALL existing instances of a repeating group with the new set, leaving other groups untouched', () => {
+        const data = {
+            item: [
+                { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'old Dr. Kumar' }] }] },
+                { linkId: 'section_hospital', item: [{ linkId: 'hospital_name', answer: [{ valueString: 'Malar' }] }] },
+            ],
+        };
+        const newInstances = [
+            { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'Dr. Kumar' }] }] },
+            { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'Nurse Priya' }] }] },
+        ];
+        const result = mergeGroupResponseItems(data, 'section_staff', newInstances);
+
+        const staffGroups = result.item.filter((i) => i.linkId === 'section_staff');
+        expect(staffGroups).toHaveLength(2);
+        expect(staffGroups.map((g) => getAnswer({ data: { item: g.item } }, 'staff_name'))).toEqual(['Dr. Kumar', 'Nurse Priya']);
+        expect(getAnswer({ data: result }, 'hospital_name')).toBe('Malar'); // untouched
+
+        // Pure — same discipline as mergeGroupResponseItem.
+        expect(data.item.filter((i) => i.linkId === 'section_staff')).toHaveLength(1);
+        expect(result).not.toBe(data);
+    });
+
+    it('replacing with an empty array removes every existing instance — a real allowed case (the user removed all of them)', () => {
+        const data = { item: [{ linkId: 'section_consent', item: [{ linkId: 'consent_title', answer: [{ valueString: 'old' }] }] }] };
+        const result = mergeGroupResponseItems(data, 'section_consent', []);
+        expect(result.item.filter((i) => i.linkId === 'section_consent')).toHaveLength(0);
+    });
+
+    it('adds the group fresh when no existing instances are present', () => {
+        const result = mergeGroupResponseItems({ item: [] }, 'section_hours', [
+            { linkId: 'section_hours', item: [{ linkId: 'hours_days', answer: [{ valueString: 'mon' }] }] },
+        ]);
+        expect(getAnswer({ data: result }, 'hours_days')).toBe('mon');
+    });
+});
+
 describe('patchGroupInstanceField', () => {
     // Unlike withGroupFields (pure, singular groups), this persists directly against the real
     // formData collection and targets ONE instance of a REPEATING group by position — the whole
@@ -226,6 +352,56 @@ describe('appendGroupInstance', () => {
 
     it('returns -1 and does nothing for a record id that does not exist', () => {
         expect(appendGroupInstance('rec-does-not-exist', 'section_staff', { staff_first_name: 'x' })).toBe(-1);
+    });
+});
+
+describe('appendGroupResponseItem', () => {
+    // Real onboarding-UI audit/rebuild, Provider (Staff) — the FHIR-native counterpart to
+    // appendGroupInstance above, taking real QuestionnaireResponse group item(s) straight from
+    // LhcFormHost.extract() instead of a flat { linkId: value } map (see StaffOnboarding.vue).
+    it('appends a new real FHIR group item without disturbing existing ones, and returns its index', () => {
+        const id = 'rec-append-response-item-test';
+        formData.insert({
+            id, formId: 'system-provider-composition-v1', version: 1,
+            data: { item: [{ linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'Alice' }] }] }] },
+            savedAt: new Date().toISOString(),
+        });
+
+        const newIndexes = appendGroupResponseItem(id, 'section_staff', [{
+            linkId: 'section_staff',
+            item: [
+                { linkId: 'staff_name', answer: [{ valueString: 'Priya' }] },
+                { linkId: 'staff_specialty', answer: [{ valueCoding: { display: 'Cardiology' } }] },
+            ],
+        }]);
+        expect(newIndexes).toEqual([1]);
+
+        const rec = formData.get(id);
+        const instances = getGroupInstances(rec, 'section_staff');
+        expect(instances).toHaveLength(2);
+        expect(getAnswer({ data: instances[0] }, 'staff_name')).toBe('Alice');
+        expect(getAnswer({ data: instances[1] }, 'staff_name')).toBe('Priya');
+        expect(getAnswer({ data: instances[1] }, 'staff_specialty')).toBe('Cardiology');
+
+        formData.delete(id);
+    });
+
+    it('accepts multiple group items in one call, indexing each after the existing count', () => {
+        const id = 'rec-append-response-item-multi-test';
+        formData.insert({ id, formId: 'system-provider-composition-v1', version: 1, data: { item: [] }, savedAt: new Date().toISOString() });
+
+        const newIndexes = appendGroupResponseItem(id, 'section_staff', [
+            { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'A' }] }] },
+            { linkId: 'section_staff', item: [{ linkId: 'staff_name', answer: [{ valueString: 'B' }] }] },
+        ]);
+        expect(newIndexes).toEqual([0, 1]);
+        expect(getGroupInstances(formData.get(id), 'section_staff')).toHaveLength(2);
+
+        formData.delete(id);
+    });
+
+    it('returns [] and does nothing for a record id that does not exist', () => {
+        expect(appendGroupResponseItem('rec-does-not-exist', 'section_staff', [{ linkId: 'section_staff', item: [] }])).toEqual([]);
     });
 });
 

@@ -83,7 +83,13 @@ export function buildPlanDefinitionRunnerMachine(planDefinition, { services = {}
               invoke: {
                 src: fromPromise(({ input }) => service(input)),
                 input: ({ event }) => event.payload,
-                onDone: { target: 'done' },
+                // SPEC-21 §5's role-based next-action triggering needs to know WHAT an action
+                // resolved to (e.g. login's real { user: { role } }) — previously discarded the
+                // instant 'done' fired. event.output is XState v5's real field for an invoke's
+                // resolved value (verified empirically before relying on it, same discipline
+                // this file's other invoke work already used). result_<actionId> mirrors
+                // error_<actionId>'s existing flat-context-key pattern.
+                onDone: { target: 'done', actions: assign({ [`result_${action.id}`]: ({ event }) => event.output }) },
                 onError: {
                   target: 'ready',
                   actions: assign({ [`error_${action.id}`]: ({ event }) => event.error?.message || 'Failed.' }),
@@ -95,9 +101,21 @@ export function buildPlanDefinitionRunnerMachine(planDefinition, { services = {}
                 COMPLETE: { target: 'done', guard: ({ event }) => event.actionId === action.id },
               },
             },
-        done: { type: 'final' },
+        // A real bug found live, not hypothetical: `done` as a `final` state means an XState
+        // region NEVER accepts another event again, ever — correct for something genuinely
+        // one-shot (register), wrong for an action a user legitimately redoes in one session
+        // (login again after logging out, changing a password more than once). A second FOCUS
+        // on a `final` done region was silently dropped — no transition, no invoke, no error, no
+        // network call — exactly what "I can't log in, no error shown" looks like from outside.
+        // `action.repeatable` (opt-in, explicit — see entryPlanDefinition.js) makes `done` a
+        // normal state with its own FOCUS handler back into `active` instead of `final`, reusing
+        // the exact same invoke/guard active already has. Non-repeatable actions (the default —
+        // register, and every existing PlanDefinition that predates this flag) are unchanged.
+        done: action.repeatable
+          ? { on: { FOCUS: { target: 'active', guard: ({ event }) => event.actionId === action.id } } }
+          : { type: 'final' },
       },
-      meta: { title: action.title, dependsOn, hasService: !!service },
+      meta: { title: action.title, dependsOn, hasService: !!service, repeatable: !!action.repeatable },
     };
   });
 
@@ -113,6 +131,12 @@ export function buildPlanDefinitionRunnerMachine(planDefinition, { services = {}
 // shared object across every region, not one-per-region) — this selector hides that detail.
 export function actionError(snapshot, actionId) {
   return snapshot.context[`error_${actionId}`] || null;
+}
+
+// Same flat-context-key pattern as actionError — an action with no service (COMPLETE-driven,
+// e.g. FIVE_ROOM_PLAN's rooms) or one that hasn't resolved yet simply has no result recorded.
+export function actionResult(snapshot, actionId) {
+  return snapshot.context[`result_${actionId}`] ?? null;
 }
 
 // Selector helpers so callers (the dispatcher, the eventual left-pane navigator per SPEC-16 §5)

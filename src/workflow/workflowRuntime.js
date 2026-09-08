@@ -23,30 +23,105 @@ import { buildPlanDefinitionRunnerMachine } from './planDefinitionRunner.js';
 //
 // Side effects: `registerPlan`'s optional `services` map is passed straight through to
 // planDefinitionRunner.js's `invoke` support (built this session, register/login/change-password
-// — see authPlanDefinition.js — is the first real case). What's still NOT handled here: reacting
-// to one action's completion to trigger something OUTSIDE that action (registering a different
-// PlanDefinition next, a cross-Task notification) — that's still open, tracked in SPEC-13 §9.
+// — see authPlanDefinition.js — is the first real case). `onActionDone` (SPEC-21 §5) is the
+// cross-plan-triggering capability SPEC-13 §9 named as still open — "reacting to one action's
+// completion to trigger something OUTSIDE that action" — made real.
 export function createWorkflowRuntime({ persistSnapshot = () => {}, loadPersistedSnapshot = () => null } = {}) {
   const events$ = new Subject();
-  const registry = new Map(); // planId -> { actor, planDefinition }
+  const registry = new Map(); // planId -> { actor, planDefinition, lastValue }
+
+  // SPEC-20 (docs/SPEC-20-REFERENCE-PATTERN-JOURNEY-WORKBENCH-AND-UNAUTH-CUBO-ENTRY.md) §4's
+  // "Audit now, Observe deferred" decision — a real, structured transition/blocked-attempt log,
+  // additive on top of the actor.subscribe() persistence hook already here, not new machinery.
+  // Only two of the reference demo's three audit categories are populated: HFSM transitions (a
+  // real per-action status diff on every snapshot) and blocked/invalid attempts (an event sent
+  // for a planId/actionId whose status didn't move, meaning its guard rejected it). The third —
+  // "Copilot interactions" (suggested/applied/dismissed) — is deliberately NOT logged here yet:
+  // there's no real Copilot suggestion mechanism anywhere in this app to generate such an event
+  // from (Cübo's own "AI" is still a single canned reply, per the AI Engine work this session) —
+  // logging it now would mean logging nothing real. Add it once SPEC-06/07's agentic dispatch
+  // layer exists and actually produces suggest/apply/dismiss events.
+  const auditLog = [];
+  function logAudit(entry) {
+    auditLog.push({ at: new Date().toISOString(), ...entry });
+  }
+
+  // SPEC-21 (docs/SPEC-21-STATE-MACHINE-MAP-SIX-DIMENSION-ARCHITECTURE.md) §5's role-based
+  // next-action triggering — the real, missing capability SPEC-13 §9 named: "reacting to one
+  // action's completion to trigger something OUTSIDE that action." Callbacks are keyed by
+  // `${planId}:${actionId}` and fire with (result, context) every time that action transitions
+  // INTO 'done' — including a second time for a `repeatable` action (planDefinitionRunner.js),
+  // since diffAndLogTransitions below fires on every real from!==to move, not just the first.
+  // Deliberately app-level callbacks, not "register a different plan" baked in here directly —
+  // keeps this module from needing to know what a caller wants to do next (show a suggestion,
+  // register a second plan, fire a notification), same separation-of-concerns registerPlan's own
+  // services injection already uses.
+  const doneTriggers = new Map(); // `${planId}:${actionId}` -> Set<callback>
+  function onActionDone(planId, actionId, callback) {
+    const key = `${planId}:${actionId}`;
+    if (!doneTriggers.has(key)) doneTriggers.set(key, new Set());
+    doneTriggers.get(key).add(callback);
+    return () => doneTriggers.get(key)?.delete(callback);
+  }
 
   function registerPlan(planId, planDefinition, { services } = {}) {
     const existing = registry.get(planId);
     if (existing) return existing.actor;
 
-    const snapshot = loadPersistedSnapshot(planId);
+    let snapshot = loadPersistedSnapshot(planId);
+    // Real bug found live: a persisted snapshot from an EARLIER version of this planId's
+    // PlanDefinition (fewer/different actions — exactly what happened when Hospital setup grew
+    // from 4 to 10 actions) restored into today's machine leaves XState's own snapshot.value
+    // broken (confirmed empirically: entirely `undefined`, not just missing the new regions) —
+    // every action then reads as an unknown status, which Cubo.vue's own "disabled unless ready"
+    // checklist rendering shows as permanently locked. A PlanDefinition's shape can genuinely
+    // change over time; this isn't Hospital-setup-specific, so the fix belongs here, not in one
+    // caller — discard an incompatible snapshot and start fresh rather than trying to restore it,
+    // same principle a schema migration would use.
+    if (snapshot) {
+      const expectedActionIds = (planDefinition.action || []).map((a) => a.id).sort();
+      const restoredActionIds = Object.keys(snapshot.value || {}).sort();
+      const isCompatible = restoredActionIds.length === expectedActionIds.length
+        && restoredActionIds.every((id, i) => id === expectedActionIds[i]);
+      if (!isCompatible) snapshot = null;
+    }
+
     const machine = buildPlanDefinitionRunnerMachine(planDefinition, { services });
     const actor = snapshot ? createActor(machine, { snapshot }) : createActor(machine);
 
-    registry.set(planId, { actor, planDefinition });
+    const entry = { actor, planDefinition, lastValue: null };
+    registry.set(planId, entry);
     // Subscribing (not persisting only right after each dispatched event) is what actually
     // covers invoke-triggered transitions — verified empirically this session that an invoked
     // service's async onDone/onError fires actor.subscribe() the same as a synchronous .send()
     // does. A post-send-only persist would miss exactly the case this slice was built to prove:
     // register/login/change-password's real API calls resolving after the event that started them.
-    actor.subscribe(() => persistSnapshot(planId, actor));
+    actor.subscribe((snap) => {
+      diffAndLogTransitions(planId, planDefinition, entry, snap);
+      persistSnapshot(planId, actor);
+    });
     actor.start(); // fires the subscription once immediately with the initial snapshot too
     return actor;
+  }
+
+  // Compares this snapshot's per-action status against the last one recorded for this plan,
+  // logging one 'transition' audit entry per action whose status actually moved. First call per
+  // plan (lastValue still null, right after actor.start()) logs each action's initial state as
+  // its own transition from null — "HFSM initialized" in the reference demo's own terms. Also
+  // fires any onActionDone triggers registered for an action that just moved INTO 'done'.
+  function diffAndLogTransitions(planId, planDefinition, entry, snap) {
+    const value = snap.value;
+    (planDefinition.action || []).forEach((action) => {
+      const from = entry.lastValue ? entry.lastValue[action.id] : null;
+      const to = value[action.id];
+      if (from === to) return;
+      logAudit({ type: 'transition', planId, actionId: action.id, from, to });
+      if (to === 'done') {
+        const result = snap.context[`result_${action.id}`] ?? null;
+        doneTriggers.get(`${planId}:${action.id}`)?.forEach((cb) => cb(result, snap.context));
+      }
+    });
+    entry.lastValue = { ...value };
   }
 
   function getPlanActor(planId) {
@@ -66,7 +141,17 @@ export function createWorkflowRuntime({ persistSnapshot = () => {}, loadPersiste
       droppedEvents.push({ event, warning });
       return;
     }
+    // A blocked/invalid attempt: the targeted action's own status didn't move as a result of this
+    // exact event — its guard rejected it (e.g. FOCUS on an action that wasn't 'ready').
+    // diffAndLogTransitions (fired synchronously by the .send() below, via actor.subscribe) has
+    // already updated entry.lastValue by the time this line runs, so compare against the status
+    // captured just before sending.
+    const statusBefore = entry.lastValue ? entry.lastValue[event.actionId] : undefined;
     entry.actor.send(event);
+    const statusAfter = entry.lastValue ? entry.lastValue[event.actionId] : undefined;
+    if (event.actionId && statusBefore === statusAfter) {
+      logAudit({ type: 'blocked', planId: event.planId, actionId: event.actionId, eventType: event.type });
+    }
   });
 
   function dispose() {
@@ -75,5 +160,5 @@ export function createWorkflowRuntime({ persistSnapshot = () => {}, loadPersiste
     registry.clear();
   }
 
-  return { events$, emit, registerPlan, getPlanActor, droppedEvents, dispose };
+  return { events$, emit, registerPlan, getPlanActor, onActionDone, droppedEvents, auditLog, dispose };
 }

@@ -18,6 +18,12 @@ const CUBO_CATEGORIES = {
   'front-desk': { label: 'Front Desk', icon: 'fa-concierge-bell', color: 'text-indigo-500' },
   billing: { label: 'Billing', icon: 'fa-file-invoice-dollar', color: 'text-rose-500' },
   'ai-engine': { label: 'AI Engine', icon: 'fa-robot', color: 'text-purple-500' },
+  // 'administration' (SPEC-22 decision #3's "Hospital state" thread, entered by Cubo.vue's own
+  // startHospitalSetup()) was removed along with that whole in-Cübo checklist mechanism — real
+  // onboarding-UI rebuild retired it in favor of `/onboarding`'s own real page route (a proper
+  // custom-widget, full-width journey; the narrow right-pane checklist was itself part of what
+  // made it "getting difficult," explicit instruction). Nothing creates a thread with this
+  // category any more — checked directly before removing, not assumed.
 };
 
 // Replaces Alpine.store('db').cubo + Alpine.store('db').virtualRoom from clinixflow's store.js.
@@ -198,11 +204,22 @@ export const useCuboStore = defineStore('cubo', () => {
     }
   }
 
-  function addCuboMessage(role, text) {
+  // SPEC-20's rich-content messages — component/componentProps are optional (undefined for every
+  // plain-text call site that already existed before this pass). `id` needs more than Date.now()
+  // now: a component message can immediately follow a text message in the same synchronous call
+  // (see the entry-menu seeding below), and Date.now()'s millisecond resolution can collide,
+  // which the messages v-for's :key relies on being unique.
+  let lastMessageId = 0;
+  function nextMessageId() {
+    const id = Math.max(Date.now(), lastMessageId + 1);
+    lastMessageId = id;
+    return id;
+  }
+  function addCuboMessage(role, text, { component = null, componentProps = null } = {}) {
     const activeThread = getActiveThread();
     if (!activeThread) return;
     chatThreads.update(activeThread.id, (draft) => {
-      draft.messages.push({ id: Date.now(), role, text, timestamp: Date.now() });
+      draft.messages.push({ id: nextMessageId(), role, text, timestamp: Date.now(), component, componentProps });
       draft.timestamp = Date.now();
     });
   }

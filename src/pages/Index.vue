@@ -6,13 +6,34 @@
 // idiomatic to the new framework rather than a literal port of imperative DOM code.
 import { onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { RadioGroupRoot, RadioGroupItem, RadioGroupIndicator } from 'reka-ui';
 import { useAuthStore } from '../stores/auth.js';
+import { useEntryWorkflowStore } from '../stores/entryWorkflow.js';
 import { useThemeStore } from '../stores/theme.js';
+import RegisterForm from '../components/auth/RegisterForm.vue';
+import LoginForm from '../components/auth/LoginForm.vue';
+import Cubo from '../components/Cubo.vue';
+import { useCuboStore } from '../stores/cubo.js';
 
 const router = useRouter();
 const auth = useAuthStore();
+const entryWorkflow = useEntryWorkflowStore();
 const theme = useThemeStore();
+const cubo = useCuboStore();
+
+// SPEC-20: opens Cübo directly (its General thread hosts Register/Login/Forgot Password/Change
+// Password) instead of routing to a separate page — see clinux-spec20-get-started-journey-
+// workbench memory note for why this replaced an earlier standalone-page version.
+//
+// UPDATE (corrects the previous, wrong attempt at this): NOT an inline section on Index.vue —
+// user's explicit correction: "open cubo as a separate page route with threads as the left pane,
+// chat in the middle pane and right pane shows pages as necessary... 3 pane mode is also another
+// [layout] option for the user to switch". The /ai-engine route now hosts Cübo's own THREE_PANE
+// layout directly (CuboWorkspace.vue) — this just navigates there and sets the layout; Cübo owns
+// all three panes itself on that page, same way FAB/EXPANDED/MODAL_DOCK are layout modes it owns.
+function openGuidedSetup() {
+  cubo.currentLayout = 'THREE_PANE';
+  router.push('/ai-engine');
+}
 
 // Closes the user-menu dropdown on any click outside it — replaces Alpine's @click.away, which
 // has no built-in Vue equivalent (no v-click-outside directive ships with core Vue).
@@ -27,19 +48,7 @@ const showLogin = ref(false);
 const showProfile = ref(false);
 const userMenuOpen = ref(false);
 const toast = ref({ show: false, message: '' });
-const regError = ref('');
-const loginError = ref('');
 
-// SPEC-11: sign-up is deliberately minimal now -- email/password/role only. Role is the new
-// top-of-funnel fork (replacing the old facilityType picker) -- it determines which self-service
-// HFR (facility) and/or HPR (professional) registration journeys ClinicHome offers afterward, not
-// which fields THIS form collects. clinicName/adminName/designation/services/phone/city are no
-// longer captured at sign-up at all -- the real facility identity is captured later by the new
-// Hospital/HFR journey (HospitalOnboarding.vue), and the Edit Profile modal below still handles
-// services/phone/city for an existing account. See clinuxflow-api's POST /api/auth/register
-// comment and migrations/0008 for the full design.
-const regForm = reactive({ email: '', password: '', confirmPassword: '', role: '' });
-const loginForm = reactive({ email: '', password: '' });
 const profileForm = reactive({ clinicName: '', adminName: '', designation: '', careTeam: '', services: '', phone: '', city: '', address: '' });
 const contactForm = reactive({ name: '', clinic: '', email: '', message: '' });
 
@@ -79,35 +88,26 @@ const ROLE_LABELS = {
   admin_and_health_professional: 'Admin & Health Professional',
 };
 
-async function registerClinic() {
-  regError.value = '';
-  // RadioGroupRoot is a headless ARIA radiogroup, not a native <input required> -- it doesn't
-  // participate in native HTML5 form validation the way password/email's `required`/`minlength`
-  // already do below, so role-required needs its own explicit check. Same for the password-match
-  // check, which no native attribute expresses at all.
-  if (!regForm.role) { regError.value = 'Please select how you’re registering.'; return; }
-  if (regForm.password !== regForm.confirmPassword) { regError.value = 'Passwords do not match.'; return; }
-  const { error, user } = await auth.register({ ...regForm });
-  if (error) { regError.value = error; return; }
+// SPEC-20: RegisterForm/LoginForm now own their own field state, validation, and dispatch (via
+// entryWorkflow.js's real ENTRY_PLAN_DEFINITION runtime) — this page just reacts to their
+// `success` events with what used to be registerClinic()/loginClinic()'s own tail end (close the
+// modal, toast, navigate). Same components render inline in Cübo's General thread (see
+// Cubo.vue) — no duplicated form markup between the two hosts any more.
+function onRegisterSuccess({ role }) {
   showRegister.value = false;
-  Object.assign(regForm, { email: '', password: '', confirmPassword: '', role: '' });
-  // Deliberately NOT "Welcome, {clinicName}" anymore -- clinicName is just a placeholder until
-  // the new Hospital/HFR journey replaces it with the real hospital_name (see SPEC-11).
-  showToast(`Welcome${user.role ? ', ' + ROLE_LABELS[user.role] : ''}! Let's get you set up.`);
+  // Deliberately NOT "Welcome, {clinicName}" -- clinicName is just a placeholder until the new
+  // Hospital/HFR journey replaces it with the real hospital_name (see SPEC-11).
+  showToast(`Welcome${role ? ', ' + ROLE_LABELS[role] : ''}! Let's get you set up.`);
   router.push('/clinic-home');
 }
 
-async function loginClinic() {
-  loginError.value = '';
-  const { error } = await auth.login(loginForm.email, loginForm.password);
-  if (error) { loginError.value = error; return; }
+function onLoginSuccess() {
   showLogin.value = false;
-  Object.assign(loginForm, { email: '', password: '' });
   showToast(`Welcome back, ${auth.currentUser.clinicName}!`);
 }
 
 function logout() {
-  auth.logout();
+  entryWorkflow.logout();
   showToast('Signed out successfully.');
 }
 
@@ -182,50 +182,9 @@ onUnmounted(stopAutoplay);
         </div>
         <button @click="showRegister = false" class="w-9 h-9 rounded-full cf-card flex items-center justify-center hover:text-red-500"><i class="fas fa-times text-sm"></i></button>
       </div>
-      <form @submit.prevent="registerClinic()" class="space-y-4">
-        <!-- SPEC-11: role replaces facilityType as the top-of-funnel fork -- it routes which
-             self-service HFR/HPR registration journeys ClinicHome offers afterward (see
-             docs/SPEC-11-ABDM-M1-M4-ALIGNMENT.md), not what THIS form collects. Reka UI's
-             RadioGroupRoot, same pattern the old facilityType picker used. -->
-        <div>
-          <label class="cf-label">I'm registering as... *</label>
-          <RadioGroupRoot v-model="regForm.role" class="grid grid-cols-1 gap-3 mt-1">
-            <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="regForm.role === 'hospital_admin' ? 'border-color:var(--color-primary)' : ''">
-              <RadioGroupItem value="hospital_admin" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
-                <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
-              </RadioGroupItem>
-              <div>
-                <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Hospital Admin</div>
-                <div class="text-xs" style="color:var(--cf-text)">I administer a facility's operations</div>
-              </div>
-            </label>
-            <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="regForm.role === 'health_professional' ? 'border-color:var(--color-primary)' : ''">
-              <RadioGroupItem value="health_professional" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
-                <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
-              </RadioGroupItem>
-              <div>
-                <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Health Professional</div>
-                <div class="text-xs" style="color:var(--cf-text)">I work at a facility someone else runs</div>
-              </div>
-            </label>
-            <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="regForm.role === 'admin_and_health_professional' ? 'border-color:var(--color-primary)' : ''">
-              <RadioGroupItem value="admin_and_health_professional" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
-                <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
-              </RadioGroupItem>
-              <div>
-                <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Admin and Health Professional</div>
-                <div class="text-xs" style="color:var(--cf-text)">I run and practice at my own facility</div>
-              </div>
-            </label>
-          </RadioGroupRoot>
-        </div>
-        <div><label class="cf-label">Email Address *</label><input class="cf-input" type="email" v-model="regForm.email" placeholder="you@clinic.com" required /></div>
-        <div><label class="cf-label">Password *</label><input class="cf-input" type="password" v-model="regForm.password" placeholder="Min 8 characters" required minlength="8" /></div>
-        <div><label class="cf-label">Confirm Password *</label><input class="cf-input" type="password" v-model="regForm.confirmPassword" placeholder="Re-enter your password" required minlength="8" /></div>
-        <p v-show="regError" class="text-red-500 text-sm font-medium">{{ regError }}</p>
-        <button type="submit" class="btn-primary w-full mt-2"><i class="fas fa-hospital-user mr-2"></i>Create Account</button>
-        <p class="text-center text-sm cf-text">Already registered? <button type="button" @click="showRegister = false; showLogin = true" class="font-bold" style="color:var(--color-primary)">Sign in</button></p>
-      </form>
+      <!-- SPEC-20: same RegisterForm component Cübo's General thread renders inline — no
+           duplicated form markup between the modal here and the Cübo-hosted case. -->
+      <RegisterForm @success="onRegisterSuccess" @switch-to-login="showRegister = false; showLogin = true" />
     </div>
   </div>
 
@@ -239,13 +198,7 @@ onUnmounted(stopAutoplay);
         </div>
         <button @click="showLogin = false" class="w-9 h-9 rounded-full cf-card flex items-center justify-center hover:text-red-500"><i class="fas fa-times text-sm"></i></button>
       </div>
-      <form @submit.prevent="loginClinic()" class="space-y-4">
-        <div><label class="cf-label">Email Address</label><input class="cf-input" type="email" v-model="loginForm.email" placeholder="admin@clinic.com" required /></div>
-        <div><label class="cf-label">Password</label><input class="cf-input" type="password" v-model="loginForm.password" placeholder="Your password" required /></div>
-        <p v-show="loginError" class="text-red-500 text-sm font-medium">{{ loginError }}</p>
-        <button type="submit" class="btn-primary w-full"><i class="fas fa-sign-in-alt mr-2"></i>Sign In</button>
-        <p class="text-center text-sm cf-text">New here? <button type="button" @click="showLogin = false; showRegister = true" class="font-bold" style="color:var(--color-primary)">Register your clinic</button></p>
-      </form>
+      <LoginForm @success="onLoginSuccess" @switch-to-register="showLogin = false; showRegister = true" />
     </div>
   </div>
 
@@ -351,6 +304,11 @@ onUnmounted(stopAutoplay);
           <button v-if="!auth.currentUser" @click="showRegister = true" class="btn-teal inline-flex items-center gap-2"><i class="fas fa-hospital-user"></i>Register Your Clinic</button>
           <button v-if="auth.currentUser" @click="goToEngine()" class="btn-teal inline-flex items-center gap-2"><p  class="bg-(--color-secondary) text-(--color-primary) font-black text-2xl px-2.5 py-1 rounded shadow-lg font-mono" >CÜ </p>- Talk to Cübo</button>
           <a v-if="!auth.currentUser" href="#workflow" class="btn-outline inline-flex items-center gap-2"><i class="text-md font-bold fas fa-play-circle"></i>See How It Works</a>
+          <!-- SPEC-20 (docs/SPEC-20-REFERENCE-PATTERN-JOURNEY-WORKBENCH-AND-UNAUTH-CUBO-ENTRY.md) —
+               additive entry point, same precedent HospitalOnboarding.vue's "Try the chat-based
+               setup" card set for SPEC-14: the existing Register/Sign-in modals above are
+               untouched, this just offers the new Cübo-hosted flow alongside them. -->
+          <button v-if="!auth.currentUser" @click="openGuidedSetup()" class="btn-outline inline-flex items-center gap-2"><i class="text-md font-bold fas fa-comments"></i>Try Guided Setup with Cübo</button>
           <button v-if="auth.currentUser" @click="goToClinic()" class="btn-teal inline-flex items-center gap-2"><span class="text-md font-bold truncate">{{ auth.currentUser.clinicName }}</span></button>
         </div>
 
@@ -557,6 +515,11 @@ onUnmounted(stopAutoplay);
       <div class="flex gap-4 text-sm"><a href="#" class="hover:text-white transition-colors">Privacy</a><a href="#" class="hover:text-white transition-colors">Terms</a></div>
     </div>
   </footer>
+
+  <!-- SPEC-20: General category thread hosts Register/Login/Forgot Password/Change Password —
+       Index.vue didn't mount Cübo at all before this. Floating FAB badge — "Try Guided Setup"
+       navigates to /ai-engine (Cübo's own 3-pane home) instead of expanding this widget in place. -->
+  <Cubo page-context="ClinüxFlow — register, sign in, or manage your account." />
 </template>
 
 <style>

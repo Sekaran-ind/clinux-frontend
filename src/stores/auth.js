@@ -150,6 +150,45 @@ export const useAuthStore = defineStore('auth', () => {
     return { success: true };
   }
 
+  // SPEC-20 (docs/SPEC-20-REFERENCE-PATTERN-JOURNEY-WORKBENCH-AND-UNAUTH-CUBO-ENTRY.md) §4's
+  // Forgot Password design — security-question recovery, no email infrastructure. Three thin
+  // wrappers mirroring changePassword's exact shape above:
+  //   setSecurityQuestion — called once authenticated (right after register succeeds, or later);
+  //   getSecurityQuestion / resetPassword — both public/unauthenticated, used by the new entry-flow
+  //   UI's two-step "show the question, then answer it" interaction.
+  async function setSecurityQuestion(securityQuestion, securityAnswer) {
+    const res = await apiFetch(`${API_BASE}/api/auth/security-question`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ securityQuestion, securityAnswer }),
+    }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+
+    if (!res.success) return { error: res.error };
+    return { success: true };
+  }
+
+  async function getSecurityQuestion(email) {
+    const res = await apiFetch(`${API_BASE}/api/auth/forgot-password/question`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+
+    if (!res.success) return { error: res.error };
+    return { success: true, securityQuestion: res.securityQuestion };
+  }
+
+  async function resetPassword(email, securityAnswer, newPassword) {
+    const res = await apiFetch(`${API_BASE}/api/auth/forgot-password/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, securityAnswer, newPassword }),
+    }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+
+    if (!res.success) return { error: res.error };
+    return { success: true };
+  }
+
   function saveProfile(profileForm) {
     if (!currentUser.value) return;
     const updated = { ...currentUser.value, ...profileForm };
@@ -190,6 +229,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     currentUser, register, login, logout, saveProfile, updateClinicName, changePassword, refreshSession, fetchTeam, inviteTeammate,
+    setSecurityQuestion, getSecurityQuestion, resetPassword,
     fetchAffiliates, linkAffiliate, revokeAffiliate,
   };
 });

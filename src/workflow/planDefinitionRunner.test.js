@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createActor } from 'xstate';
-import { actionStatus, buildPlanDefinitionRunnerMachine, readyActionIds } from './planDefinitionRunner.js';
+import { actionResult, actionStatus, buildPlanDefinitionRunnerMachine, readyActionIds } from './planDefinitionRunner.js';
 
 // Fixture matches the REAL shape local-extractor.js produces for
 // clinuxflow-api/samples/workflow-definition-v1.draft.yaml's worked example (verified there via
@@ -90,5 +90,67 @@ describe('buildPlanDefinitionRunnerMachine', () => {
 
   it('throws on a PlanDefinition with no actions rather than silently producing an empty machine', () => {
     expect(() => buildPlanDefinitionRunnerMachine({ action: [] })).toThrow();
+  });
+
+  // Real bug found live via GetStarted/Cübo testing, not hypothetical: a second login attempt in
+  // the same session silently did nothing — no API call, no error. Root cause: `done` was always
+  // `type: 'final'`, an XState terminal state that never accepts another event, correct for a
+  // genuinely one-shot action (register) but wrong for one a user legitimately redoes (login
+  // again after logging out).
+  describe('action.repeatable', () => {
+    const REPEATABLE_PLAN = {
+      id: 'repeatable-test',
+      action: [
+        { id: 'once', title: 'Once' }, // repeatable defaults to false/undefined
+        { id: 'again', title: 'Again', repeatable: true },
+      ],
+    };
+
+    it('a non-repeatable action\'s done state is final — a second FOCUS is silently dropped (the real bug, confirmed reproducible)', () => {
+      const actor = createActor(buildPlanDefinitionRunnerMachine(REPEATABLE_PLAN)).start();
+      actor.send({ type: 'FOCUS', actionId: 'once' });
+      actor.send({ type: 'COMPLETE', actionId: 'once' });
+      expect(actionStatus(actor.getSnapshot(), 'once')).toBe('done');
+
+      actor.send({ type: 'FOCUS', actionId: 'once' }); // should be dropped, done is final
+      expect(actionStatus(actor.getSnapshot(), 'once')).toBe('done'); // never moved to 'active'
+    });
+
+    it('a repeatable action accepts FOCUS again after done, re-entering active — the actual fix', () => {
+      const actor = createActor(buildPlanDefinitionRunnerMachine(REPEATABLE_PLAN)).start();
+      actor.send({ type: 'FOCUS', actionId: 'again' });
+      actor.send({ type: 'COMPLETE', actionId: 'again' });
+      expect(actionStatus(actor.getSnapshot(), 'again')).toBe('done');
+
+      actor.send({ type: 'FOCUS', actionId: 'again' });
+      expect(actionStatus(actor.getSnapshot(), 'again')).toBe('active'); // accepted this time
+
+      actor.send({ type: 'COMPLETE', actionId: 'again' });
+      expect(actionStatus(actor.getSnapshot(), 'again')).toBe('done'); // and can complete again too
+    });
+  });
+
+  // SPEC-21 §5's role-based next-action triggering needs to know what an action actually
+  // resolved to (e.g. login's real { user: { role } }) — previously discarded once 'done' fired.
+  describe('actionResult', () => {
+    it("captures an invoke's real resolved value (event.output) into context, keyed per action", async () => {
+      const plan = { id: 'result-test', action: [{ id: 'login', title: 'Login' }] };
+      const service = vi.fn(async () => ({ user: { id: 'acc1', role: 'hospital_admin' } }));
+      const actor = createActor(buildPlanDefinitionRunnerMachine(plan, { services: { login: service } })).start();
+
+      actor.send({ type: 'FOCUS', actionId: 'login', payload: { email: 'a@b.com', password: 'x' } });
+      await vi.waitFor(() => expect(actionStatus(actor.getSnapshot(), 'login')).toBe('done'));
+
+      expect(actionResult(actor.getSnapshot(), 'login')).toEqual({ user: { id: 'acc1', role: 'hospital_admin' } });
+    });
+
+    it('returns null for an action with no service (COMPLETE-driven) or one that has not resolved yet', () => {
+      const actor = createActor(buildPlanDefinitionRunnerMachine(FIVE_ROOM_PLAN)).start();
+      expect(actionResult(actor.getSnapshot(), 'facility_registration')).toBeNull();
+
+      actor.send({ type: 'FOCUS', actionId: 'facility_registration' });
+      actor.send({ type: 'COMPLETE', actionId: 'facility_registration' });
+      expect(actionResult(actor.getSnapshot(), 'facility_registration')).toBeNull(); // COMPLETE carries no output
+    });
   });
 });

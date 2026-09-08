@@ -16,14 +16,16 @@
 // without needing another device present at all. QR/text-key stays available as a manual
 // fallback (SessionImportModal below) for the genuinely offline case — no LAN, no
 // clinuxflow-api reachable — not deleted, just no longer the primary path.
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import AbdmFieldForm from '../components/AbdmFieldForm.vue';
-import { STAFF_FIELDS } from '../data/abdmSchema.js';
+import CustomFormHost from '../components/CustomFormHost.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import { useAuthStore } from '../stores/auth.js';
-import { seedSystemForms, getGroupInstances, getAnswer, patchGroupInstanceField, appendGroupInstance } from '../data/useSystemForms.js';
+import {
+  seedSystemForms, activeQuestionnaire, sliceQuestionnaireGroup,
+  getGroupInstances, getAnswer, patchGroupInstanceField, appendGroupResponseItem,
+} from '../data/useSystemForms.js';
 import { API_BASE, apiFetch } from '../config.js';
 
 const router = useRouter();
@@ -75,9 +77,17 @@ function showToast(msg) {
   toastTimer = setTimeout(() => (toast.value.show = false), 3200);
 }
 
+// Real onboarding-UI audit/rebuild, Provider (Staff) — the same real, compiled Questionnaire
+// Designer's Provider drawer and Cübo's Hospital Setup checklist both already render, sliced down
+// to just this one group (see Cubo.vue's own hospitalStepQuestionnaire computed for the identical
+// pattern).
+const staffQuestionnaire = computed(() => {
+  const full = activeQuestionnaire(onboarding.PROVIDER_FORM_ID);
+  return full ? sliceQuestionnaireGroup(full, 'section_staff') : null;
+});
+
 const drawerOpen = ref(false);
-const staffFormRecord = ref(null); // { data: instance } | null -- pre-fills AbdmFieldForm when editing; null for a fresh "add myself" entry
-const staffForm = ref(null); // AbdmFieldForm's exposed { values, missingRequired() }
+const staffFormHost = ref(null); // CustomFormHost's exposed { extract() }
 const importModalOpen = ref(false);
 const saveError = ref('');
 
@@ -90,46 +100,51 @@ function staffCount() {
 }
 
 function openStaffDrawer() {
-  drawerOpen.value = true;
-  staffFormRecord.value = null; // always a fresh entry -- this page's own job is "add THIS teammate", never editing an existing one
+  drawerOpen.value = true; // LhcFormHost below always renders blank (:record="null") -- this page's own job is "add THIS teammate", never editing an existing one
   saveError.value = '';
 }
 function closeDrawer() {
   drawerOpen.value = false;
 }
 
-// SPEC-09 (docs/SPEC-09-ABDM-ANCHORED-ONBOARDING-REBUILD.md): controlled-input save via
-// appendGroupInstance, replacing LForms extraction (saveProviderRecord/extractResponse) entirely
-// for this flow. Fixes a real, live-confirmed bug — see clinux-lforms-coded-field-data-loss-bug
-// memory note — where a coded/autocomplete LForms field (Specialty) silently discarded a typed
-// value unless a dropdown suggestion was explicitly clicked. A plain v-model value in
-// AbdmFieldForm has no such confirmation step to fail at.
+// Real onboarding-UI audit/rebuild, Provider (Staff) — swaps AbdmFieldForm/STAFF_FIELDS (a
+// bespoke non-FHIR renderer, missing fields the real Questionnaire already has — staff_phone/
+// staff_qualification/staff_license/staff_status) for real, FHIR-native capture against the same
+// compiled section_staff group. Originally routed through LForms (LhcFormHost) here; superseded
+// again almost immediately — "narrow lhcforms is getting difficult" (explicit instruction) — by
+// CustomFormHost, a custom app-styled renderer reading the exact same compiled Questionnaire
+// (still one real schema, never a second hand-maintained field list), just without delegating to
+// the LForms JS widget library at all. Its extract() returns the same real QuestionnaireResponse
+// shape LhcFormHost's did, so nothing below this comment needed to change. The LForms coded-field
+// data-loss bug that originally justified AbdmFieldForm here (clinux-lforms-coded-field-data-loss-
+// bug memory note) doesn't apply to CustomFormHost either way — it never delegates to LForms.
+//
+// Uses appendGroupResponseItem (APPEND one new instance) rather than Cübo's own
+// mergeGroupResponseItems (REPLACE the whole group) — this drawer always renders blank, never
+// pre-filled with other teammates' entries (privacy, and so a save here can never clobber anyone
+// else's row the way submitting a pre-filled-with-everyone's-data form back through a
+// replace-the-group helper would risk).
 function saveDrawer() {
-  const missing = staffForm.value?.missingRequired() || [];
-  if (missing.length > 0) {
-    // Inline per-field errors (AbdmFieldForm's own errorFor()) do the actual explaining now --
-    // touchAll() reveals them for fields the user never visited. This banner is just a single
-    // "something's not ready yet" pointer so a blocked Save isn't silently a no-op, not a
-    // duplicate of the field-by-field detail anymore.
-    staffForm.value.touchAll();
-    saveError.value = 'A few required fields still need your input above.';
+  const response = staffFormHost.value?.extract();
+  if (!response || !response.item?.[0]) {
+    saveError.value = 'Could not read the entered data. Please try again.';
     return;
   }
   saveError.value = '';
   const recordId = onboarding.ensureProviderRecord();
-  const newIndex = appendGroupInstance(recordId, 'section_staff', staffForm.value.values);
-  // appendGroupInstance() silently no-ops (returns -1) for a recordId that doesn't resolve to a
-  // real record — ensureProviderRecord() now guards against its own cached id going stale (see
+  const newIndexes = appendGroupResponseItem(recordId, 'section_staff', response.item);
+  // appendGroupResponseItem() silently no-ops (returns []) for a recordId that doesn't resolve to
+  // a real record — ensureProviderRecord() now guards against its own cached id going stale (see
   // its own comment), so this should be unreachable in practice, but a save genuinely failing
   // should never still claim "Saved" — that was a real, live-found gap this closes defensively.
-  if (newIndex < 0) {
+  if (newIndexes.length === 0) {
     saveError.value = 'Could not save — please try again.';
     return;
   }
   onboarding.dataVersion++;
   showToast('Saved — thanks for joining the team!');
   drawerOpen.value = false;
-  prepareSpecialtyTag(newIndex);
+  prepareSpecialtyTag(newIndexes[0]);
 }
 
 // --- Wikidata-assisted specialty tagging (SPEC-06 §6 / SPEC-08 Phase 1) — this is the concrete
@@ -141,8 +156,8 @@ const specialtyTagApplied = ref(false);
 const currentSpecialtyText = ref('');
 let savedStaffInstanceIndex = -1;
 
-// newIndex comes straight from appendGroupInstance()'s own return value now — no more guessing
-// "last instance" the way the LForms-extraction path had to.
+// newIndex comes straight from appendGroupResponseItem()'s own return value now — no more
+// guessing "last instance" the way plain LForms-document extraction used to require.
 function prepareSpecialtyTag(newIndex) {
   specialtyTagCandidates.value = null;
   specialtyTagApplied.value = false;
@@ -213,7 +228,7 @@ function finish() {
     </div>
     <div class="drawer-body">
       <div class="preview-panel">
-        <AbdmFieldForm v-if="drawerOpen" ref="staffForm" :fields="STAFF_FIELDS" :record="staffFormRecord" />
+        <CustomFormHost v-if="drawerOpen && staffQuestionnaire" ref="staffFormHost" :questionnaire="staffQuestionnaire" :record="null" />
         <p v-if="saveError" style="font-size:.75rem;color:#dc2626;margin-top:.6rem"><i class="fas fa-circle-exclamation"></i> {{ saveError }}</p>
 
         <!-- Post-save Wikidata specialty tagging -- see prepareSpecialtyTag()'s own comment for

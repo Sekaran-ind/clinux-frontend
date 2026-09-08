@@ -4,10 +4,14 @@
 // SystemForms/LhcFormHost drawer pattern Front Desk uses.
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import LhcFormHost from '../components/LhcFormHost.vue';
+import CustomFormHost from '../components/CustomFormHost.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
-import { activeQuestionnaire, seedSystemForms, getGroupInstances, getAnswer } from '../data/useSystemForms.js';
+import {
+  activeQuestionnaire, sliceQuestionnaireGroup, sliceRecordGroup, seedSystemForms,
+  getGroupInstances, getAnswer, mergeGroupResponseItem, mergeGroupResponseItems,
+  saveDataRecord, activeVersionNumber,
+} from '../data/useSystemForms.js';
 import { API_BASE } from '../config.js';
 
 const router = useRouter();
@@ -26,10 +30,7 @@ const drawerOpen = ref(false);
 const activeForm = ref(null); // the journeyCards entry currently open in the drawer
 const drawerQuestionnaire = ref(null);
 const drawerRecord = ref(null);
-const formKey = ref(0); // bumped to force LhcFormHost to remount (guaranteed re-render to blank)
-// after a repeatable save, since a re-assigned questionnaire ref isn't guaranteed to be a new
-// object reference the component's own prop watcher would pick up as "changed."
-const lhcFormHost = ref(null);
+const customFormHost = ref(null);
 
 // Every card now points at one groupLinkId inside the single, shared Provider-composition
 // record instead of its own separate formId (see clinux-provider-composition-merge memory
@@ -93,20 +94,24 @@ function cardStatus(card) {
   return n > 0 ? `${n} added` : 'Not started';
 }
 
-// The drawer always renders the WHOLE Provider questionnaire regardless of which card was
-// clicked — same "whole accumulating document everywhere" tradeoff already accepted for Front
-// Desk/Checkout/Consultation Desk's Encounter composition, not a new pattern here.
+// Real onboarding-UI rebuild — the drawer now renders ONLY the clicked card's own group, sliced
+// from the same real compiled Questionnaire (sliceQuestionnaireGroup/sliceRecordGroup, the same
+// primitives Cübo's Hospital Setup checklist already proved out), not the whole accumulating
+// Provider document every time. That "whole document in one drawer" behavior was itself part of
+// what made this "getting difficult" (explicit instruction) — clicking Care Team used to open
+// Hospital+Staff+Services+Hours+Consent all stacked together, scrolled to the top.
 function openDrawer(card) {
   activeForm.value = card;
   drawerOpen.value = true;
 
   const q = activeQuestionnaire(onboarding.PROVIDER_FORM_ID);
-  drawerQuestionnaire.value = q;
+  drawerQuestionnaire.value = q ? sliceQuestionnaireGroup(q, card.groupLinkId) : null;
   if (!q) { drawerRecord.value = null; return; }
 
   // Falls back to a synthetic record built from the index.html registration account the very
   // first time, so this doesn't open blank when that info was already given at sign-up.
-  drawerRecord.value = onboarding.getProviderRecord() || onboarding.buildSeedFromRegistration();
+  const fullRecord = onboarding.getProviderRecord() || onboarding.buildSeedFromRegistration();
+  drawerRecord.value = fullRecord ? sliceRecordGroup(fullRecord, card.groupLinkId) : null;
 }
 
 function openCard(card) {
@@ -118,17 +123,32 @@ function closeDrawer() {
   drawerOpen.value = false;
 }
 
+// Real onboarding-UI rebuild — merges just this one group back into the Provider record
+// (mergeGroupResponseItem/mergeGroupResponseItems, the same surgical per-group primitives Cübo's
+// Hospital Setup checklist already uses) instead of extracting and overwriting the WHOLE
+// document. CustomFormHost's own extract() already blocks and inline-flags missing required
+// fields, returning null — mirrors LhcFormHost/extractResponse()'s existing failure contract, so
+// this only needs to check for that, not re-validate anything itself.
 function saveDrawerRecord() {
-  if (!activeForm.value) return;
-  const ok = onboarding.saveProviderRecord('drawerFormContainer');
-  if (!ok) { showToast('Could not read the entered data. Please try again.'); return; }
+  if (!activeForm.value || !customFormHost.value) return;
+  const response = customFormHost.value.extract();
+  if (!response) { showToast('Please fill in the required fields.'); return; }
+
+  const groupLinkId = activeForm.value.groupLinkId;
+  const recordId = onboarding.ensureProviderRecord();
+  const record = onboarding.getProviderRecord();
+  const mergedData = activeForm.value.mode === 'repeatable'
+    ? mergeGroupResponseItems(record?.data || { item: [] }, groupLinkId, response.item || [])
+    : mergeGroupResponseItem(record?.data || { item: [] }, response.item[0] || { linkId: groupLinkId, item: [] });
+  saveDataRecord(onboarding.PROVIDER_FORM_ID, activeVersionNumber(onboarding.PROVIDER_FORM_ID), mergedData, recordId);
+  onboarding.dataVersion++;
 
   if (activeForm.value.mode === 'repeatable') {
-    // Stay open — LForms' own "+ Add another" control is how multiple entries get added, not a
+    // Stay open — CustomFormHost's own "+ Add Another" is how multiple entries get added, not a
     // separate save-per-entry action (same pattern Front Desk/Checkout already use for Vitals/
-    // Prescription/Billing). Re-fetch + remount so the just-saved entry is visible in the form.
-    drawerRecord.value = onboarding.getProviderRecord();
-    formKey.value++;
+    // Prescription/Billing). Re-slice from the just-saved record so every existing instance
+    // (including the one just added) is visible.
+    drawerRecord.value = sliceRecordGroup(onboarding.getProviderRecord(), groupLinkId);
     showToast('Added.');
   } else {
     showToast('Saved.');
@@ -199,7 +219,7 @@ function publishClinic() {
     </div>
     <div class="drawer-body">
       <div class="preview-panel">
-        <LhcFormHost v-if="drawerOpen" :key="formKey" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" />
+        <CustomFormHost v-if="drawerOpen && drawerQuestionnaire" ref="customFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" />
       </div>
 
     </div>

@@ -8,6 +8,7 @@ export {
   seedSystemForms,
   activeVersionNumber,
   activeQuestionnaire,
+  sliceQuestionnaireGroup,
   journeyFormIds,
 } from './collections/formsLibrary.js';
 
@@ -19,10 +20,14 @@ export {
   patchRecordField,
   patchGroupInstanceField,
   appendGroupInstance,
+  appendGroupResponseItem,
   recordSummary,
   summarizeItems,
   getGroupInstances,
   withGroupFields,
+  mergeGroupResponseItem,
+  mergeGroupResponseItems,
+  sliceRecordGroup,
   getAnswer,
   getAnswers,
 } from './collections/formData.js';

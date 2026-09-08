@@ -21,6 +21,9 @@ const pageBadge = {
   'onboarding-abdm': 'ABDM ONBOARDING',
   'designer': 'ROOM ARCHITECT',
   'staff-onboarding': 'STAFF ONBOARDING',
+  // Route name is still 'ai-engine' (unchanged path/name, see router/index.js) but it now serves
+  // Cübo's own 3-pane workspace, not the old CRUD sandbox — badge relabeled to match.
+  'ai-engine': 'CÜBO WORKSPACE',
 };
 </script>
 
