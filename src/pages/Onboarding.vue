@@ -5,6 +5,7 @@
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import CustomFormHost from '../components/CustomFormHost.vue';
+import FacilityBasicsHost from '../components/FacilityBasicsHost.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import {
@@ -12,6 +13,7 @@ import {
   getGroupInstances, getAnswer, mergeGroupResponseItem, mergeGroupResponseItems,
   saveDataRecord, activeVersionNumber,
 } from '../data/useSystemForms.js';
+import { checkFacilityConformance } from '../data/facilityConformance.js';
 import { API_BASE } from '../config.js';
 
 const router = useRouter();
@@ -121,6 +123,26 @@ function openCard(card) {
 
 function closeDrawer() {
   drawerOpen.value = false;
+  conformanceResult.value = null;
+}
+
+// SPEC-24 §7 step 5 — the real chain, live: extract -> validate against ClinuxFlowFacility ->
+// next-best-action, over the WHOLE Provider record (not just this drawer's own section_hospital
+// slice — see facilityConformance.js's own header on why). Deliberately on-demand (a button, not
+// auto-run on save) rather than baked into saveDrawerRecord()'s existing close-on-save flow for
+// 'single' mode cards — checking "is the whole FHIR Facility profile satisfied yet" is a distinct
+// question from "did this one save succeed", and most clinics (free tier, no ABDM registration —
+// SPEC-05) will never see this go green, which is expected, not an error state to force past.
+const conformanceLoading = ref(false);
+const conformanceResult = ref(null); // { valid, errors, nextActions } | { error } | null
+async function checkConformance() {
+  conformanceLoading.value = true;
+  const questionnaireJson = activeQuestionnaire(onboarding.PROVIDER_FORM_ID);
+  const responseJson = onboarding.getProviderRecord()?.data;
+  conformanceResult.value = (questionnaireJson && responseJson)
+    ? await checkFacilityConformance(questionnaireJson, responseJson)
+    : { error: 'Save the Hospital Profile first.' };
+  conformanceLoading.value = false;
 }
 
 // Real onboarding-UI rebuild — merges just this one group back into the Provider record
@@ -219,9 +241,43 @@ function publishClinic() {
     </div>
     <div class="drawer-body">
       <div class="preview-panel">
-        <CustomFormHost v-if="drawerOpen && drawerQuestionnaire" ref="customFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" />
+        <!-- SPEC-24 §1/§6: Hospital Profile is the first card off CustomFormHost (a hand-authored
+             replacement, real named fields via AdaptiveSectionNav) — the other cards stay on it
+             until they get their own pass (spec §7 step 7). -->
+        <FacilityBasicsHost v-if="drawerOpen && activeForm?.groupLinkId === 'section_hospital'" ref="customFormHost" :record="drawerRecord" />
+        <CustomFormHost v-else-if="drawerOpen && drawerQuestionnaire" ref="customFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" />
       </div>
 
+      <!-- SPEC-24 §7 step 5: the real conformance chain, on demand — see checkConformance()'s own
+           comment on why this isn't auto-run on save. Facility-only; Provider/Affiliate/Patient
+           get the same treatment once THEY have a real Profile-anchored capture UI (step 6). -->
+      <div v-if="drawerOpen && activeForm?.groupLinkId === 'section_hospital'" class="cf-card rounded-2xl p-4 mt-3">
+        <div class="flex items-center justify-between mb-2">
+          <p class="cf-label mb-0">FHIR Facility Conformance <span style="font-weight:400">(ClinuxFlowFacility profile)</span></p>
+          <button class="btn-ghost text-xs px-2 py-1" :disabled="conformanceLoading" @click="checkConformance()">
+            <i class="fas" :class="conformanceLoading ? 'fa-spinner fa-spin' : 'fa-shield-halved'"></i> Check
+          </button>
+        </div>
+        <p v-if="!conformanceResult" class="text-xs" style="color:var(--cf-text)">
+          Checks the saved profile — across this page AND ABDM Registration — against the full HFR-grounded Facility schema. Most clinics won't see this go green unless they've completed ABDM registration too; that's expected, not required to publish.
+        </p>
+        <p v-else-if="conformanceResult.error" class="text-xs" style="color:#b91c1c">{{ conformanceResult.error }}</p>
+        <template v-else>
+          <p class="text-xs font-semibold mb-2" :style="conformanceResult.valid ? 'color:var(--color-primary)' : 'color:var(--cf-text)'">
+            <i class="fas" :class="conformanceResult.valid ? 'fa-circle-check' : 'fa-circle-info'"></i>
+            {{ conformanceResult.valid ? 'Fully conformant.' : `${conformanceResult.errors.length} field(s) still needed for full conformance.` }}
+          </p>
+          <ul v-if="!conformanceResult.valid" style="font-size:.72rem;color:var(--cf-text);padding-left:1rem;max-height:140px;overflow-y:auto">
+            <li v-for="e in conformanceResult.errors" :key="e.path">{{ e.message }}</li>
+          </ul>
+          <div v-if="conformanceResult.valid && conformanceResult.nextActions?.length" class="mt-2">
+            <p class="text-xs font-semibold" style="color:var(--cf-text-strong)">Next up:</p>
+            <ul style="font-size:.72rem;color:var(--cf-text);padding-left:1rem">
+              <li v-for="a in conformanceResult.nextActions" :key="a.linkId">{{ a.reason }}</li>
+            </ul>
+          </div>
+        </template>
+      </div>
     </div>
     <!-- Repeating-group add/remove is LForms' own native "+ Add another" control inside the
          form now, not a separate app-level list — same precedent as Front Desk/Checkout's

@@ -85,7 +85,7 @@ watch(
             <i class="fas fa-ellipsis-vertical"></i>
           </DropdownMenuTrigger>
           <DropdownMenuPortal>
-            <DropdownMenuContent class="cf-card rounded-xl p-1" :side-offset="4" align="end">
+            <DropdownMenuContent class="cf-card rounded-xl p-1 adaptive-nav-menu" style="z-index:1000" :side-offset="4" align="end">
               <DropdownMenuItem
                 v-for="section in sections"
                 :key="section.id"
@@ -141,7 +141,7 @@ watch(
               <i class="fas fa-ellipsis-vertical"></i>
             </DropdownMenuTrigger>
             <DropdownMenuPortal>
-              <DropdownMenuContent class="cf-card rounded-xl p-1" :side-offset="4" align="end">
+              <DropdownMenuContent class="cf-card rounded-xl p-1 adaptive-nav-menu" style="z-index:1000" :side-offset="4" align="end">
                 <DropdownMenuItem
                   v-for="option in SWITCHABLE_MODES"
                   :key="option"
@@ -174,7 +174,7 @@ watch(
               <i class="fas fa-ellipsis-vertical mr-2"></i>Display
             </DropdownMenuTrigger>
             <DropdownMenuPortal>
-              <DropdownMenuContent class="cf-card rounded-xl p-1" :side-offset="4" align="start">
+              <DropdownMenuContent class="cf-card rounded-xl p-1 adaptive-nav-menu" style="z-index:1000" :side-offset="4" align="start">
                 <DropdownMenuItem
                   v-for="option in SWITCHABLE_MODES"
                   :key="option"
@@ -200,7 +200,7 @@ watch(
             <i class="fas fa-ellipsis-vertical"></i>
           </DropdownMenuTrigger>
           <DropdownMenuPortal>
-            <DropdownMenuContent class="cf-card rounded-xl p-1" :side-offset="4" align="end">
+            <DropdownMenuContent class="cf-card rounded-xl p-1 adaptive-nav-menu" style="z-index:1000" :side-offset="4" align="end">
               <DropdownMenuItem
                 v-for="option in SWITCHABLE_MODES"
                 :key="option"
@@ -228,3 +228,22 @@ watch(
     </template>
   </div>
 </template>
+
+<style scoped>
+/* Real bug found live (Playwright-driven check of the mode-switcher, SPEC-24 §7 step 5): Reka's
+   DropdownMenuPortal teleports DropdownMenuContent to the end of document.body with no z-index of
+   its own. A positioned ancestor with an EXPLICIT z-index (e.g. Onboarding.vue's own .drawer-panel
+   at z-index:101) then paints ABOVE it regardless of DOM order — the menu rendered, fully visible
+   in a screenshot, and still silently swallowed every click; a plain "add a scoped z-index class"
+   fix looked right and DID NOT WORK — confirmed via getComputedStyle that the class landed with
+   position:static/z-index:auto. Vue's scoped-CSS data-v attribute is applied to elements written
+   directly in THIS template; DropdownMenuContent's own rendered DOM root is Reka's, one layer
+   further in, and does not carry it through the teleport. The real fix is inline `style` on the
+   component itself (Reka forwards style/class the same way any wrapped root does) — see the four
+   `style="z-index:1000"` occurrences on DropdownMenuContent above; this scoped rule is kept only
+   as harmless documentation/belt-and-suspenders for the (non-teleported) inner elements sharing
+   the class, not as the actual fix. 1000 comfortably clears every z-index already in
+   src/style.css (the highest today is 9999 on an unrelated fixed banner; this only needs to beat
+   this app's various drawer/modal layers, not that one). */
+.adaptive-nav-menu { z-index: 1000; }
+</style>
