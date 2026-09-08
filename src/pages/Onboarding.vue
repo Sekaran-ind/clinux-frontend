@@ -6,6 +6,7 @@ import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import CustomFormHost from '../components/CustomFormHost.vue';
 import FacilityBasicsHost from '../components/FacilityBasicsHost.vue';
+import ProviderBasicsHost from '../components/ProviderBasicsHost.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import {
@@ -14,7 +15,15 @@ import {
   saveDataRecord, activeVersionNumber,
 } from '../data/useSystemForms.js';
 import { checkFacilityConformance } from '../data/facilityConformance.js';
+import { checkProviderConformance } from '../data/providerConformance.js';
 import { API_BASE } from '../config.js';
+
+// Cards whose drawer is now a hand-authored panel (SPEC-24 §1/§6/§7) instead of CustomFormHost —
+// each such card needs the FULL Provider record, not a single-group slice, since its capture
+// spans more than one real FHIR resource/group linkId (Care Team: section_staff +
+// section_staff_role). Staged migration; every OTHER card still uses CustomFormHost + a sliced
+// record + one groupLinkId's own merge, unchanged.
+const HAND_AUTHORED_GROUP_LINK_IDS = new Set(['section_hospital', 'section_staff']);
 
 const router = useRouter();
 const onboarding = useOnboardingStore();
@@ -113,7 +122,9 @@ function openDrawer(card) {
   // Falls back to a synthetic record built from the index.html registration account the very
   // first time, so this doesn't open blank when that info was already given at sign-up.
   const fullRecord = onboarding.getProviderRecord() || onboarding.buildSeedFromRegistration();
-  drawerRecord.value = fullRecord ? sliceRecordGroup(fullRecord, card.groupLinkId) : null;
+  drawerRecord.value = fullRecord
+    ? (HAND_AUTHORED_GROUP_LINK_IDS.has(card.groupLinkId) ? fullRecord : sliceRecordGroup(fullRecord, card.groupLinkId))
+    : null;
 }
 
 function openCard(card) {
@@ -124,6 +135,7 @@ function openCard(card) {
 function closeDrawer() {
   drawerOpen.value = false;
   conformanceResult.value = null;
+  providerConformanceResult.value = null;
 }
 
 // SPEC-24 §7 step 5 — the real chain, live: extract -> validate against ClinuxFlowFacility ->
@@ -145,6 +157,21 @@ async function checkConformance() {
   conformanceLoading.value = false;
 }
 
+// SPEC-24 §7 step 6 — the same real chain for Provider, over the WHOLE record (a PractitionerRole's
+// .organization only auto-links when a real Organization is in the same extraction — see
+// providerConformance.js's own header).
+const providerConformanceLoading = ref(false);
+const providerConformanceResult = ref(null); // { providers, nextActions } | { error } | null
+async function checkProviderConformanceNow() {
+  providerConformanceLoading.value = true;
+  const questionnaireJson = activeQuestionnaire(onboarding.PROVIDER_FORM_ID);
+  const responseJson = onboarding.getProviderRecord()?.data;
+  providerConformanceResult.value = (questionnaireJson && responseJson)
+    ? await checkProviderConformance(questionnaireJson, responseJson)
+    : { error: 'Save at least one staff member first.' };
+  providerConformanceLoading.value = false;
+}
+
 // Real onboarding-UI rebuild — merges just this one group back into the Provider record
 // (mergeGroupResponseItem/mergeGroupResponseItems, the same surgical per-group primitives Cübo's
 // Hospital Setup checklist already uses) instead of extracting and overwriting the WHOLE
@@ -159,18 +186,34 @@ function saveDrawerRecord() {
   const groupLinkId = activeForm.value.groupLinkId;
   const recordId = onboarding.ensureProviderRecord();
   const record = onboarding.getProviderRecord();
-  const mergedData = activeForm.value.mode === 'repeatable'
-    ? mergeGroupResponseItems(record?.data || { item: [] }, groupLinkId, response.item || [])
-    : mergeGroupResponseItem(record?.data || { item: [] }, response.item[0] || { linkId: groupLinkId, item: [] });
+  let mergedData = record?.data || { item: [] };
+  if (activeForm.value.mode === 'repeatable') {
+    // SPEC-24 §7 step 6: a repeatable card can now span MORE than one real group linkId (Care
+    // Team: section_staff + section_staff_role, ProviderBasicsHost.vue's own Practitioner/
+    // PractitionerRole split) — group the extracted items by their own linkId and merge each as
+    // its own full-replacement set. Every existing single-linkId repeatable card (Services/Hours/
+    // Consents) still produces exactly one group here, so this is a strict generalization, not a
+    // behavior change for them.
+    const byLinkId = new Map();
+    (response.item || []).forEach((item) => {
+      if (!byLinkId.has(item.linkId)) byLinkId.set(item.linkId, []);
+      byLinkId.get(item.linkId).push(item);
+    });
+    byLinkId.forEach((items, linkId) => { mergedData = mergeGroupResponseItems(mergedData, linkId, items); });
+  } else {
+    mergedData = mergeGroupResponseItem(mergedData, response.item[0] || { linkId: groupLinkId, item: [] });
+  }
   saveDataRecord(onboarding.PROVIDER_FORM_ID, activeVersionNumber(onboarding.PROVIDER_FORM_ID), mergedData, recordId);
   onboarding.dataVersion++;
 
   if (activeForm.value.mode === 'repeatable') {
     // Stay open — CustomFormHost's own "+ Add Another" is how multiple entries get added, not a
     // separate save-per-entry action (same pattern Front Desk/Checkout already use for Vitals/
-    // Prescription/Billing). Re-slice from the just-saved record so every existing instance
-    // (including the one just added) is visible.
-    drawerRecord.value = sliceRecordGroup(onboarding.getProviderRecord(), groupLinkId);
+    // Prescription/Billing). Re-reads the just-saved record — the FULL record for a hand-authored
+    // card (it owns more than one group linkId, see HAND_AUTHORED_GROUP_LINK_IDS), a single-group
+    // slice for everything still on CustomFormHost — so every existing instance is visible either way.
+    const savedRecord = onboarding.getProviderRecord();
+    drawerRecord.value = HAND_AUTHORED_GROUP_LINK_IDS.has(groupLinkId) ? savedRecord : sliceRecordGroup(savedRecord, groupLinkId);
     showToast('Added.');
   } else {
     showToast('Saved.');
@@ -241,16 +284,17 @@ function publishClinic() {
     </div>
     <div class="drawer-body">
       <div class="preview-panel">
-        <!-- SPEC-24 §1/§6: Hospital Profile is the first card off CustomFormHost (a hand-authored
-             replacement, real named fields via AdaptiveSectionNav) — the other cards stay on it
-             until they get their own pass (spec §7 step 7). -->
+        <!-- SPEC-24 §1/§6: Hospital Profile and Care Team are off CustomFormHost now (hand-
+             authored replacements, real named fields via AdaptiveSectionNav) — the other cards
+             stay on it until they get their own pass (spec §7 step 7). -->
         <FacilityBasicsHost v-if="drawerOpen && activeForm?.groupLinkId === 'section_hospital'" ref="customFormHost" :record="drawerRecord" />
+        <ProviderBasicsHost v-else-if="drawerOpen && activeForm?.groupLinkId === 'section_staff'" ref="customFormHost" :record="drawerRecord" />
         <CustomFormHost v-else-if="drawerOpen && drawerQuestionnaire" ref="customFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" />
       </div>
 
-      <!-- SPEC-24 §7 step 5: the real conformance chain, on demand — see checkConformance()'s own
-           comment on why this isn't auto-run on save. Facility-only; Provider/Affiliate/Patient
-           get the same treatment once THEY have a real Profile-anchored capture UI (step 6). -->
+      <!-- SPEC-24 §7 step 5/6: the real conformance chain, on demand — see checkConformance()'s
+           own comment on why this isn't auto-run on save. Facility/Provider only; Affiliate/
+           Patient get the same treatment once THEY have a real Profile-anchored capture UI. -->
       <div v-if="drawerOpen && activeForm?.groupLinkId === 'section_hospital'" class="cf-card rounded-2xl p-4 mt-3">
         <div class="flex items-center justify-between mb-2">
           <p class="cf-label mb-0">FHIR Facility Conformance <span style="font-weight:400">(ClinuxFlowFacility profile)</span></p>
@@ -277,6 +321,34 @@ function publishClinic() {
             </ul>
           </div>
         </template>
+      </div>
+
+      <div v-if="drawerOpen && activeForm?.groupLinkId === 'section_staff'" class="cf-card rounded-2xl p-4 mt-3">
+        <div class="flex items-center justify-between mb-2">
+          <p class="cf-label mb-0">FHIR Provider Conformance <span style="font-weight:400">(ClinuxFlowProvider / ClinuxFlowProviderRole)</span></p>
+          <button class="btn-ghost text-xs px-2 py-1" :disabled="providerConformanceLoading" @click="checkProviderConformanceNow()">
+            <i class="fas" :class="providerConformanceLoading ? 'fa-spinner fa-spin' : 'fa-shield-halved'"></i> Check
+          </button>
+        </div>
+        <p v-if="!providerConformanceResult" class="text-xs" style="color:var(--cf-text)">
+          Checks each saved staff member's Practitioner and PractitionerRole records against the real HPR-grounded schema.
+        </p>
+        <p v-else-if="providerConformanceResult.error" class="text-xs" style="color:#b91c1c">{{ providerConformanceResult.error }}</p>
+        <template v-else-if="providerConformanceResult.providers.length === 0">
+          <p class="text-xs" style="color:var(--cf-text)">No staff saved yet.</p>
+        </template>
+        <div v-else class="flex flex-col gap-2" style="max-height:220px;overflow-y:auto">
+          <div v-for="p in providerConformanceResult.providers" :key="p.practitioner.id" class="record-card p-2">
+            <p class="text-xs font-semibold mb-1" :style="(p.practitionerValid && p.roleValid) ? 'color:var(--color-primary)' : 'color:var(--cf-text-strong)'">
+              <i class="fas" :class="(p.practitionerValid && p.roleValid) ? 'fa-circle-check' : 'fa-circle-info'"></i>
+              {{ p.practitioner.name?.given?.join(' ') || '(unnamed)' }} {{ p.practitioner.name?.family || '' }}
+            </p>
+            <ul style="font-size:.7rem;color:var(--cf-text);padding-left:1rem">
+              <li v-for="e in p.practitionerErrors" :key="'p-' + e.path">{{ e.message }}</li>
+              <li v-for="e in p.roleErrors" :key="'r-' + e.path">{{ e.message }}</li>
+            </ul>
+          </div>
+        </div>
       </div>
     </div>
     <!-- Repeating-group add/remove is LForms' own native "+ Add another" control inside the
