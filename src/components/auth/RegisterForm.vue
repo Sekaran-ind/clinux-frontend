@@ -8,6 +8,7 @@
 import { reactive, ref, watch } from 'vue';
 import { RadioGroupRoot, RadioGroupItem, RadioGroupIndicator } from 'reka-ui';
 import { useEntryWorkflowStore } from '../../stores/entryWorkflow.js';
+import { HPR_ROLES } from '../../data/control/hprRoles.js';
 
 const emit = defineEmits(['success', 'switch-to-login']);
 const entryWorkflow = useEntryWorkflowStore();
@@ -47,32 +48,21 @@ watch(() => entryWorkflow.statuses.register, (status) => {
          ClinicHome offers afterward, not what this form collects. -->
     <div>
       <label class="cf-label">I'm registering as... *</label>
+      <!-- Same vocabulary ProviderBasicsHost.vue's "HPR Role" field uses for the identical real
+           HPR concept — see hprRoles.js's own header on why these used to be two drifted labels
+           for one thing. -->
       <RadioGroupRoot v-model="form.role" class="grid grid-cols-1 gap-3 mt-1">
-        <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="form.role === 'hospital_admin' ? 'border-color:var(--color-primary)' : ''">
-          <RadioGroupItem value="hospital_admin" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
+        <label
+          v-for="opt in HPR_ROLES" :key="opt.accountRole"
+          class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer"
+          :style="`border:2px solid ${form.role === opt.accountRole ? 'var(--color-primary)' : 'transparent'}`"
+        >
+          <RadioGroupItem :value="opt.accountRole" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
             <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
           </RadioGroupItem>
           <div>
-            <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Hospital Admin</div>
-            <div class="text-xs" style="color:var(--cf-text)">I administer a facility's operations</div>
-          </div>
-        </label>
-        <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="form.role === 'health_professional' ? 'border-color:var(--color-primary)' : ''">
-          <RadioGroupItem value="health_professional" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
-            <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
-          </RadioGroupItem>
-          <div>
-            <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Health Professional</div>
-            <div class="text-xs" style="color:var(--cf-text)">I work at a facility someone else runs</div>
-          </div>
-        </label>
-        <label class="cf-card rounded-xl p-3 flex items-center gap-2 cursor-pointer" style="border:2px solid transparent" :style="form.role === 'admin_and_health_professional' ? 'border-color:var(--color-primary)' : ''">
-          <RadioGroupItem value="admin_and_health_professional" class="w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center" style="border-color:var(--color-primary)">
-            <RadioGroupIndicator class="w-2 h-2 rounded-full" style="background:var(--color-primary)" />
-          </RadioGroupItem>
-          <div>
-            <div class="text-sm font-bold" style="color:var(--cf-text-strong)">Admin and Health Professional</div>
-            <div class="text-xs" style="color:var(--cf-text)">I run and practice at my own facility</div>
+            <div class="text-sm font-bold" style="color:var(--cf-text-strong)">{{ opt.label }}</div>
+            <div class="text-xs" style="color:var(--cf-text)">{{ opt.description }}</div>
           </div>
         </label>
       </RadioGroupRoot>

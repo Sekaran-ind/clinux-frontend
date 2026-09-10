@@ -2,12 +2,12 @@ import { createRouter, createWebHistory } from 'vue-router';
 import Index from '../pages/Index.vue';
 import Onboarding from '../pages/Onboarding.vue';
 import ClinicHome from '../pages/ClinicHome.vue';
-import AbdmOnboarding from '../pages/AbdmOnboarding.vue';
 import StaffOnboarding from '../pages/StaffOnboarding.vue';
 import Designer from '../pages/Designer.vue';
 import Cubo from '../components/Cubo.vue';
 import { useAuthStore } from '../stores/auth.js';
 import { resolveGuard } from './guardLogic.js';
+import { ensureDeferredCollectionsPreloaded } from '../data/collectionPreload.js';
 
 // Today's 9 separate clinixflow HTML pages become 9 routes sharing one app shell and one
 // Pinia/TanStack DB state tree. meta.hideAppNav marks routes that render their own full nav
@@ -30,10 +30,17 @@ const routes = [
   { path: '/checkout', redirect: '/clinic-home' },
   { path: '/onboarding', name: 'onboarding', component: Onboarding, meta: { requiresAuth: true } },
   { path: '/clinic-home', name: 'clinic-home', component: ClinicHome, meta: { hideAppNav: true } },
-  { path: '/onboarding-abdm', name: 'onboarding-abdm', component: AbdmOnboarding, meta: { requiresAuth: true } },
+  // RETIRED (Hospital/Provider/Affiliate journey audit) — AbdmOnboarding.vue was the last page
+  // still on the pre-SPEC-24 useSystemForms.js/LhcFormHost (LForms) pattern, evidently missed
+  // when HospitalOnboarding.vue (a later, already-retired intermediate version, see the
+  // /hospital-onboarding redirect above) was consolidated away. Its real HFR/HPR gateway calls
+  // are now FacilityHfrPanel.vue/ProviderHprPanel.vue, hosted inside /onboarding and
+  // /staff-onboarding themselves (same "small panel next to the real Host component" shape
+  // PatientAbhaPanel.vue already established for Patient/ABHA) — same "old route still lands
+  // somewhere useful" precedent as the other redirects on this page.
+  { path: '/onboarding-abdm', redirect: '/onboarding' },
   // A teammate's own self-service onboarding (name/role/specialization/HPR fields + importing
-  // the clinic's existing profile) — distinct from /onboarding (the admin's full clinic setup)
-  // and /onboarding-abdm (the admin's full HFR/HPR registration console).
+  // the clinic's existing profile) — distinct from /onboarding (the admin's full clinic setup).
   { path: '/staff-onboarding', name: 'staff-onboarding', component: StaffOnboarding, meta: { requiresAuth: true } },
   // RETIRED (real onboarding-UI audit/rebuild) — HospitalOnboarding.vue's own drawer (AbdmFieldForm-
   // based, a bespoke non-FHIR-native renderer) and HospitalOnboardingChat.vue (an in-progress HFSM
@@ -77,7 +84,12 @@ export const router = createRouter({
   routes,
 });
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
+  // main.js's own header comment — Index.vue is the only route that needs neither
+  // data/collectionPreload.js's deferred collections nor the guarantee they're already hydrated
+  // before its component is created; every other route gets that guarantee here instead of
+  // main.js blocking first paint on it for EVERY route, Index included.
+  if (to.name !== 'index') await ensureDeferredCollectionsPreloaded();
   const auth = useAuthStore();
   return resolveGuard(to.meta, auth.currentUser);
 });

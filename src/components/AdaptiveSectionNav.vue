@@ -36,7 +36,7 @@ import {
 } from './adaptiveSectionNav.js';
 
 const props = defineProps({
-  sections: { type: Array, required: true }, // [{ id, label, icon? }]
+  sections: { type: Array, required: true }, // [{ id, label, icon?, badge? }] — badge is an optional short status string (e.g. "3 added"), rendered next to the label in every mode; omit for a plain section.
   mode: { type: String, default: 'tabs' }, // 'tabs' | 'sidebar' | 'accordion' | 'panes' — a hint, see header
   storageKey: { type: String, required: true }, // unique per component instance on the page
 });
@@ -77,8 +77,9 @@ watch(
     <!-- Compact: single content area + a "⋮" section picker. -->
     <template v-if="viewport === 'compact'">
       <div class="flex items-center justify-between mb-3">
-        <span class="text-sm font-bold" style="color:var(--cf-text-strong)">
+        <span class="text-sm font-bold flex items-center gap-2" style="color:var(--cf-text-strong)">
           {{ sections.find((s) => s.id === activeId)?.label }}
+          <span v-if="sections.find((s) => s.id === activeId)?.badge" class="badge" :class="sections.find((s) => s.id === activeId)?.badgeTone === 'teal' ? 'badge-teal' : 'badge-muted'">{{ sections.find((s) => s.id === activeId)?.badge }}</span>
         </span>
         <DropdownMenuRoot>
           <DropdownMenuTrigger class="btn-ghost text-xs px-2 py-1" aria-label="Choose a section">
@@ -89,11 +90,12 @@ watch(
               <DropdownMenuItem
                 v-for="section in sections"
                 :key="section.id"
-                class="text-xs px-3 py-2 rounded-lg cursor-pointer"
+                class="text-xs px-3 py-2 rounded-lg cursor-pointer flex items-center justify-between gap-3"
                 :style="section.id === activeId ? 'color:var(--color-primary);font-weight:600' : 'color:var(--cf-text)'"
                 @select="activeId = section.id"
               >
-                <i v-if="section.icon" class="fas mr-2" :class="section.icon"></i>{{ section.label }}
+                <span><i v-if="section.icon" class="fas mr-2" :class="section.icon"></i>{{ section.label }}</span>
+                <span v-if="section.badge" class="badge" :class="section.badgeTone === 'teal' ? 'badge-teal' : 'badge-muted'">{{ section.badge }}</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenuPortal>
@@ -125,10 +127,11 @@ watch(
               v-for="section in sections"
               :key="section.id"
               :value="section.id"
-              class="text-xs font-bold px-3 py-2"
+              class="text-xs font-bold px-3 py-2 flex items-center gap-2"
               :style="section.id === activeId ? 'color:var(--color-primary);border-bottom:2px solid var(--color-primary)' : 'color:var(--cf-text)'"
             >
-              <i v-if="section.icon" class="fas mr-1" :class="section.icon"></i>{{ section.label }}
+              <span><i v-if="section.icon" class="fas mr-1" :class="section.icon"></i>{{ section.label }}</span>
+              <span v-if="section.badge" class="badge" :class="section.badgeTone === 'teal' ? 'badge-teal' : 'badge-muted'">{{ section.badge }}</span>
             </TabsTrigger>
           </TabsList>
           <TabsContent v-for="section in sections" :key="section.id" :value="section.id" class="mt-3">
@@ -163,11 +166,12 @@ watch(
           <button
             v-for="section in sections"
             :key="section.id"
-            class="text-left text-xs font-bold px-3 py-2 rounded-lg"
+            class="text-left text-xs font-bold px-3 py-2 rounded-lg flex items-center justify-between gap-2"
             :style="section.id === activeId ? 'color:var(--color-primary);background:color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'color:var(--cf-text)'"
             @click="activeId = section.id"
           >
-            <i v-if="section.icon" class="fas mr-2" :class="section.icon"></i>{{ section.label }}
+            <span><i v-if="section.icon" class="fas mr-2" :class="section.icon"></i>{{ section.label }}</span>
+            <span v-if="section.badge" class="badge" :class="section.badgeTone === 'teal' ? 'badge-teal' : 'badge-muted'">{{ section.badge }}</span>
           </button>
           <DropdownMenuRoot v-if="modeIsSwitchable">
             <DropdownMenuTrigger class="btn-ghost text-xs px-3 py-2 text-left" aria-label="Change display">
@@ -217,7 +221,10 @@ watch(
           <AccordionHeader>
             <AccordionTrigger class="w-full text-left text-xs font-bold px-3 py-2 flex items-center justify-between" style="color:var(--cf-text-strong)">
               <span><i v-if="section.icon" class="fas mr-2" :class="section.icon"></i>{{ section.label }}</span>
-              <i class="fas fa-chevron-down text-xs" style="color:var(--cf-text)"></i>
+              <span class="flex items-center gap-2">
+                <span v-if="section.badge" class="badge" :class="section.badgeTone === 'teal' ? 'badge-teal' : 'badge-muted'">{{ section.badge }}</span>
+                <i class="fas fa-chevron-down text-xs" style="color:var(--cf-text)"></i>
+              </span>
             </AccordionTrigger>
           </AccordionHeader>
           <AccordionContent class="px-3 pb-3">
