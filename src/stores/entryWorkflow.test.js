@@ -1,3 +1,8 @@
+// SPEC-25 (docs/SPEC-25-FEDERATED-TASK-PERSISTENCE.md) §6 moved taskActorSnapshots.js onto
+// indexedDbCollectionFactory.js's real IndexedDB backend, and entryWorkflow.js now awaits its
+// preload() during store setup — must be the first import (see
+// workflowRuntime.integration.test.js's own header for the exact failure mode this avoids).
+import 'fake-indexeddb/auto';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { useEntryWorkflowStore } from './entryWorkflow.js';
@@ -5,6 +10,20 @@ import { useAuthStore } from './auth.js';
 import { useCuboStore } from './cubo.js';
 import { taskActorSnapshots } from '../data/collections/taskActorSnapshots.js';
 import { chatThreads } from '../data/collections/chatThreads.js';
+import { pushTaskSnapshot, pushTaskAuditEntry } from '../data/runtime/taskSync.js';
+
+// SPEC-25 §6/§10 step 5 — entryWorkflow.js's persistSnapshot/persistAuditEntry wrappers now
+// best-effort push to the durable D1 mirror on every transition (taskSync.js), which goes
+// through apiFetch()'s real `localStorage.getItem(...)` call — real, not hypothetical: this
+// Node test environment has no localStorage, so the FIRST test in this file to drive a real
+// transition threw an unhandled TypeError from inside taskSync.js before this mock was added.
+// Isolating the network layer here is the right fix, not hardening apiFetch itself — no other
+// test in this codebase exercises it unmocked either (encounterCoordination.js's own client
+// wrapper has no dedicated test file for the same reason).
+vi.mock('../data/runtime/taskSync.js', () => ({
+  pushTaskSnapshot: vi.fn(),
+  pushTaskAuditEntry: vi.fn(),
+}));
 
 // SPEC-20's real home for ENTRY_PLAN_DEFINITION's runtime — a Pinia store singleton, not a
 // page-local instance (see this file's own header comment on why). Verifies the store correctly
@@ -28,8 +47,12 @@ describe('useEntryWorkflowStore', () => {
     chatThreads.toArray.forEach((r) => chatThreads.delete(r.id));
   });
 
-  it('starts with register/login/forgot_password/change_password all ready — a real Pinia-wrapped read of the same menu-not-pipeline structure', () => {
+  it('starts with register/login/forgot_password/change_password all ready — a real Pinia-wrapped read of the same menu-not-pipeline structure', async () => {
     const store = useEntryWorkflowStore();
+    // SPEC-25 §6 — taskActorSnapshots.js is now IndexedDB-backed, whose initial load is
+    // genuinely async (see entryWorkflow.js's own ensureStarted() header). `ready` is what a
+    // test checking `statuses` directly (no focus() event to hang a vi.waitFor off of) awaits.
+    await store.ready;
     expect(store.statuses.register).toBe('ready');
     expect(store.statuses.login).toBe('ready');
     expect(store.statuses.forgot_password).toBe('ready');
@@ -113,14 +136,16 @@ describe('useEntryWorkflowStore', () => {
   // still asserted here so a future action being given `roles` without updating this expectation
   // fails loudly, not silently.
   describe('primaryActionIds / secondaryActionIds — always empty / always universal, now that roles-based actions moved out', () => {
-    it('pre-auth: only the 4 universal actions are secondary; nothing is primary and nothing requiresAuth-gated shows up', () => {
+    it('pre-auth: only the 4 universal actions are secondary; nothing is primary and nothing requiresAuth-gated shows up', async () => {
       const store = useEntryWorkflowStore();
+      await store.ready; // secondaryActionIds is a computed over `statuses` — see test 1's own note
       expect(store.primaryActionIds).toEqual([]);
       expect(store.secondaryActionIds.sort()).toEqual(['change_password', 'forgot_password', 'login', 'register']);
     });
 
-    it('signed in (any role): primaryActionIds stays empty, logout joins the universal secondary list', () => {
+    it('signed in (any role): primaryActionIds stays empty, logout joins the universal secondary list', async () => {
       const store = useEntryWorkflowStore();
+      await store.ready;
       const auth = useAuthStore();
       auth.currentUser = { id: 'acc1', email: 'a@b.com', role: 'hospital_admin' };
 
@@ -153,7 +178,7 @@ describe('useEntryWorkflowStore', () => {
   // trying to fix here. The mock reproduces logout()'s one real observable effect this store's own
   // logic depends on (currentUser becoming null).
   describe('logout() — centralizes auth.logout() + the tracked action + the Cübo thread reset', () => {
-    it('signs out, marks the logout action done, and switches Cübo back to the general thread', () => {
+    it('signs out, marks the logout action done, and switches Cübo back to the general thread', async () => {
       const store = useEntryWorkflowStore();
       const auth = useAuthStore();
       const cubo = useCuboStore();
@@ -167,10 +192,13 @@ describe('useEntryWorkflowStore', () => {
 
       store.logout();
 
+      // auth.logout()/cubo.createNewThread() are still synchronous side effects inside logout()
+      // — only the plan-runtime half (focus/complete('logout'), see entryWorkflow.js) waits on
+      // `ready` internally now (SPEC-25 §6), so these two are unaffected.
       expect(auth.logout).toHaveBeenCalled();
       expect(auth.currentUser).toBe(null);
-      expect(store.statuses.logout).toBe('done');
       expect(cubo.activeThreadId).toBe('default-general');
+      await vi.waitFor(() => expect(store.statuses.logout).toBe('done'));
     });
 
     it('is idempotent when already on the general thread — no duplicate thread inserted', () => {
@@ -186,19 +214,53 @@ describe('useEntryWorkflowStore', () => {
       expect(chatThreads.toArray.length).toBe(before); // createNewThread's has() check — switches, doesn't re-insert
     });
 
-    it('logout is repeatable — a second sign-out (a different account, same session) works too', () => {
+    it('logout is repeatable — a second sign-out (a different account, same session) works too', async () => {
       const store = useEntryWorkflowStore();
       const auth = useAuthStore();
       vi.spyOn(auth, 'logout').mockImplementation(() => { auth.currentUser = null; });
       auth.currentUser = { id: 'acc1', email: 'a@b.com', role: 'hospital_admin' };
 
       store.logout();
-      expect(store.statuses.logout).toBe('done');
+      await vi.waitFor(() => expect(store.statuses.logout).toBe('done'));
 
       auth.currentUser = { id: 'acc2', email: 'c@d.com', role: 'health_professional' };
       store.logout();
-      expect(store.statuses.logout).toBe('done');
+      await vi.waitFor(() => expect(store.statuses.logout).toBe('done'));
       expect(auth.currentUser).toBe(null);
+    });
+  });
+
+  // SPEC-25 §6/§9 — a real bug found and fixed while wiring this: ENTRY_PLAN_DEFINITION.id is a
+  // shared TEMPLATE id, the same literal string for every account. Pushing it bare to the durable
+  // D1 mirror (keyed by plan_id alone) would let every user's snapshot/audit silently collide on
+  // one row. These tests pin the actual fix (durableTaskKey() in entryWorkflow.js), not just that
+  // *a* push happens.
+  describe('durable mirror push — SPEC-25 §6/§9 cross-tenant key scoping', () => {
+    it('does NOT push to the durable mirror before login — no accountId to scope by yet', async () => {
+      const store = useEntryWorkflowStore();
+      await store.ready;
+      expect(pushTaskSnapshot).not.toHaveBeenCalled(); // the initial snapshot write from registerPlan()'s own actor.start()
+      expect(pushTaskAuditEntry).not.toHaveBeenCalled();
+    });
+
+    it('pushes with planId scoped to `${PLAN_ID}:${accountId}`, never the bare shared template id, once logged in', async () => {
+      const store = useEntryWorkflowStore();
+      const auth = useAuthStore();
+      vi.spyOn(auth, 'register').mockResolvedValue({ user: { id: 'acc-scoped-1', email: 'a@b.com', role: 'hospital_admin' } });
+      auth.currentUser = { id: 'acc-scoped-1', email: 'a@b.com', role: 'hospital_admin' }; // simulates register() having already set it, same as the real authStore does
+
+      store.focus('register', { email: 'a@b.com', password: 'password123', role: 'hospital_admin' });
+      await vi.waitFor(() => expect(store.statuses.register).toBe('done'));
+
+      expect(pushTaskSnapshot).toHaveBeenCalled();
+      const [snapshotPlanKey] = pushTaskSnapshot.mock.calls.at(-1);
+      expect(snapshotPlanKey).toBe('unauth-entry-v1:acc-scoped-1');
+      expect(snapshotPlanKey).not.toBe('unauth-entry-v1'); // the bare template id — would collide across every account
+
+      expect(pushTaskAuditEntry).toHaveBeenCalled();
+      const [auditPlanKey, auditPayload] = pushTaskAuditEntry.mock.calls.at(-1);
+      expect(auditPlanKey).toBe('unauth-entry-v1:acc-scoped-1');
+      expect(auditPayload.accountId).toBe('acc-scoped-1');
     });
   });
 });

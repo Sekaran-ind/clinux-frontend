@@ -21,7 +21,7 @@ import SessionShareModal from '../components/SessionShareModal.vue';
 import ConnectionStatusControl from '../components/ConnectionStatusControl.vue';
 import TeamChat from '../components/TeamChat.vue';
 import { ensureSharedModeDetected } from '../data/sharedServerSync.js';
-import { startAssignmentPolling, stopAssignmentPolling } from '../data/encounterCoordination.js';
+import { startAssignmentPolling, stopAssignmentPolling } from '../data/runtime/encounterCoordination.js';
 
 // True P2P chat (see TeamChat.vue/p2pChat.js) is deliberately NOT gated by tier/isAdmin the way
 // ConnectionStatusControl is — it works identically in every connectivity mode, and any signed-in

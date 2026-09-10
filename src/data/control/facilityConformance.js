@@ -3,11 +3,11 @@
 // ClinuxFlowFacility -> next-best-action). Deliberately reads the WHOLE Provider record/
 // Questionnaire, not just the section_hospital slice the Hospital Profile drawer edits — a real
 // Organization resource needs the ABDM extension fields too (ownershipCode, LGD codes, geo, ...),
-// which are captured on a SEPARATE page (AbdmOnboarding.vue's own cards, untouched by this pass)
-// but land in the SAME underlying Provider QuestionnaireResponse. Checking conformance is
-// therefore inherently a "how much of the whole Facility profile has been captured across BOTH
-// onboarding pages so far" question, not a per-page one.
-import { apiFetch, API_BASE } from '../config.js';
+// which FacilityHfrPanel.vue now captures on the SAME /onboarding page, right below the Hospital
+// Profile drawer (see Onboarding.vue), landing in the SAME underlying Provider
+// QuestionnaireResponse. Checking conformance is therefore inherently a "how much of the whole
+// Facility profile has been captured across both panels so far" question, not a per-panel one.
+import { apiFetch, API_BASE } from '../../config.js';
 
 export async function checkFacilityConformance(questionnaireJson, responseJson) {
   try {

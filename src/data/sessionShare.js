@@ -119,3 +119,66 @@ export async function decodeProviderProfileShareKey(rawString) {
   }
   return result;
 }
+
+// ---- Facility join-request transfer (SPEC-26 §6) ------------------------------------------
+// The "LForms data via Cübo chat" approval mechanism, replacing a server-side request queue —
+// see docs/SPEC-26-FACILITY-JOIN-TOKEN-LINKING.md §6's revision. Unlike the two transfer kinds
+// above, this payload is never built FROM an already-saved formData record — it's assembled
+// fresh, right after a successful token redemption, as a real QuestionnaireResponse against
+// system-join-request-v1's own linkIds (tools/system-forms/system-join-request-v1.yaml), so the
+// admin's CuboContactConversation.vue card can render it via the SAME LhcFormHost.vue every other
+// form in this app uses — not a bare JSON blob.
+const JOIN_REQUEST_FORM_ID = 'system-join-request-v1';
+
+function statusForRequest() {
+  // The request always starts "just redeemed, not yet decided" — Consent.status's real 'draft'
+  // value (see the YAML's own comment on why draft/active/rejected maps onto
+  // pending_admin_review/approved/rejected). The admin's own decide action is a separate,
+  // authenticated server call (POST .../decide) — this field is DISPLAY only, never itself the
+  // authorization write.
+  return 'draft';
+}
+
+export function buildJoinRequestQuestionnaireResponse({ linkKind, personName, personEmail, declaredRole, personSetupStage, token }) {
+  const answer = (valueString) => (valueString ? [{ valueString }] : []);
+  return {
+    resourceType: 'QuestionnaireResponse',
+    status: 'completed',
+    item: [{
+      linkId: 'section_join_request',
+      item: [
+        { linkId: 'request_link_kind', answer: answer(linkKind) },
+        { linkId: 'request_status', answer: answer(statusForRequest()) },
+        { linkId: 'request_person_name', answer: answer(personName) },
+        { linkId: 'request_person_email', answer: answer(personEmail) },
+        { linkId: 'request_declared_role', answer: answer(declaredRole) },
+        { linkId: 'request_person_setup_stage', answer: answer(personSetupStage) },
+        { linkId: 'request_token', answer: answer(token) },
+      ],
+    }],
+  };
+}
+
+export async function buildJoinRequestSharePayload(fields) {
+  const payload = { kind: 'facility-join-request', v: 1, data: buildJoinRequestQuestionnaireResponse(fields) };
+  const key = await encodeSessionTransfer(payload);
+  return { key, payload };
+}
+
+export async function decodeJoinRequestShareKey(rawString) {
+  const result = await decodeSessionTransfer(rawString);
+  if (!result.ok) return result;
+  if (!result.data || result.data.kind !== 'facility-join-request') {
+    return { ok: false, error: 'This key is valid but is not a ClinüxFlow facility join request.' };
+  }
+  return result;
+}
+
+// A synthetic, never-persisted "record" shape (same idea onboarding.js's own
+// buildSeedFromRegistration() uses) — the only thing LhcFormHost.vue actually needs to render a
+// QuestionnaireResponse: {id, formId, version, data}. version is null/omitted since this document
+// is never saved and never needs to resolve against a specific Questionnaire version's schema
+// beyond "the currently active one," same as every other synthetic seed record in this app.
+export function joinRequestAsSyntheticRecord(questionnaireResponse) {
+  return { id: 'join-request-transfer', formId: JOIN_REQUEST_FORM_ID, version: null, data: questionnaireResponse, savedAt: new Date().toISOString() };
+}

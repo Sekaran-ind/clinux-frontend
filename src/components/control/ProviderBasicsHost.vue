@@ -16,11 +16,19 @@
 // instance for the ADD FORM, not one per existing row (a repeating AdaptiveSectionNav-per-row
 // would fight its own per-instance localStorage mode key; out of scope here).
 import { computed, reactive, ref, shallowRef, watch } from 'vue';
-import { getAnswer, getAnswers, getGroupInstances } from '../data/useSystemForms.js';
-import AdaptiveSectionNav from './AdaptiveSectionNav.vue';
+import { getAnswer, getAnswers, getGroupInstances } from '../../data/useSystemForms.js';
+import { HPR_ROLE_CODE_CHOICES } from '../../data/control/hprRoles.js';
+import AdaptiveSectionNav from '../AdaptiveSectionNav.vue';
 
 const props = defineProps({
   record: { type: Object, default: null }, // the FULL Provider record (not sliced — spans 2 groups)
+  // SPEC-24 §7 step 7 (Tier B) — StaffOnboarding.vue's own "add yourself" self-service page reuses
+  // this component (fixing a real bug: it used to slice only section_staff, never saving a
+  // matching PractitionerRole at all) but must NOT let a freshly-invited teammate delete an
+  // already-existing colleague's row — Onboarding.vue's own admin-facing Care Team card keeps full
+  // remove capability (default false). Existing rows still render as context either way; only the
+  // per-row Remove button is gated.
+  readOnly: { type: Boolean, default: false },
 });
 
 const STAFF_LINK_ID = 'section_staff';
@@ -28,7 +36,10 @@ const ROLE_LINK_ID = 'section_staff_role';
 
 const CLINICAL_ROLE_CHOICES = ['Chief of Medicine', 'Doctor', 'Nurse', 'Administrator', 'Receptionist', 'Radiologist'];
 const SPECIALTY_CHOICES = ['Cardiology', 'Neurology', 'Radiology', 'Pediatrics', 'Orthopedics', 'Dermatology', 'General Medicine', 'ENT', 'Ophthalmology', 'Psychiatry'];
-const HPR_ROLE_CHOICES = ['Healthcare Professional', 'Facility Manager', 'Healthcare Professional and Facility Manager'];
+// hprRoles.js — the same real HPR-master vocabulary RegisterForm.vue's sign-up role picker now
+// renders, not a separate local copy of it (they used to drift: this field alone had the correct
+// HPR wording, sign-up had its own paraphrase of the identical 3-value concept).
+const HPR_ROLE_CHOICES = HPR_ROLE_CODE_CHOICES;
 
 // Practitioner-side fields (linkId -> { label, kind }); 'kind' picks the input control and the
 // real FHIR answer type (fhirValueKey below) — mirrors CustomFormHost's own real value[x] mapping.
@@ -88,7 +99,36 @@ const staffInstances = shallowRef([]);
 const roleInstances = shallowRef([]);
 function rebuild() {
   staffInstances.value = props.record ? getGroupInstances(props.record, STAFF_LINK_ID) : [];
-  roleInstances.value = props.record ? getGroupInstances(props.record, ROLE_LINK_ID) : [];
+  const loadedRoles = props.record ? getGroupInstances(props.record, ROLE_LINK_ID) : [];
+  // A real bug found live (Playwright-driven, SPEC-24 §7 step 7/Tier B): every downstream
+  // consumer of these two arrays — the record-card list's own `roleInstances.value[i]` lookup
+  // AND local-extractor.js's own "pair Practitioner/PractitionerRole by relative order within
+  // each resourceType" pairing (see the Provider conformance endpoint's own comment) — assumes
+  // staffInstances[i] and roleInstances[i] are the SAME staff member, positionally. That
+  // assumption holds for entries THIS component itself ever added (addStaff() below always
+  // pushes to both arrays in lockstep) but silently breaks the moment the incoming record has
+  // ANY pre-existing staff/role COUNT mismatch (confirmed live: a staff member imported/seeded
+  // with no role at all yet shifts every role after it onto the wrong practitioner — not a
+  // hypothetical, reproduced with a real cross-device import). Padding the shorter array here —
+  // once, at load, not per-add — keeps both arrays the same length and positionally aligned
+  // regardless of what the incoming data actually looked like.
+  //
+  // The padding entry can't be a truly EMPTY `{item: []}` — confirmed against local-extractor.js's
+  // own extractAnswers(): a group instance with no answered leaf fields never calls
+  // getOrCreateCacheEntry at all, so it produces NO resource in the extraction output whatsoever,
+  // which just re-creates the exact same positional gap one level downstream (the padding would
+  // "count" for instanceIndex purposes but then vanish from the filtered PractitionerRole list).
+  // staff_role_active:false is a real, always-serializable answer (valueBoolean survives
+  // _extractAnswerValue's own `!== undefined` check even when false) — guarantees a real, if
+  // genuinely incomplete, PractitionerRole resource actually exists at this position, which
+  // conformance correctly then flags as missing its own required fields rather than as "no role
+  // captured at all" — an honest gap, not a silently-invented one.
+  roleInstances.value = [
+    ...loadedRoles,
+    ...Array.from({ length: Math.max(0, staffInstances.value.length - loadedRoles.length) }, () => (
+      { linkId: ROLE_LINK_ID, item: placeholderRoleItems() }
+    )),
+  ];
   resetForm();
 }
 watch(() => props.record, rebuild, { immediate: true });
@@ -105,10 +145,23 @@ function removeStaff(index) {
   roleInstances.value = roleInstances.value.filter((_, i) => i !== index);
 }
 
+// Same real bug/fix rebuild()'s own header documents, the other half of it: a staff member added
+// here without ever touching the Role tab (a real, plausible flow — a new teammate who doesn't
+// know their own HPR role designation yet) produces a role instance with a genuinely EMPTY item
+// array, which local-extractor.js silently turns into NO PractitionerRole resource at all — not
+// just "invalid", entirely ABSENT — which then shifts every subsequent staff member's role
+// pairing the exact same way a missing pre-existing role does. placeholderRoleItems() guarantees
+// every newly-added staff member gets a real (if genuinely incomplete) role resource regardless
+// of whether the Role tab was ever touched.
+function placeholderRoleItems() {
+  return [{ linkId: 'staff_role_active', answer: [{ valueBoolean: false }] }];
+}
+
 function addStaff() {
   if (!form.staff_first_name) return; // the one required field — mirrors staff_name's own YAML `required: true`
   const practitionerInstance = { linkId: STAFF_LINK_ID, item: buildAnswerItems(PRACTITIONER_FIELDS) };
-  const roleInstance = { linkId: ROLE_LINK_ID, item: buildAnswerItems(ROLE_FIELDS) };
+  const roleAnswerItems = buildAnswerItems(ROLE_FIELDS);
+  const roleInstance = { linkId: ROLE_LINK_ID, item: roleAnswerItems.length > 0 ? roleAnswerItems : placeholderRoleItems() };
   staffInstances.value = [...staffInstances.value, practitionerInstance];
   roleInstances.value = [...roleInstances.value, roleInstance];
   resetForm();
@@ -163,7 +216,7 @@ defineExpose({ extract });
           <span v-if="row.clinicalRole" class="text-xs ml-2" style="color:var(--cf-text)">{{ row.clinicalRole }}</span>
           <div v-if="row.role" class="text-xs" style="color:var(--cf-text)">{{ row.role }}</div>
         </div>
-        <button class="btn-ghost text-xs px-2 py-1" @click="removeStaff(row.index)"><i class="fas fa-times"></i> Remove</button>
+        <button v-if="!props.readOnly" class="btn-ghost text-xs px-2 py-1" @click="removeStaff(row.index)"><i class="fas fa-times"></i> Remove</button>
       </div>
     </div>
     <p v-else class="text-xs text-center py-2" style="color:var(--cf-text)">No staff added yet.</p>

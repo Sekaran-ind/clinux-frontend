@@ -1,14 +1,28 @@
+// SPEC-25 (docs/SPEC-25-FEDERATED-TASK-PERSISTENCE.md) §6 moved taskActorSnapshots.js onto
+// indexedDbCollectionFactory.js's real IndexedDB backend — this file exercises that REAL backend
+// (not a mock), so it needs the same 'fake-indexeddb/auto' polyfill
+// indexedDbCollectionFactory.test.js's own header already documents (vitest isolates globals per
+// test file, so importing it there doesn't cover this file). Must be the first import — idb-keyval
+// reads the `indexedDB` global at call time, and a real failure mode was found here, not
+// hypothetical: without this, taskActorSnapshots' underlying idbSet() throws (indexedDB
+// undefined) inside an un-awaited async persist path, which silently rolled back the just-applied
+// OPTIMISTIC insert between this file's two `it()` blocks — the first test's own synchronous
+// assertions still passed (the optimistic value was applied and readable right up until the
+// rejection resolved), only the second test's "resume after a refresh" read came up empty. That's
+// exactly the kind of gap a plain "does it crash" check wouldn't have caught.
+import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { createWorkflowRuntime } from './workflowRuntime.js';
 import { actionStatus, readyActionIds } from './planDefinitionRunner.js';
 import { taskActorSnapshots, persistActorSnapshot, loadPersistedSnapshot } from '../data/collections/taskActorSnapshots.js';
 
 // Integration test — the REAL persistence collection (data/collections/taskActorSnapshots.js,
-// createLocalCollection-backed, same primitive every other collection in this app uses) wired
-// into a REAL createWorkflowRuntime(), driving the actual five-room PlanDefinition shape (matches
-// clinuxflow-api/samples/workflow-definition-v1.draft.yaml's worked example, already verified
-// there end to end through the compiler+extractor). Proves the pieces fit together, not just each
-// in isolation — workflowRuntime.test.js already covers the runtime alone with injected mocks.
+// indexedDbCollectionFactory.js-backed as of SPEC-25 §6, same primitive taskAuditLog.js also
+// uses) wired into a REAL createWorkflowRuntime(), driving the actual five-room PlanDefinition
+// shape (matches clinuxflow-api/samples/workflow-definition-v1.draft.yaml's worked example,
+// already verified there end to end through the compiler+extractor). Proves the pieces fit
+// together, not just each in isolation — workflowRuntime.test.js already covers the runtime alone
+// with injected mocks.
 const FIVE_ROOM_PLAN = {
   id: 'clinic-visit-workflow-v1',
   action: [
@@ -52,8 +66,8 @@ describe('Facility Registration Task, wired through the real runtime + real pers
 
   it('resuming after a simulated refresh — a fresh runtime rehydrates from the real persisted collection, not from scratch', () => {
     // Depends on the previous test having left a real persisted record — same collection, real
-    // localStorage-backed persistence, not reset between these two `it`s on purpose: this is
-    // exactly the "closed the browser, came back" scenario this whole design line has held as a
+    // IndexedDB-backed persistence, not reset between these two `it`s on purpose: this is exactly
+    // the "closed the browser, came back" scenario this whole design line has held as a
     // requirement since its first turn.
     const runtime = createWorkflowRuntime({ persistSnapshot: persistActorSnapshot, loadPersistedSnapshot });
     const actor = runtime.registerPlan(FIVE_ROOM_PLAN.id, FIVE_ROOM_PLAN);

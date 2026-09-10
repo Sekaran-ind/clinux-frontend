@@ -10,7 +10,7 @@ import CornerstoneViewer from '../components/CornerstoneViewer.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
 import SessionShareModal from '../components/SessionShareModal.vue';
 import ActiveSessionsLanding from '../components/ActiveSessionsLanding.vue';
-import { getEncounterAssignmentStatus } from '../data/encounterCoordination.js';
+import { getEncounterAssignmentStatus } from '../data/runtime/encounterCoordination.js';
 import VideoCallPanel from '../components/VideoCallPanel.vue';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useCuboStore } from '../stores/cubo.js';
@@ -398,7 +398,7 @@ function openDocument(doc) {
 }
 
 // Staff has no id of its own now (see getGroupInstances doc comment) — array position is the
-// identity, same as every other post-merge staff reference in this migration (AbdmOnboarding.vue).
+// identity, same as every other post-merge staff reference in this migration (ProviderHprPanel.vue).
 // careTeamCollection's staffIds now hold staff INDEXES, not record ids.
 const staffOptions = computed(() => {
   dataVersion.value; onboarding.dataVersion;

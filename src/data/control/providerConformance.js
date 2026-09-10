@@ -3,7 +3,7 @@
 // applies here too: Practitioner/PractitionerRole references get auto-linked against whatever
 // Organization is in the same bundle, so a meaningful check needs the whole record, not just the
 // section_staff/section_staff_role slice the Care Team drawer edits.
-import { apiFetch, API_BASE } from '../config.js';
+import { apiFetch, API_BASE } from '../../config.js';
 
 export async function checkProviderConformance(questionnaireJson, responseJson) {
   try {

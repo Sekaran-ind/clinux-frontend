@@ -10,9 +10,10 @@
 const SHARED_SERVER_PAGE = typeof window !== 'undefined' && window.__CLINUX_SHARED_SERVER__ === true;
 export const API_BASE = SHARED_SERVER_PAGE ? '' : (import.meta.env.VITE_API_BASE || 'http://localhost:8787');
 
-// clinuxflow-abdm-gateway — separate Worker, only called by AbdmOnboarding.vue. NOT proxied by
-// the shared server (only clinuxflow-api is, so far) -- AbdmOnboarding.vue will hit the same
-// class of network error from a second device until that's built too.
+// clinuxflow-abdm-gateway — separate Worker, only called by FacilityHfrPanel.vue/
+// ProviderHprPanel.vue/PatientAbhaPanel.vue (real HFR/HPR/ABHA registration). NOT proxied by
+// the shared server (only clinuxflow-api is, so far) -- those panels will hit the same class of
+// network error from a second device until that's built too.
 export const ABDM_GATEWAY_BASE = import.meta.env.VITE_ABDM_GATEWAY_BASE || 'http://localhost:8788';
 
 // Shared secret both backends require as X-Service-Key (see their own src/index.js auth

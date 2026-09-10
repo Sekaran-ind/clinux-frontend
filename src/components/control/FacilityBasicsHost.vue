@@ -9,12 +9,13 @@
 // to real, named inputs grouped into panels via AdaptiveSectionNav, the same "hand-authored
 // panels, like TeamSettingsModal.vue already does" style the spec asks for.
 //
-// The other onboarding cards (Staff/Services/Hours/Consents) still render through CustomFormHost
-// — staged migration (spec §7 step 7 retires it only once every consumer has its own hand-authored
-// replacement), not a big-bang rewrite of a large, currently-working page.
+// This was a staged migration — every other onboarding card followed the same pattern in later
+// passes (ProviderBasicsHost/ServicesHost/HoursHost/ConsentsHost/AffiliateOrganizationHost), and
+// CustomFormHost.vue/FormField.vue were deleted once nothing referenced them anymore (spec §7
+// step 7 / Tier B).
 import { reactive, ref, watch } from 'vue';
-import { getAnswer } from '../data/useSystemForms.js';
-import AdaptiveSectionNav from './AdaptiveSectionNav.vue';
+import { getAnswer } from '../../data/useSystemForms.js';
+import AdaptiveSectionNav from '../AdaptiveSectionNav.vue';
 
 const props = defineProps({
   record: { type: Object, default: null }, // { data: { item: [{linkId:'section_hospital', item:[...]}] } } | null
@@ -39,11 +40,18 @@ const FIELDS = [
   { linkId: 'hospital_whatsapp', label: 'WhatsApp Number' },
   { linkId: 'hospital_email', label: 'Email Address' },
   { linkId: 'hospital_website', label: 'Website URL' },
+  // Real gap found live (Hospital/Provider/Affiliate journey audit): Organization.active
+  // (min:1, Required per ClinuxFlowFacility.json) had NO capture field anywhere after the old
+  // LForms-rendered page was retired — silently unfillable. kind:'boolean' is the one exception
+  // to this component's otherwise-uniform text-input fields (see extract()'s own handling below),
+  // same minimal-targeted-addition reasoning as touching one field rather than porting
+  // ProviderBasicsHost.vue's fuller kind-system here for a component that's otherwise all-text.
+  { linkId: 'hospital_operational_status', label: 'Currently Operational', kind: 'boolean' },
 ];
 const FIELD_BY_ID = Object.fromEntries(FIELDS.map((f) => [f.linkId, f]));
 
 const SECTIONS = [
-  { id: 'basics', label: 'Basics', icon: 'fa-hospital', fields: ['hospital_name', 'hospital_legalname', 'hospital_type', 'hospital_npi'] },
+  { id: 'basics', label: 'Basics', icon: 'fa-hospital', fields: ['hospital_name', 'hospital_legalname', 'hospital_type', 'hospital_npi', 'hospital_operational_status'] },
   { id: 'address', label: 'Address', icon: 'fa-location-dot', fields: ['hospital_address', 'hospital_city', 'hospital_state', 'hospital_pin', 'hospital_country'] },
   { id: 'contact', label: 'Contact', icon: 'fa-phone', fields: ['hospital_phone', 'hospital_whatsapp', 'hospital_email', 'hospital_website'] },
 ];
@@ -53,7 +61,10 @@ const form = reactive(Object.fromEntries(FIELDS.map((f) => [f.linkId, ''])));
 const touched = reactive({});
 
 function rebuild() {
-  FIELDS.forEach((f) => { form[f.linkId] = props.record ? (getAnswer(props.record, f.linkId) ?? '') : ''; });
+  FIELDS.forEach((f) => {
+    const raw = props.record ? getAnswer(props.record, f.linkId) : undefined;
+    form[f.linkId] = f.kind === 'boolean' ? raw === true : (raw ?? '');
+  });
   Object.keys(touched).forEach((k) => delete touched[k]);
 }
 watch(() => props.record, rebuild, { immediate: true });
@@ -74,8 +85,8 @@ function extract() {
     return null; // same failure contract CustomFormHost/extractResponse() already use
   }
   const item = FIELDS
-    .filter((f) => form[f.linkId] !== '' && form[f.linkId] !== null && form[f.linkId] !== undefined)
-    .map((f) => ({ linkId: f.linkId, answer: [{ valueString: form[f.linkId] }] }));
+    .filter((f) => f.kind === 'boolean' || (form[f.linkId] !== '' && form[f.linkId] !== null && form[f.linkId] !== undefined))
+    .map((f) => ({ linkId: f.linkId, answer: [f.kind === 'boolean' ? { valueBoolean: !!form[f.linkId] } : { valueString: form[f.linkId] }] }));
   return { resourceType: 'QuestionnaireResponse', status: 'completed', item: [{ linkId: GROUP_LINK_ID, item }] };
 }
 
@@ -88,13 +99,19 @@ defineExpose({ extract });
       <template v-for="section in SECTIONS" :key="section.id" #[section.id]>
         <div class="cf-form-field-grid">
           <div v-for="linkId in section.fields" :key="linkId">
-            <label class="cf-label">{{ FIELD_BY_ID[linkId].label }}<span v-if="FIELD_BY_ID[linkId].required" style="color:#dc2626"> *</span></label>
-            <input
-              class="cf-input"
-              v-model="form[linkId]"
-              @blur="touched[linkId] = true"
-            />
-            <p v-show="errorFor(linkId)" class="text-red-500 text-xs font-medium mt-1">{{ errorFor(linkId) }}</p>
+            <label v-if="FIELD_BY_ID[linkId].kind === 'boolean'" class="cf-label flex items-center gap-2">
+              <input type="checkbox" v-model="form[linkId]" />
+              {{ FIELD_BY_ID[linkId].label }}
+            </label>
+            <template v-else>
+              <label class="cf-label">{{ FIELD_BY_ID[linkId].label }}<span v-if="FIELD_BY_ID[linkId].required" style="color:#dc2626"> *</span></label>
+              <input
+                class="cf-input"
+                v-model="form[linkId]"
+                @blur="touched[linkId] = true"
+              />
+              <p v-show="errorFor(linkId)" class="text-red-500 text-xs font-medium mt-1">{{ errorFor(linkId) }}</p>
+            </template>
           </div>
         </div>
       </template>

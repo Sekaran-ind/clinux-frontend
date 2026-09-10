@@ -5,7 +5,9 @@ import { useCuboStore } from './cubo.js';
 import { createWorkflowRuntime } from '../workflow/workflowRuntime.js';
 import { ENTRY_PLAN_DEFINITION, buildEntryServices } from '../workflow/entryPlanDefinition.js';
 import { actionStatus, actionError } from '../workflow/planDefinitionRunner.js';
-import { persistActorSnapshot, loadPersistedSnapshot } from '../data/collections/taskActorSnapshots.js';
+import { taskActorSnapshots, persistActorSnapshot, loadPersistedSnapshot } from '../data/collections/taskActorSnapshots.js';
+import { appendAuditEntry } from '../data/collections/taskAuditLog.js';
+import { pushTaskSnapshot, pushTaskAuditEntry } from '../data/runtime/taskSync.js';
 
 // SPEC-20's real home for ENTRY_PLAN_DEFINITION's runtime — a Pinia store, not a page-local
 // instance. Corrects the first version of this build (a standalone GetStarted.vue page owning
@@ -21,7 +23,56 @@ import { persistActorSnapshot, loadPersistedSnapshot } from '../data/collections
 export const useEntryWorkflowStore = defineStore('entryWorkflow', () => {
   const authStore = useAuthStore();
   const cubo = useCuboStore();
-  const runtime = createWorkflowRuntime({ persistSnapshot: persistActorSnapshot, loadPersistedSnapshot });
+  // SPEC-25 §6/§9's durable mirror is per-clinic infrastructure — every route keys on the bare
+  // `:planId` alone (task_snapshots.plan_id is its PRIMARY KEY). ENTRY_PLAN_DEFINITION.id
+  // ('unauth-entry-v1') is a shared TEMPLATE id, the SAME literal string for every account in
+  // the system — a real bug found while wiring this, not hypothetical: pushing it bare would
+  // have every user's register/login snapshot silently overwrite every OTHER user's row on the
+  // same primary key, and commingle every account's audit entries under one plan_id. Every other
+  // real consumer of this pattern in this app (encounter_assignments, provider_composition) is
+  // keyed by a genuinely unique per-instance id (an actual encounterId/clinicId) — this plan is
+  // the odd one out specifically because it was designed local-only, pre-SPEC-25, where "one
+  // shared planId per device" was a safe assumption (local storage is already scoped to whoever
+  // is using that device). Scoping the DURABLE key to `${planId}:${accountId}` restores real
+  // per-instance isolation without touching task-db.js/the routes/the migration at all — they
+  // already treat :planId as an opaque string. Anonymous (pre-login) transitions have no
+  // accountId to scope by yet, so they simply aren't pushed durably at all — correct, not a
+  // shortcut: "resume on another device" only means something once there's a real identity to
+  // resume AS (same reasoning SPEC-25 §7 already applied to Patient never holding a login).
+  function durableTaskKey() {
+    const accountId = authStore.currentUser?.id;
+    return accountId ? `${PLAN_ID}:${accountId}` : null;
+  }
+
+  const runtime = createWorkflowRuntime({
+    // Local write always happens first and always succeeds; the durable D1 push (SPEC-25 §6/§9,
+    // clinuxflow-api's /api/tasks/:planId/*) is best-effort on top, fired but not awaited — same
+    // "local-first collection is source of truth between syncs" contract every other paid-tier
+    // mirror in this app already has. loadPersistedSnapshot deliberately stays LOCAL-only for
+    // this plan (registerPlan() needs it synchronous — see ensureStarted() below on why even the
+    // local IndexedDB read already needed care here) — a genuine cross-device "resume this plan
+    // on a device that's never touched it locally" pull is left to fetchTaskSnapshot() in
+    // taskSync.js for whichever future PlanDefinition consumer actually needs that (SPEC-25 §10
+    // step 6 is the live-verify checkpoint for it), not forced into this one's hot path now.
+    persistSnapshot: (planId, actor) => {
+      persistActorSnapshot(planId, actor);
+      const durableKey = durableTaskKey();
+      if (durableKey) pushTaskSnapshot(durableKey, actor.getPersistedSnapshot());
+    },
+    loadPersistedSnapshot,
+    // SPEC-25 §6/§10 step 2 — this store is the one place that actually knows who's logged in
+    // (workflowRuntime.js itself deliberately doesn't), so it's the wrapper that adds accountId
+    // before the entry is durably written. Anonymous (pre-login/register) transitions still get
+    // persisted locally — accountId is simply null until authStore.currentUser exists, and the
+    // durable push is skipped entirely then (see durableTaskKey() above — matches migrations/
+    // 0010's own NOT NULL account_id, there's no authenticated session to push through anyway).
+    persistAuditEntry: (entry) => {
+      const accountId = authStore.currentUser?.id ?? null;
+      const record = appendAuditEntry({ ...entry, accountId });
+      const durableKey = durableTaskKey();
+      if (durableKey) pushTaskAuditEntry(durableKey, { taskId: record.taskId, actionId: entry.actionId, fromStatus: entry.from, toStatus: entry.to, accountId });
+    },
+  });
   const PLAN_ID = ENTRY_PLAN_DEFINITION.id;
 
   // Mirrors the actor's own status/error into plain reactive state on every transition — same
@@ -45,9 +96,21 @@ export const useEntryWorkflowStore = defineStore('entryWorkflow', () => {
   }
 
   let started = false;
-  function ensureStarted() {
+  async function ensureStarted() {
     if (started) return;
     started = true;
+    // SPEC-25 (docs/SPEC-25-FEDERATED-TASK-PERSISTENCE.md) §6 moved taskActorSnapshots.js onto
+    // indexedDbCollectionFactory.js's real IndexedDB backend. Unlike the localStorage backend it
+    // replaced (synchronous hydration), IndexedDB's initial load is genuinely async — a real,
+    // found-not-assumed gap: without waiting here, a persisted snapshot from an earlier real
+    // session isn't visible yet to registerPlan()'s synchronous loadPersistedSnapshot() check on
+    // a freshly-loaded page, so EVERY reload would silently look like a brand-new session,
+    // defeating the exact resumability guarantee this whole runtime exists for (caught by a
+    // failing integration test once taskActorSnapshots.js moved backends, not theoretical).
+    // preload() is TanStack DB's own "wait for the first real sync commit" primitive — falls
+    // through to a fresh start on failure (e.g. IndexedDB genuinely unavailable) rather than
+    // leaving the store stuck mid-registration.
+    try { await taskActorSnapshots.preload(); } catch (e) { /* unavailable — start fresh below */ }
     runtime.registerPlan(PLAN_ID, ENTRY_PLAN_DEFINITION, { services: buildEntryServices(authStore) });
     // registerPlan() already calls actor.start() internally (firing its OWN persistence
     // subscription immediately with the initial snapshot) before this line ever runs — a real
@@ -57,17 +120,23 @@ export const useEntryWorkflowStore = defineStore('entryWorkflow', () => {
     runtime.getPlanActor(PLAN_ID).subscribe(refresh);
     refresh();
   }
-  ensureStarted(); // cheap — registering a plan does no network I/O, only focus() does
+  // Kept, not just fire-and-forget: focus()/complete() below await it before emitting, so a
+  // caller that fires either in the first tick after store creation (a real, if narrow, race
+  // against IndexedDB's genuinely-async preload — see ensureStarted() above) still works
+  // correctly instead of being silently dropped by runtime.emit()'s own "unknown planId" guard.
+  // Also exported (`ready`, below) for tests that check `statuses`/`errors` directly rather than
+  // through focus() — those have no event to hang a wait off of, so they await this instead.
+  const readyPromise = ensureStarted();
 
   function focus(actionId, payload) {
-    runtime.emit({ type: 'FOCUS', planId: PLAN_ID, actionId, payload });
+    readyPromise.then(() => runtime.emit({ type: 'FOCUS', planId: PLAN_ID, actionId, payload }));
   }
   // The manual-completion half of the "Pinia pub/sub" pattern (user's own term) that replaces a
   // build-time services map for a designer-authored action with no real invoke: something OUTSIDE
   // the plan (a click handler) fires COMPLETE itself once the real work is actually done — logout
   // is the one real case left in this plan (see logout() below).
   function complete(actionId, payload) {
-    runtime.emit({ type: 'COMPLETE', planId: PLAN_ID, actionId, payload });
+    readyPromise.then(() => runtime.emit({ type: 'COMPLETE', planId: PLAN_ID, actionId, payload }));
   }
 
   // SPEC-22 decision #3 — "Cübo mirrors app state": logout resets to General. The single, real
@@ -143,6 +212,6 @@ export const useEntryWorkflowStore = defineStore('entryWorkflow', () => {
 
   return {
     statuses, errors, auditLog, focus, complete, logout, primaryActionIds, secondaryActionIds,
-    onRoleKnown, activeEntryAction, selectEntryAction, clearEntryAction,
+    onRoleKnown, activeEntryAction, selectEntryAction, clearEntryAction, ready: readyPromise,
   };
 });

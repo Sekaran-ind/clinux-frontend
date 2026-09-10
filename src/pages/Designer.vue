@@ -476,6 +476,10 @@ const PROVIDER_CARDS = [
   { id: 'consent', kind: 'group', groupLinkId: 'section_consent', mode: 'repeatable', roomId: 'facility', icon: 'fas fa-file-signature', color: '#EF4444', bg: 'rgba(239,68,68,.1)', title: 'Legal Consents', desc: 'Consent types your clinic collects from patients.' },
   { id: 'location', kind: 'group', groupLinkId: 'section_location', mode: 'repeatable', roomId: 'facility', icon: 'fas fa-map-marker-alt', color: '#14B8A6', bg: 'rgba(20,184,166,.1)', title: 'Branches', desc: 'Additional clinic locations.' },
   { id: 'appointment', kind: 'group', groupLinkId: 'section_appointment', mode: 'repeatable', roomId: 'facility', icon: 'fas fa-calendar-alt', color: '#EC4899', bg: 'rgba(236,72,153,.1)', title: 'Appointments', desc: 'Booked appointment records.' },
+  // SPEC-24 §7 step 6 — Affiliate Organization (ClinuxFlowAffiliateOrganization/OrganizationAffiliation),
+  // same facility tier as Services/Hours/Consent/Location above; distinct from the practitioner-level
+  // Affiliates tab in TeamSettingsModal.vue (a different FHIR resource, see clinux-spec24-... memory note).
+  { id: 'affiliate-organization', kind: 'group', groupLinkId: 'section_affiliate_organization', mode: 'repeatable', roomId: 'facility', icon: 'fas fa-handshake', color: '#0EA5E9', bg: 'rgba(14,165,233,.1)', title: 'Affiliate Organizations', desc: 'Partner labs, imaging centres or billing services as FHIR OrganizationAffiliation records.' },
 ];
 
 // System forms aren't tagged with a roomId in their own formsLibrary row (they're seeded verbatim

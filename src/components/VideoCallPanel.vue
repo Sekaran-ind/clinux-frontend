@@ -1,12 +1,14 @@
 <script setup>
-// Phase E: video conferencing in Consultation Desk via Cloudflare RealtimeKit (see
-// clinuxflow-api's POST /api/realtime/join and clinux-mobile-sync-multiuser-video-roadmap
-// memory note). NOT live-tested against a real Cloudflare RealtimeKit account — no credentials
-// were available while building this; the account-level API token lives only server-side
+// Phase E: video conferencing via Cloudflare RealtimeKit — originally Consultation Desk-only
+// (POST /api/realtime/join), now also reused for contact-to-contact calls from Cübo's own
+// Contacts pane (POST /api/realtime/contact-call/:peerAccountId/join — the real gap found while
+// auditing the Hospital/Provider/Affiliate journey: chat already worked between any staff member
+// and any linked affiliate, video never did). The account-level API token lives only server-side
 // (clinuxflow-api), this component only ever sees the short-lived per-participant authToken the
-// server mints. Structurally verified (build/lint/mounts cleanly) and ready to wire up the
-// moment real credentials exist — the /api/realtime/join call itself 501s cleanly with a clear
-// message until then, rather than this component ever needing to know whether it's configured.
+// server mints. The original encounter-scoped path was live-tested end-to-end against a real
+// Cloudflare RealtimeKit account this session; the contact-call path reuses the exact same
+// RealtimeClient/init/mount code below and was ALSO live-verified this session (two real
+// accounts, a real minted authToken + meetingId, confirmed shared across both sides of the call).
 //
 // Uses RealtimeKit's pre-built <rtk-meeting> web component (not a hand-built video grid) --
 // explicit choice: their UI kit is well-tested by Cloudflare and gets a full-featured meeting UI
@@ -22,9 +24,17 @@ import RealtimeKitClient from '@cloudflare/realtimekit';
 import { defineCustomElements } from '@cloudflare/realtimekit-ui/loader';
 import { API_BASE, apiFetch } from '../config.js';
 
+// Hospital/Provider/Affiliate journey follow-up — generalized from encounter-only to also
+// support a contact-to-contact call (staff<->staff or staff<->affiliate from Cübo's own Contacts
+// pane, see CuboContactConversation.vue), reusing every RealtimeKit init/mount line below as-is —
+// only the ONE apiFetch call site (startCall(), below) differs by which prop was given. Exactly
+// one of encounterId or peerAccountId is expected; encounterId takes precedence if a caller
+// somehow passes both (shouldn't happen — the two calling components never overlap).
 const props = defineProps({
-  encounterId: { type: String, required: true },
+  encounterId: { type: String, default: '' },
   encounterTitle: { type: String, default: '' },
+  peerAccountId: { type: String, default: '' },
+  peerName: { type: String, default: '' },
 });
 
 defineCustomElements(); // idempotent -- safe even if another instance already called this
@@ -39,11 +49,13 @@ async function startCall() {
   status.value = 'connecting';
   errorMessage.value = '';
   try {
-    const res = await apiFetch(`${API_BASE}/api/realtime/join`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ encounterId: props.encounterId, encounterTitle: props.encounterTitle }),
-    });
+    const res = props.encounterId
+      ? await apiFetch(`${API_BASE}/api/realtime/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ encounterId: props.encounterId, encounterTitle: props.encounterTitle }),
+        })
+      : await apiFetch(`${API_BASE}/api/realtime/contact-call/${encodeURIComponent(props.peerAccountId)}/join`, { method: 'POST' });
 
     if (res.status === 501) {
       status.value = 'unavailable';
@@ -98,7 +110,9 @@ onUnmounted(() => endCall());
     </div>
 
     <div v-if="status === 'idle'">
-      <p class="text-sm mb-3" style="color:var(--cf-text)">Start a video call with the care team on this encounter.</p>
+      <p class="text-sm mb-3" style="color:var(--cf-text)">
+        {{ encounterId ? 'Start a video call with the care team on this encounter.' : `Start a video call with ${peerName || 'this contact'}.` }}
+      </p>
       <button class="btn-teal text-sm" @click="startCall()"><i class="fas fa-video"></i> Start Video Call</button>
     </div>
 

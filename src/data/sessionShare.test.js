@@ -3,6 +3,7 @@ import {
   buildEncounterSharePayload, decodeEncounterShareKey, isSameClinic, alreadyConsented,
   importEncounterSharePayload, consentAndImport,
   buildProviderProfileSharePayload, decodeProviderProfileShareKey,
+  buildJoinRequestSharePayload, decodeJoinRequestShareKey, buildJoinRequestQuestionnaireResponse, joinRequestAsSyntheticRecord,
 } from './sessionShare.js';
 import { encodeSessionTransfer } from './sessionTransfer.js';
 import { formData } from './collections/formData.js';
@@ -120,4 +121,51 @@ describe('buildProviderProfileSharePayload / decodeProviderProfileShareKey', () 
   // equivalent for it at all, by design (see sessionShare.js's own comment on why). That absence
   // is enforced in the UI (SessionImportModal.vue rejects outright on a clinic mismatch), not
   // testable as a missing export here.
+});
+
+describe('buildJoinRequestSharePayload / decodeJoinRequestShareKey (SPEC-26 §6)', () => {
+  it('maps the given fields onto real system-join-request-v1 linkIds and round-trips through decode', async () => {
+    const { key, payload } = await buildJoinRequestSharePayload({
+      linkKind: 'affiliate', personName: 'Dr Jane Doe', personEmail: 'jane@a.com',
+      declaredRole: 'Visiting Cardiologist', personSetupStage: 'published', token: 'ABC12345',
+    });
+    expect(payload.kind).toBe('facility-join-request');
+    const section = payload.data.item[0];
+    expect(section.linkId).toBe('section_join_request');
+    const answerFor = (linkId) => section.item.find((i) => i.linkId === linkId)?.answer?.[0]?.valueString;
+    expect(answerFor('request_link_kind')).toBe('affiliate');
+    expect(answerFor('request_status')).toBe('draft');
+    expect(answerFor('request_person_name')).toBe('Dr Jane Doe');
+    expect(answerFor('request_person_email')).toBe('jane@a.com');
+    expect(answerFor('request_declared_role')).toBe('Visiting Cardiologist');
+    expect(answerFor('request_person_setup_stage')).toBe('published');
+    expect(answerFor('request_token')).toBe('ABC12345');
+
+    const decoded = await decodeJoinRequestShareKey(key);
+    expect(decoded.ok).toBe(true);
+    expect(decoded.data).toEqual(payload);
+  });
+
+  it('omits an answer entirely for a field with no value (e.g. staff has no declared role)', async () => {
+    const { payload } = await buildJoinRequestSharePayload({ linkKind: 'staff', personName: 'New Hire', personEmail: 'new@a.com', token: 'X' });
+    const section = payload.data.item[0];
+    const roleItem = section.item.find((i) => i.linkId === 'request_declared_role');
+    expect(roleItem.answer).toEqual([]);
+  });
+
+  it('rejects a validly-encrypted key that is not a facility-join-request payload', async () => {
+    const { key } = await buildEncounterSharePayload({ id: 'x', formId: 'f', version: 1, clinicId: 'c', data: { item: [] } });
+    const result = await decodeJoinRequestShareKey(key);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('joinRequestAsSyntheticRecord', () => {
+  it('wraps a QuestionnaireResponse in the {id, formId, version, data} shape LhcFormHost needs', () => {
+    const qr = buildJoinRequestQuestionnaireResponse({ linkKind: 'staff', personName: 'X', personEmail: 'x@a.com', token: 'T' });
+    const record = joinRequestAsSyntheticRecord(qr);
+    expect(record.formId).toBe('system-join-request-v1');
+    expect(record.version).toBeNull();
+    expect(record.data).toBe(qr);
+  });
 });

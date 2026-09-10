@@ -22,8 +22,8 @@
 // of document they already expect to hand to a new provider on purpose.
 import { jsPDF } from 'jspdf';
 import QRCode from 'qrcode';
-import { buildEncounterSharePayload } from './sessionShare.js';
-import { getAnswer, getGroupInstances } from './useSystemForms.js';
+import { buildEncounterSharePayload } from '../sessionShare.js';
+import { getAnswer, getGroupInstances } from '../useSystemForms.js';
 
 function clinicProfile() {
   try { return JSON.parse(localStorage.getItem('cf_clinic_profile') || '{}') || {}; } catch (e) { return {}; }

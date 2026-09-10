@@ -7,7 +7,7 @@
 // deliberately connectivity-mode-agnostic — these calls go straight to clinuxflow-api regardless
 // of whether the device is on the clinic's LAN or not, since assignment/lock behavior must be
 // identical in both modes (an explicit decision, not a default).
-import { API_BASE, apiFetch } from '../config.js';
+import { API_BASE, apiFetch } from '../../config.js';
 
 async function jsonOrNull(res) {
   try { return await res.json(); } catch (e) { return null; }
