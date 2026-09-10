@@ -18,6 +18,7 @@ export {
   saveDataRecord,
   deleteDataRecord,
   patchRecordField,
+  patchRecordMultiField,
   patchGroupInstanceField,
   appendGroupInstance,
   appendGroupResponseItem,

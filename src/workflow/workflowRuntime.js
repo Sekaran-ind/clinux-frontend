@@ -26,7 +26,17 @@ import { buildPlanDefinitionRunnerMachine } from './planDefinitionRunner.js';
 // — see authPlanDefinition.js — is the first real case). `onActionDone` (SPEC-21 §5) is the
 // cross-plan-triggering capability SPEC-13 §9 named as still open — "reacting to one action's
 // completion to trigger something OUTSIDE that action" — made real.
-export function createWorkflowRuntime({ persistSnapshot = () => {}, loadPersistedSnapshot = () => null } = {}) {
+export function createWorkflowRuntime({
+  persistSnapshot = () => {},
+  loadPersistedSnapshot = () => null,
+  // SPEC-25 (docs/SPEC-25-FEDERATED-TASK-PERSISTENCE.md) §6/§10 step 2's durable audit trail —
+  // same injection-point discipline as persistSnapshot/loadPersistedSnapshot above (testable
+  // without touching real storage, decoupled from one specific backend). Deliberately NOT given
+  // the accountId itself — this module has no auth context by design (see this function's own
+  // header) — the caller's wrapper (entryWorkflow.js) is what knows who's logged in and adds it
+  // when actually persisting.
+  persistAuditEntry = () => {},
+} = {}) {
   const events$ = new Subject();
   const registry = new Map(); // planId -> { actor, planDefinition, lastValue }
 
@@ -43,7 +53,14 @@ export function createWorkflowRuntime({ persistSnapshot = () => {}, loadPersiste
   // layer exists and actually produces suggest/apply/dismiss events.
   const auditLog = [];
   function logAudit(entry) {
-    auditLog.push({ at: new Date().toISOString(), ...entry });
+    const record = { at: new Date().toISOString(), ...entry };
+    auditLog.push(record);
+    // SPEC-25 §6 — the durable half of this same log. Best-effort by design (same "local write
+    // always happens first and always succeeds" contract every persistence hook in this app
+    // already has, see persistSnapshot above) — a caller that doesn't inject a real
+    // persistAuditEntry (a test, or a runtime instance nobody wired up) still gets the in-memory
+    // array unchanged, just not durably.
+    persistAuditEntry(record);
   }
 
   // SPEC-21 (docs/SPEC-21-STATE-MACHINE-MAP-SIX-DIMENSION-ARCHITECTURE.md) §5's role-based

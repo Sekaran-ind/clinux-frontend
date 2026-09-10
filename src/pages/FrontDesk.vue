@@ -6,6 +6,7 @@
 import { computed, ref } from 'vue';
 import Cubo from '../components/Cubo.vue';
 import LhcFormHost from '../components/LhcFormHost.vue';
+import PatientBasicsHost from '../components/control/PatientBasicsHost.vue';
 import SessionShareModal from '../components/SessionShareModal.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import ActiveSessionsLanding from '../components/ActiveSessionsLanding.vue';
@@ -18,7 +19,8 @@ import { useCuboStore } from '../stores/cubo.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 import { getEncounterCustomFormLinks, attachCustomFormRecord } from '../data/collections/encounterDocs.js';
-import { assignToSpecialist, getEncounterAssignmentStatus, acquireWorklistLock, releaseWorklistLock } from '../data/encounterCoordination.js';
+import { assignToSpecialist, getEncounterAssignmentStatus, acquireWorklistLock, releaseWorklistLock } from '../data/runtime/encounterCoordination.js';
+import { checkPatientConformance } from '../data/control/patientConformance.js';
 
 const PATIENT_FORM_ID = 'system-patient-profile-v1';
 
@@ -268,6 +270,7 @@ function openStep(stepId) {
   if (stepId === 'patient') {
     drawerQuestionnaire.value = activeQuestionnaire(PATIENT_FORM_ID);
     drawerRecord.value = null;
+    patientConformanceResult.value = null;
     return;
   }
   // Encounter/Vitals/Triage all open the SAME merged Encounter-composition document now —
@@ -282,6 +285,25 @@ function openStep(stepId) {
 
 function closeDrawer() {
   drawerOpen.value = false;
+  patientConformanceResult.value = null;
+}
+
+// SPEC-24 §7 step 6 — the same on-demand "FHIR Conformance" check Onboarding.vue's cards already
+// have. Single Patient slice, not the whole document — see patientConformance.js's own header.
+// Reads the LIVE in-progress form (extract()), not a saved record like Onboarding.vue's own
+// checks do — openStep('patient') always opens blank (this page's job is "register a NEW
+// patient," never editing one), so there is no saved record to check against until Save is
+// clicked; checking pre-save is the actually useful moment here.
+const patientConformanceLoading = ref(false);
+const patientConformanceResult = ref(null); // { valid, errors, patient } | { error } | null
+async function checkPatientConformanceNow() {
+  patientConformanceLoading.value = true;
+  const questionnaireJson = activeQuestionnaire(PATIENT_FORM_ID);
+  const responseJson = lhcFormHost.value?.extract();
+  patientConformanceResult.value = (questionnaireJson && responseJson)
+    ? await checkPatientConformance(questionnaireJson, responseJson)
+    : { error: 'Fill in the patient\'s details first.' };
+  patientConformanceLoading.value = false;
 }
 
 function saveDrawer() {
@@ -555,11 +577,36 @@ function onSessionImported(importedEncounterId) {
       <button @click="closeDrawer()" class="bg-transparent border-none cursor-pointer" style="color:var(--cf-text);font-size:1.1rem"><i class="fas fa-times"></i></button>
     </div>
     <div class="drawer-body">
-      <LhcFormHost v-if="drawerOpen && drawerQuestionnaire" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" :highlight-link-ids="slotFillHighlights.recentlyFilled.map((f) => f.linkId)" :scroll-to-link-id="drawerScrollToLinkId" />
+      <!-- SPEC-24 §7 step 6 — Patient is off LhcFormHost/LForms now, a hand-authored panel (real
+           ABHA registration included) via AdaptiveSectionNav, same drop-in extract() contract. -->
+      <PatientBasicsHost v-if="drawerOpen && activeStepId === 'patient'" ref="lhcFormHost" :record="drawerRecord" />
+      <LhcFormHost v-else-if="drawerOpen && drawerQuestionnaire" ref="lhcFormHost" :questionnaire="drawerQuestionnaire" :record="drawerRecord" container-id="drawerFormContainer" :highlight-link-ids="slotFillHighlights.recentlyFilled.map((f) => f.linkId)" :scroll-to-link-id="drawerScrollToLinkId" />
       <p v-else-if="drawerOpen" class="text-sm" style="color:var(--cf-text)">
         This form isn't available yet — clinuxflow-api may not be reachable to seed it.
         Confirm it's running, then reopen this drawer.
       </p>
+
+      <div v-if="drawerOpen && activeStepId === 'patient'" class="cf-card rounded-2xl p-4 mt-3">
+        <div class="flex items-center justify-between mb-2">
+          <p class="cf-label mb-0">FHIR Patient Conformance <span style="font-weight:400">(ClinuxFlowPatient profile)</span></p>
+          <button class="btn-ghost text-xs px-2 py-1" :disabled="patientConformanceLoading" @click="checkPatientConformanceNow()">
+            <i class="fas" :class="patientConformanceLoading ? 'fa-spinner fa-spin' : 'fa-shield-halved'"></i> Check
+          </button>
+        </div>
+        <p v-if="!patientConformanceResult" class="text-xs" style="color:var(--cf-text)">
+          Checks the entered details against the real ABHA-grounded Patient schema. Most walk-ins won't go fully green without an ABHA linked — that's expected, not required to register.
+        </p>
+        <p v-else-if="patientConformanceResult.error" class="text-xs" style="color:#b91c1c">{{ patientConformanceResult.error }}</p>
+        <template v-else>
+          <p class="text-xs font-semibold mb-2" :style="patientConformanceResult.valid ? 'color:var(--color-primary)' : 'color:var(--cf-text)'">
+            <i class="fas" :class="patientConformanceResult.valid ? 'fa-circle-check' : 'fa-circle-info'"></i>
+            {{ patientConformanceResult.valid ? 'Fully conformant.' : `${patientConformanceResult.errors.length} field(s) still needed for full conformance.` }}
+          </p>
+          <ul v-if="!patientConformanceResult.valid" style="font-size:.72rem;color:var(--cf-text);padding-left:1rem;max-height:140px;overflow-y:auto">
+            <li v-for="e in patientConformanceResult.errors" :key="e.path">{{ e.message }}</li>
+          </ul>
+        </template>
+      </div>
     </div>
     <div class="drawer-footer">
       <button class="btn-ghost" @click="closeDrawer()">Cancel</button>

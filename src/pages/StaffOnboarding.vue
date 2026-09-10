@@ -1,10 +1,11 @@
 <script setup>
 // A NEW, focused self-service onboarding page for a teammate added via Phase D's Team invite —
-// distinct from Onboarding.vue (the admin's full clinic setup hub) and AbdmOnboarding.vue (the
-// admin's full HFR/HPR registration console, 767 lines of Aadhaar/OTP flows, currently reachable
-// only by typing its URL). This page has exactly two jobs: (1) let a new teammate add THEIR OWN
-// entry to the Staff directory — name/role/specialization/qualification + the HPR identifiers,
-// if they already have them — and (2) bring over the clinic's existing profile, since a fresh
+// distinct from Onboarding.vue (the admin's full clinic setup hub). This page has exactly two
+// jobs: (1) let a new teammate add THEIR OWN entry to the Staff directory —
+// name/role/specialization/qualification, then (via ProviderHprPanel.vue below, the same real
+// HFR/HPR-audit rebuild that retired the old standalone AbdmOnboarding.vue console) their own
+// real HPR registration if they don't already have one — and (2) bring over the clinic's existing
+// profile, since a fresh
 // device otherwise shows the sandbox demo clinic instead of the real one (see
 // clinux-mobile-sync-multiuser-video-roadmap memory note's Phase D gap).
 //
@@ -16,15 +17,16 @@
 // without needing another device present at all. QR/text-key stays available as a manual
 // fallback (SessionImportModal below) for the genuinely offline case — no LAN, no
 // clinuxflow-api reachable — not deleted, just no longer the primary path.
-import { computed, onMounted, ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import CustomFormHost from '../components/CustomFormHost.vue';
+import ProviderBasicsHost from '../components/control/ProviderBasicsHost.vue';
+import ProviderHprPanel from '../components/control/ProviderHprPanel.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import { useAuthStore } from '../stores/auth.js';
 import {
-  seedSystemForms, activeQuestionnaire, sliceQuestionnaireGroup,
-  getGroupInstances, getAnswer, patchGroupInstanceField, appendGroupResponseItem,
+  seedSystemForms, activeVersionNumber,
+  getGroupInstances, getAnswer, patchGroupInstanceField, mergeGroupResponseItems, saveDataRecord,
 } from '../data/useSystemForms.js';
 import { API_BASE, apiFetch } from '../config.js';
 
@@ -77,17 +79,8 @@ function showToast(msg) {
   toastTimer = setTimeout(() => (toast.value.show = false), 3200);
 }
 
-// Real onboarding-UI audit/rebuild, Provider (Staff) — the same real, compiled Questionnaire
-// Designer's Provider drawer and Cübo's Hospital Setup checklist both already render, sliced down
-// to just this one group (see Cubo.vue's own hospitalStepQuestionnaire computed for the identical
-// pattern).
-const staffQuestionnaire = computed(() => {
-  const full = activeQuestionnaire(onboarding.PROVIDER_FORM_ID);
-  return full ? sliceQuestionnaireGroup(full, 'section_staff') : null;
-});
-
 const drawerOpen = ref(false);
-const staffFormHost = ref(null); // CustomFormHost's exposed { extract() }
+const staffFormHost = ref(null); // ProviderBasicsHost's exposed { extract() }
 const importModalOpen = ref(false);
 const saveError = ref('');
 
@@ -100,51 +93,66 @@ function staffCount() {
 }
 
 function openStaffDrawer() {
-  drawerOpen.value = true; // LhcFormHost below always renders blank (:record="null") -- this page's own job is "add THIS teammate", never editing an existing one
+  // SPEC-24 §7 step 7 (Tier B) — ProviderBasicsHost.vue needs the FULL record now (it's what
+  // seeds its own record-card list of already-existing staff and, crucially, is what its
+  // extract() re-emits as a full replacement set — see saveDrawer()'s own comment on why
+  // :read-only="true" matters here). Was always `null`; this page's own job is still just "add
+  // THIS teammate", never editing an existing one, so read-only stays true regardless.
+  drawerOpen.value = true;
   saveError.value = '';
 }
 function closeDrawer() {
   drawerOpen.value = false;
 }
 
-// Real onboarding-UI audit/rebuild, Provider (Staff) — swaps AbdmFieldForm/STAFF_FIELDS (a
-// bespoke non-FHIR renderer, missing fields the real Questionnaire already has — staff_phone/
-// staff_qualification/staff_license/staff_status) for real, FHIR-native capture against the same
-// compiled section_staff group. Originally routed through LForms (LhcFormHost) here; superseded
-// again almost immediately — "narrow lhcforms is getting difficult" (explicit instruction) — by
-// CustomFormHost, a custom app-styled renderer reading the exact same compiled Questionnaire
-// (still one real schema, never a second hand-maintained field list), just without delegating to
-// the LForms JS widget library at all. Its extract() returns the same real QuestionnaireResponse
-// shape LhcFormHost's did, so nothing below this comment needed to change. The LForms coded-field
-// data-loss bug that originally justified AbdmFieldForm here (clinux-lforms-coded-field-data-loss-
-// bug memory note) doesn't apply to CustomFormHost either way — it never delegates to LForms.
+// SPEC-24 §7 step 7 (Tier B) — swapped CustomFormHost for ProviderBasicsHost.vue, the same
+// component Onboarding.vue's own Care Team card uses, `:read-only="true"` (see that prop's own
+// header comment) so a freshly-invited teammate can see who else is on the team but can't delete
+// anyone else's row. This is also a real bug fix, not just a rendering swap: ProviderBasicsHost's
+// extract() always produces BOTH section_staff and section_staff_role in lockstep, where the old
+// CustomFormHost-based version here only ever captured section_staff — a teammate who added
+// themselves via this page got a Practitioner with no matching PractitionerRole at all (confirmed
+// via the SPEC-24 conformance chain, not assumed).
 //
-// Uses appendGroupResponseItem (APPEND one new instance) rather than Cübo's own
-// mergeGroupResponseItems (REPLACE the whole group) — this drawer always renders blank, never
-// pre-filled with other teammates' entries (privacy, and so a save here can never clobber anyone
-// else's row the way submitting a pre-filled-with-everyone's-data form back through a
-// replace-the-group helper would risk).
+// mergeGroupResponseItems (REPLACE each group), not appendGroupResponseItem (APPEND one new
+// instance) — ProviderBasicsHost is now seeded with the FULL existing staff list (read-only rows)
+// plus whatever was just added, so its own extract() already returns "everyone, including the new
+// one" — the same grouped-merge pattern Onboarding.vue's own saveDrawerRecord() already uses for
+// multi-group repeatable cards.
 function saveDrawer() {
+  const beforeCount = getGroupInstances(onboarding.getProviderRecord(), 'section_staff').length;
   const response = staffFormHost.value?.extract();
-  if (!response || !response.item?.[0]) {
+  if (!response || !response.item?.length) {
     saveError.value = 'Could not read the entered data. Please try again.';
     return;
   }
-  saveError.value = '';
-  const recordId = onboarding.ensureProviderRecord();
-  const newIndexes = appendGroupResponseItem(recordId, 'section_staff', response.item);
-  // appendGroupResponseItem() silently no-ops (returns []) for a recordId that doesn't resolve to
-  // a real record — ensureProviderRecord() now guards against its own cached id going stale (see
-  // its own comment), so this should be unreachable in practice, but a save genuinely failing
-  // should never still claim "Saved" — that was a real, live-found gap this closes defensively.
-  if (newIndexes.length === 0) {
-    saveError.value = 'Could not save — please try again.';
+  const byLinkId = new Map();
+  response.item.forEach((item) => {
+    if (!byLinkId.has(item.linkId)) byLinkId.set(item.linkId, []);
+    byLinkId.get(item.linkId).push(item);
+  });
+  // A genuinely blank save (drawer opened, nothing typed, Save clicked straight away) now returns
+  // the SAME existing staff list untouched rather than an empty response — extract()'s own
+  // failure contract doesn't catch that case, so it's checked explicitly here: never claim
+  // "Saved — thanks for joining the team!" when nobody was actually added.
+  const afterStaffCount = (byLinkId.get('section_staff') || []).length;
+  if (afterStaffCount <= beforeCount) {
+    saveError.value = "Please fill in your name before saving.";
     return;
   }
+
+  saveError.value = '';
+  const recordId = onboarding.ensureProviderRecord();
+  const record = onboarding.getProviderRecord();
+  let mergedData = record?.data || { item: [] };
+  byLinkId.forEach((items, linkId) => { mergedData = mergeGroupResponseItems(mergedData, linkId, items); });
+  saveDataRecord(onboarding.PROVIDER_FORM_ID, activeVersionNumber(onboarding.PROVIDER_FORM_ID), mergedData, recordId);
   onboarding.dataVersion++;
   showToast('Saved — thanks for joining the team!');
   drawerOpen.value = false;
-  prepareSpecialtyTag(newIndexes[0]);
+  // The just-added entry is always last (ProviderBasicsHost's own addStaff() only ever pushes to
+  // the end) — no separate "new index" return value the way appendGroupResponseItem's did.
+  prepareSpecialtyTag(afterStaffCount - 1);
 }
 
 // --- Wikidata-assisted specialty tagging (SPEC-06 §6 / SPEC-08 Phase 1) — this is the concrete
@@ -154,17 +162,19 @@ const specialtyTagCandidates = ref(null); // null = not searched yet / picker cl
 const specialtyTagLoading = ref(false);
 const specialtyTagApplied = ref(false);
 const currentSpecialtyText = ref('');
-let savedStaffInstanceIndex = -1;
+// Was a plain `let` — promoted to a ref so ProviderHprPanel below (a real HPR-registration
+// follow-up, same "post-save action" slot the Wikidata tagging already established) can react to
+// it in the template; every existing read/write site already goes through prepareSpecialtyTag()/
+// applySpecialtyWikidataTag(), so this is a mechanical .value change, not a behavior change.
+const savedStaffInstanceIndex = ref(-1);
 
-// newIndex comes straight from appendGroupResponseItem()'s own return value now — no more
-// guessing "last instance" the way plain LForms-document extraction used to require.
 function prepareSpecialtyTag(newIndex) {
   specialtyTagCandidates.value = null;
   specialtyTagApplied.value = false;
-  savedStaffInstanceIndex = newIndex;
-  if (savedStaffInstanceIndex < 0) { currentSpecialtyText.value = ''; return; }
+  savedStaffInstanceIndex.value = newIndex;
+  if (savedStaffInstanceIndex.value < 0) { currentSpecialtyText.value = ''; return; }
   const instances = getGroupInstances(onboarding.getProviderRecord(), 'section_staff');
-  currentSpecialtyText.value = getAnswer({ data: instances[savedStaffInstanceIndex] }, 'staff_specialty') || '';
+  currentSpecialtyText.value = getAnswer({ data: instances[savedStaffInstanceIndex.value] }, 'staff_specialty') || '';
 }
 
 async function suggestSpecialtyWikidataTags() {
@@ -184,12 +194,12 @@ async function suggestSpecialtyWikidataTags() {
 
 async function applySpecialtyWikidataTag(candidate) {
   specialtyTagCandidates.value = null;
-  if (savedStaffInstanceIndex < 0 || !onboarding.providerRecordId) return;
+  if (savedStaffInstanceIndex.value < 0 || !onboarding.providerRecordId) return;
   try {
     const res = await apiFetch(`${API_BASE}/api/nlp/wikidata-concept?qid=${encodeURIComponent(candidate.qid)}`);
     const body = await res.json().catch(() => null);
     if (!body?.success) return;
-    patchGroupInstanceField(onboarding.providerRecordId, 'section_staff', savedStaffInstanceIndex, {
+    patchGroupInstanceField(onboarding.providerRecordId, 'section_staff', savedStaffInstanceIndex.value, {
       staff_specialty_wikidata_qid: candidate.qid,
       staff_specialty_wikidata_aliases: body.concept.aliases.join(', '),
     });
@@ -228,7 +238,7 @@ function finish() {
     </div>
     <div class="drawer-body">
       <div class="preview-panel">
-        <CustomFormHost v-if="drawerOpen && staffQuestionnaire" ref="staffFormHost" :questionnaire="staffQuestionnaire" :record="null" />
+        <ProviderBasicsHost v-if="drawerOpen" ref="staffFormHost" :record="onboarding.getProviderRecord()" :read-only="true" />
         <p v-if="saveError" style="font-size:.75rem;color:#dc2626;margin-top:.6rem"><i class="fas fa-circle-exclamation"></i> {{ saveError }}</p>
 
         <!-- Post-save Wikidata specialty tagging -- see prepareSpecialtyTag()'s own comment for
@@ -256,6 +266,14 @@ function finish() {
           </div>
         </div>
         <p v-else-if="specialtyTagApplied" style="font-size:.75rem;color:var(--color-primary);margin-top:1rem"><i class="fas fa-check"></i> Specialty tagged.</p>
+
+        <!-- Real HPR (Health Professional Registry) self-registration, same "post-save follow-up"
+             slot the Wikidata tagging above already established. -->
+        <ProviderHprPanel
+          v-if="savedStaffInstanceIndex >= 0"
+          :record="onboarding.getProviderRecord()" :staff-index="savedStaffInstanceIndex"
+          @registered="onboarding.dataVersion++"
+        />
       </div>
     </div>
     <div class="drawer-footer">

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, toRaw } from 'vue';
 import { users } from '../data/collections/users.js';
 import { API_BASE, apiFetch, SESSION_TOKEN_KEY } from '../config.js';
 
@@ -62,7 +62,14 @@ export const useAuthStore = defineStore('auth', () => {
 
     if (!res.success) return { error: res.error };
     setSession(res.account, res.token);
-    return { user: currentUser.value };
+    // toRaw() — currentUser is a ref(), so .value on an object holds a Vue reactive Proxy, not the
+    // plain merged object. This result flows straight into entryWorkflow.js's XState context
+    // (planDefinitionRunner.js's `result_register`/`result_login`, via event.output) and gets
+    // persisted on every snapshot — a real, live DataCloneError: IndexedDB's structured-clone
+    // algorithm (taskActorSnapshots.js's backend, unlike the old JSON.stringify-based localStorage
+    // one) cannot clone a Proxy at all. Same root cause ProviderBasicsHost.vue's own header
+    // documents for structuredClone() — a reactive Proxy crossing a structured-clone boundary.
+    return { user: toRaw(currentUser.value) };
   }
 
   async function login(email, password) {
@@ -74,7 +81,7 @@ export const useAuthStore = defineStore('auth', () => {
 
     if (!res.success) return { error: res.error };
     setSession(res.account, res.token);
-    return { user: currentUser.value };
+    return { user: toRaw(currentUser.value) }; // see register()'s own comment above on why toRaw()
   }
 
   // Re-fetches account+clinic (fresh tier) from the server — call on app boot if a token exists.
@@ -104,20 +111,6 @@ export const useAuthStore = defineStore('auth', () => {
     const res = await apiFetch(`${API_BASE}/api/auth/team`).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
     if (!res.success) return { error: res.error };
     return { accounts: res.accounts };
-  }
-
-  // Adds another login to THIS account's own clinic. No email is sent (this app has no mail
-  // server) — the admin sets the new teammate's email+password directly and shares it with them
-  // out of band, then the teammate signs in normally at /.
-  async function inviteTeammate({ email, password, adminName, designation }) {
-    const res = await apiFetch(`${API_BASE}/api/auth/invite`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, adminName, designation }),
-    }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
-
-    if (!res.success) return { error: res.error };
-    return { account: res.account };
   }
 
   // SPEC-11: replaces the placeholder clinicName registration left behind with the real facility
@@ -200,24 +193,17 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   // Affiliates are an EXISTING independent practitioner's own account, linked to THIS clinic as
-  // a visiting/affiliate consultant -- never a new login (contrast with inviteTeammate() above,
-  // which does create one). See clinuxflow-api's POST/GET/DELETE /api/facility/affiliates and
-  // migrations/0005's own comment for why this is a separate relationship type from staff.
+  // a visiting/affiliate consultant -- never a new login. See clinuxflow-api's GET/DELETE
+  // /api/facility/affiliates and migrations/0005's own comment for why this is a separate
+  // relationship type from staff. SPEC-26 retired this store's OWN linkAffiliate()/inviteTeammate()
+  // (the admin-initiated email-lookup and admin-invents-a-password flows) — TeamSettingsModal.vue
+  // now creates both relationship types through the unified join-token flow
+  // (data/control/joinTokenAdapter.js) instead; POST /api/facility/affiliates itself stays server-
+  // side only as the underlying write .../decide's approval performs, not a client-facing flow.
   async function fetchAffiliates() {
     const res = await apiFetch(`${API_BASE}/api/facility/affiliates`).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
     if (!res.success) return { error: res.error };
     return { affiliates: res.affiliates };
-  }
-
-  async function linkAffiliate({ practitionerEmail, role }) {
-    const res = await apiFetch(`${API_BASE}/api/facility/affiliates`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ practitionerEmail, role }),
-    }).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
-
-    if (!res.success) return { error: res.error };
-    return { affiliate: res.affiliate };
   }
 
   async function revokeAffiliate(accountId) {
@@ -228,8 +214,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   return {
-    currentUser, register, login, logout, saveProfile, updateClinicName, changePassword, refreshSession, fetchTeam, inviteTeammate,
+    currentUser, register, login, logout, saveProfile, updateClinicName, changePassword, refreshSession, fetchTeam,
     setSecurityQuestion, getSecurityQuestion, resetPassword,
-    fetchAffiliates, linkAffiliate, revokeAffiliate,
+    fetchAffiliates, revokeAffiliate,
   };
 });

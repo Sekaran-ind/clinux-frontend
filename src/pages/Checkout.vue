@@ -7,8 +7,8 @@ import LhcFormHost from '../components/LhcFormHost.vue';
 import SessionShareModal from '../components/SessionShareModal.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import ActiveSessionsLanding from '../components/ActiveSessionsLanding.vue';
-import { buildDigilockerRecordPdf } from '../data/digilockerExport.js';
-import { acquireWorklistLock, releaseWorklistLock } from '../data/encounterCoordination.js';
+import { buildDigilockerRecordPdf } from '../data/runtime/digilockerExport.js';
+import { acquireWorklistLock, releaseWorklistLock } from '../data/runtime/encounterCoordination.js';
 import {
   formData, activeQuestionnaire, activeVersionNumber,
   saveDataRecord, getAnswer, getGroupInstances,

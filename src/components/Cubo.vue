@@ -25,6 +25,7 @@ import { ENTRY_PLAN_DEFINITION } from '../workflow/entryPlanDefinition.js';
 import { ONBOARDING_JOURNEYS, visibleOnboardingJourneys } from '../workflow/onboardingJourneys.js';
 import CuboProfilePanel from './cubo/CuboProfilePanel.vue';
 import CuboContactConversation from './cubo/CuboContactConversation.vue';
+import { listPendingJoinRequests } from '../data/control/joinTokenAdapter.js';
 
 const props = defineProps({
   category: { type: String, default: 'general' },
@@ -505,11 +506,17 @@ const leftPaneOpenSections = reactive({ contacts: true, contactGroups: false, th
 // left-pane Contacts section ever needs this.
 const contacts = ref([]);
 const contactsLoaded = ref(false);
+// SPEC-26 §6's "discovery" fix — a facility-join-request redeemer isn't a real contact
+// (fetchTeam/fetchAffiliates) yet, so without this an admin has no way to even SEE there's a
+// pending request to open and decide on. Sourced from the SAME token row a redeemer's
+// .../deliver call already wrote its ciphertext onto — listPendingJoinRequests() joins the
+// redeemer's own name/email in specifically so this list doesn't need a second round trip.
 async function loadContacts() {
-  const [teamRes, affiliatesRes] = await Promise.all([auth.fetchTeam(), auth.fetchAffiliates()]);
+  const [teamRes, affiliatesRes, pendingRes] = await Promise.all([auth.fetchTeam(), auth.fetchAffiliates(), listPendingJoinRequests()]);
   const team = (teamRes.accounts || []).map((a) => ({ id: a.id, name: a.adminName || a.email, kind: 'staff' }));
   const affiliates = (affiliatesRes.affiliates || []).map((a) => ({ id: a.accountId, name: a.practitionerName || a.practitionerEmail, kind: 'affiliate' }));
-  contacts.value = [...team, ...affiliates].filter((c) => c.id !== auth.currentUser?.id);
+  const pending = (pendingRes.pending || []).map((p) => ({ id: p.accountId, name: p.adminName || p.email, kind: 'pending-join-request', token: p.token, linkKind: p.linkKind }));
+  contacts.value = [...pending, ...team, ...affiliates].filter((c) => c.id !== auth.currentUser?.id);
   contactsLoaded.value = true;
 }
 const sortedContacts = computed(() => {
@@ -595,11 +602,13 @@ const wrapperCardClass = computed(() => {
           <p v-else-if="!sortedContacts.length" class="text-[11px] text-gray-400 px-1 py-1">No colleagues or linked affiliates yet.</p>
           <button v-for="c in sortedContacts" :key="c.id" @click="openContact(c)"
                   class="w-full flex items-center gap-2 p-2 rounded-lg border transition text-left"
-                  :class="activeContact?.id === c.id ? 'bg-blue-500/10 border-blue-500/30' : 'bg-white dark:bg-slate-900/50 border-transparent hover:border-gray-200 dark:hover:border-slate-700'">
-            <div class="w-6 h-6 rounded-full shrink-0 flex items-center justify-center text-[10px] font-bold text-white" style="background:var(--color-primary)">{{ (c.name || '?').charAt(0).toUpperCase() }}</div>
+                  :class="[activeContact?.id === c.id ? 'bg-blue-500/10 border-blue-500/30' : 'bg-white dark:bg-slate-900/50 border-transparent hover:border-gray-200 dark:hover:border-slate-700', c.kind === 'pending-join-request' ? 'ring-1 ring-amber-400/60' : '']">
+            <div class="w-6 h-6 rounded-full shrink-0 flex items-center justify-center text-[10px] font-bold text-white" :style="c.kind === 'pending-join-request' ? 'background:#d97706' : 'background:var(--color-primary)'">
+              <i v-if="c.kind === 'pending-join-request'" class="fas fa-link"></i><template v-else>{{ (c.name || '?').charAt(0).toUpperCase() }}</template>
+            </div>
             <div class="min-w-0 flex-1">
               <div class="text-xs font-semibold text-gray-800 dark:text-slate-200 truncate">{{ c.name }}</div>
-              <div class="text-[10px] text-gray-400 truncate">{{ c.lastMessageText || c.kind }}</div>
+              <div class="text-[10px] truncate" :class="c.kind === 'pending-join-request' ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-gray-400'">{{ c.kind === 'pending-join-request' ? 'Pending join request — review' : (c.lastMessageText || c.kind) }}</div>
             </div>
           </button>
         </div>
@@ -664,7 +673,7 @@ const wrapperCardClass = computed(() => {
            — "It will have contacts with whom the current user can select and send messages
            (using the center pane)" (explicit instruction). Everything below is the pre-existing,
            unchanged Header+Body — only wrapped, not touched. -->
-      <CuboContactConversation v-if="activeContact" :contact="activeContact" />
+      <CuboContactConversation v-if="activeContact" :contact="activeContact" @decided="loadContacts()" />
       <template v-else>
       <!-- Header -->
       <div :class="isRoomy

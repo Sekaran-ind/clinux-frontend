@@ -73,6 +73,22 @@ export function deleteDataRecord(recordId) {
   if (formData.has(recordId)) formData.delete(recordId);
 }
 
+// A real bug found live (Hospital/Provider/Affiliate journey audit, while adding a genuinely
+// boolean-valued field): patchRecordField/patchGroupInstanceField always wrote `valueString`
+// regardless of the value's actual type — a boolean stored as `{valueString: true}` instead of
+// the real FHIR-correct `{valueBoolean: true}`. Harmless to THIS app's own lenient reader
+// (extractAnswerValue's `a.valueString ?? a.valueDecimal ?? ... ?? a.valueBoolean ?? ...` chain
+// returns the right value either way, since it doesn't check the key's value type against its
+// name) but genuinely wrong FHIR JSON for anything that inspects the raw resource directly
+// (local-extractor.js, conformance-validator.js, the real resource ultimately sent to ABDM).
+// Safe to fix here — verified the lenient reader still finds the value regardless of which key
+// it landed under, so no existing caller's behavior changes, only the stored shape gets correct.
+function answerFor(value) {
+  if (typeof value === 'boolean') return { valueBoolean: value };
+  if (typeof value === 'number') return { valueDecimal: value };
+  return { valueString: value };
+}
+
 // Directly patches one already-saved record's QuestionnaireResponse item array in place —
 // the TanStack DB equivalent of consultation-desk.html's savePriority()-style direct field
 // writes (e.g. writing a lab result back onto an existing encounter without re-running the
@@ -83,7 +99,30 @@ export function patchRecordField(recordId, linkId, value) {
     const walk = (items) => {
       (items || []).forEach((item) => {
         if (item.linkId === linkId) {
-          item.answer = [{ valueString: value }];
+          item.answer = [answerFor(value)];
+        }
+        if (item.item) walk(item.item);
+      });
+    };
+    walk(draft.data.item);
+  });
+}
+
+// Same direct-patch mechanism as patchRecordField, for a genuinely multi-value field (e.g.
+// Organization.extension:systemOfMedicine, real FHIR cardinality 1..*) — writes one answer entry
+// per value on the SAME item, the same shape a compiled MultiSelect field already produces (see
+// yaml-to-questionnaire.js's own `field.choices` handling), so getAnswers() (plural) reads it back
+// correctly. Neither patchRecordField nor patchGroupInstanceField support this — both only ever
+// write exactly one answer entry — so this is a real, minimal sibling, not a generalization of
+// either (a single value stays a single answer entry via patchRecordField; this is only reached
+// when a caller genuinely has an array).
+export function patchRecordMultiField(recordId, linkId, values) {
+  if (!formData.has(recordId)) return;
+  formData.update(recordId, (draft) => {
+    const walk = (items) => {
+      (items || []).forEach((item) => {
+        if (item.linkId === linkId) {
+          item.answer = values.map(answerFor);
         }
         if (item.item) walk(item.item);
       });
@@ -113,7 +152,7 @@ export function patchGroupInstanceField(recordId, groupLinkId, instanceIndex, fi
         field = { linkId };
         instance.item.push(field);
       }
-      field.answer = [{ valueString: value }];
+      field.answer = [answerFor(value)];
     });
   });
 }

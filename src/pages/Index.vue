@@ -11,9 +11,13 @@ import { useEntryWorkflowStore } from '../stores/entryWorkflow.js';
 import { useThemeStore } from '../stores/theme.js';
 import RegisterForm from '../components/auth/RegisterForm.vue';
 import LoginForm from '../components/auth/LoginForm.vue';
+import JoinTokenRedeemForm from '../components/auth/JoinTokenRedeemForm.vue';
 import Cubo from '../components/Cubo.vue';
 import { useCuboStore } from '../stores/cubo.js';
+import { useRoute } from 'vue-router';
+import { hprRoleLabel } from '../data/control/hprRoles.js';
 
+const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const entryWorkflow = useEntryWorkflowStore();
@@ -35,18 +39,30 @@ function openGuidedSetup() {
   router.push('/ai-engine');
 }
 
-// Closes the user-menu dropdown on any click outside it — replaces Alpine's @click.away, which
-// has no built-in Vue equivalent (no v-click-outside directive ships with core Vue).
+// Closes a menu dropdown on any click outside it — replaces Alpine's @click.away, which has no
+// built-in Vue equivalent (no v-click-outside directive ships with core Vue). Covers both the
+// signed-in user menu and the signed-out account menu below — only one is ever rendered at a
+// time (auth.currentUser), so checking both anchors here is harmless either way.
 function closeUserMenuOnOutsideClick(e) {
   if (!e.target.closest('.user-menu-anchor')) userMenuOpen.value = false;
+  if (!e.target.closest('.account-menu-anchor')) accountMenuOpen.value = false;
 }
 onMounted(() => document.addEventListener('click', closeUserMenuOnOutsideClick));
 onUnmounted(() => document.removeEventListener('click', closeUserMenuOnOutsideClick));
 
 const showRegister = ref(false);
 const showLogin = ref(false);
+// SPEC-26 §9 — a shared join link (?join=TOKEN) opens this modal directly, prefilled, same
+// pattern QR/text-key transfer links already use elsewhere in this app.
+const showJoinRedeem = ref(false);
+const joinRedeemToken = ref('');
+if (route.query.join) { joinRedeemToken.value = String(route.query.join).toUpperCase(); showJoinRedeem.value = true; }
+function onJoinRedeemSuccess() {
+  showToast('Join request sent — you\'ll be notified once the facility admin decides.');
+}
 const showProfile = ref(false);
 const userMenuOpen = ref(false);
+const accountMenuOpen = ref(false);
 const toast = ref({ show: false, message: '' });
 
 const profileForm = reactive({ clinicName: '', adminName: '', designation: '', careTeam: '', services: '', phone: '', city: '', address: '' });
@@ -82,12 +98,6 @@ function showToast(msg) {
   setTimeout(() => (toast.value.show = false), 3000);
 }
 
-const ROLE_LABELS = {
-  hospital_admin: 'Hospital Admin',
-  health_professional: 'Health Professional',
-  admin_and_health_professional: 'Admin & Health Professional',
-};
-
 // SPEC-20: RegisterForm/LoginForm now own their own field state, validation, and dispatch (via
 // entryWorkflow.js's real ENTRY_PLAN_DEFINITION runtime) — this page just reacts to their
 // `success` events with what used to be registerClinic()/loginClinic()'s own tail end (close the
@@ -96,8 +106,10 @@ const ROLE_LABELS = {
 function onRegisterSuccess({ role }) {
   showRegister.value = false;
   // Deliberately NOT "Welcome, {clinicName}" -- clinicName is just a placeholder until the new
-  // Hospital/HFR journey replaces it with the real hospital_name (see SPEC-11).
-  showToast(`Welcome${role ? ', ' + ROLE_LABELS[role] : ''}! Let's get you set up.`);
+  // Hospital/HFR journey replaces it with the real hospital_name (see SPEC-11). Label comes from
+  // hprRoles.js — the same HPR-master wording RegisterForm.vue's own role picker just showed,
+  // not a second local copy of it.
+  showToast(`Welcome${role ? ', ' + hprRoleLabel(role) : ''}! Let's get you set up.`);
   router.push('/clinic-home');
 }
 
@@ -185,6 +197,7 @@ onUnmounted(stopAutoplay);
       <!-- SPEC-20: same RegisterForm component Cübo's General thread renders inline — no
            duplicated form markup between the modal here and the Cübo-hosted case. -->
       <RegisterForm @success="onRegisterSuccess" @switch-to-login="showRegister = false; showLogin = true" />
+      <p class="text-center text-sm cf-text mt-3">Have a facility join code? <button type="button" @click="showRegister = false; showJoinRedeem = true" class="font-bold" style="color:var(--color-primary)">Redeem it</button></p>
     </div>
   </div>
 
@@ -199,6 +212,21 @@ onUnmounted(stopAutoplay);
         <button @click="showLogin = false" class="w-9 h-9 rounded-full cf-card flex items-center justify-center hover:text-red-500"><i class="fas fa-times text-sm"></i></button>
       </div>
       <LoginForm @success="onLoginSuccess" @switch-to-register="showLogin = false; showRegister = true" />
+      <p class="text-center text-sm cf-text mt-3">Have a facility join code? <button type="button" @click="showLogin = false; showJoinRedeem = true" class="font-bold" style="color:var(--color-primary)">Redeem it</button></p>
+    </div>
+  </div>
+
+  <!-- Join a Facility Modal — SPEC-26 §6/§9 -->
+  <div class="modal-backdrop" v-show="showJoinRedeem" @click.self="showJoinRedeem = false">
+    <div class="modal-box" @click.stop>
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h2 class="text-xl font-bold cf-text-strong" style="font-family:'Poppins',sans-serif">Join a Facility</h2>
+          <p class="text-sm cf-text mt-1">Enter the join code a facility admin shared with you.</p>
+        </div>
+        <button @click="showJoinRedeem = false" class="w-9 h-9 rounded-full cf-card flex items-center justify-center hover:text-red-500"><i class="fas fa-times text-sm"></i></button>
+      </div>
+      <JoinTokenRedeemForm :initial-token="joinRedeemToken" @success="onJoinRedeemSuccess" />
     </div>
   </div>
 
@@ -257,9 +285,24 @@ onUnmounted(stopAutoplay);
         <button @click="theme.toggle()" class="w-9 h-9 rounded-full cf-card flex items-center justify-center hover:border-teal-400 text-sm">
           <i :class="theme.isDark ? 'fas fa-sun' : 'fas fa-moon'" class="cf-text"></i>
         </button>
-        <div v-if="!auth.currentUser" class="flex items-center gap-2">
-          <button @click="showLogin = true" class="btn-outline text-sm py-2 px-4">Sign In</button>
-          <button @click="showRegister = true" class="btn-primary text-sm py-2 px-4">Register</button>
+        <!-- Join Code/Sign In/Register used to be 3 separate always-visible buttons here, on top
+             of the hero's own Register/Guided-Setup pair below — grouped into one context menu so
+             the header itself isn't competing with the hero for the same "get started" attention. -->
+        <div v-if="!auth.currentUser" class="relative account-menu-anchor">
+          <button @click="accountMenuOpen = !accountMenuOpen" class="btn-outline text-sm py-2 px-4 flex items-center gap-2">
+            <i class="fas fa-user"></i><span>Account</span><i class="fas fa-chevron-down text-xs"></i>
+          </button>
+          <div v-show="accountMenuOpen" class="absolute right-0 mt-2 w-52 cf-card rounded-xl shadow-xl overflow-hidden py-1">
+            <button @click="showJoinRedeem = true; accountMenuOpen = false" class="w-full text-left px-4 py-2 text-sm cf-text hover:bg-teal-50 dark:hover:bg-teal-900/20">
+              <i class="fas fa-link mr-2 text-xs" style="color:var(--color-primary)"></i>Join Code
+            </button>
+            <button @click="showLogin = true; accountMenuOpen = false" class="w-full text-left px-4 py-2 text-sm cf-text hover:bg-teal-50 dark:hover:bg-teal-900/20">
+              <i class="fas fa-right-to-bracket mr-2 text-xs" style="color:var(--color-primary)"></i>Sign In
+            </button>
+            <button @click="showRegister = true; accountMenuOpen = false" class="w-full text-left px-4 py-2 text-sm font-bold" style="color:var(--color-primary)">
+              <i class="fas fa-hospital-user mr-2 text-xs"></i>Register
+            </button>
+          </div>
         </div>
         <div v-else class="relative user-menu-anchor">
           <button @click="userMenuOpen = !userMenuOpen" class="w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm" style="background:var(--color-primary);color:var(--color-secondary)" :title="auth.currentUser.clinicName">
@@ -272,6 +315,11 @@ onUnmounted(stopAutoplay);
             </div>
             <button @click="openProfile(); userMenuOpen = false" class="w-full text-left px-4 py-2 text-sm cf-text hover:bg-teal-50 dark:hover:bg-teal-900/20">
               <i class="fas fa-id-card mr-2 text-xs" style="color:var(--color-primary)"></i>Edit Profile
+            </button>
+            <!-- SPEC-26 — an already-authenticated affiliate practitioner linking to ANOTHER
+                 facility redeems with their own existing account, same modal as the signed-out path. -->
+            <button @click="showJoinRedeem = true; userMenuOpen = false" class="w-full text-left px-4 py-2 text-sm cf-text hover:bg-teal-50 dark:hover:bg-teal-900/20">
+              <i class="fas fa-link mr-2 text-xs" style="color:var(--color-primary)"></i>Join Another Facility
             </button>
             <button @click="logout(); userMenuOpen = false" class="w-full text-left px-4 py-2 text-sm text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20">
               <i class="fas fa-sign-out-alt mr-2 text-xs"></i>Sign Out
@@ -303,11 +351,13 @@ onUnmounted(stopAutoplay);
         <div class="flex flex-wrap gap-4">
           <button v-if="!auth.currentUser" @click="showRegister = true" class="btn-teal inline-flex items-center gap-2"><i class="fas fa-hospital-user"></i>Register Your Clinic</button>
           <button v-if="auth.currentUser" @click="goToEngine()" class="btn-teal inline-flex items-center gap-2"><p  class="bg-(--color-secondary) text-(--color-primary) font-black text-2xl px-2.5 py-1 rounded shadow-lg font-mono" >CÜ </p>- Talk to Cübo</button>
-          <a v-if="!auth.currentUser" href="#workflow" class="btn-outline inline-flex items-center gap-2"><i class="text-md font-bold fas fa-play-circle"></i>See How It Works</a>
           <!-- SPEC-20 (docs/SPEC-20-REFERENCE-PATTERN-JOURNEY-WORKBENCH-AND-UNAUTH-CUBO-ENTRY.md) —
                additive entry point, same precedent HospitalOnboarding.vue's "Try the chat-based
                setup" card set for SPEC-14: the existing Register/Sign-in modals above are
-               untouched, this just offers the new Cübo-hosted flow alongside them. -->
+               untouched, this just offers the new Cübo-hosted flow alongside them. "See How It
+               Works" (a #workflow anchor link) sat here too and got removed — Guided Setup with
+               Cübo already IS the "how it works" demonstration, live, not a second static
+               explainer competing with it for the same slot. -->
           <button v-if="!auth.currentUser" @click="openGuidedSetup()" class="btn-outline inline-flex items-center gap-2"><i class="text-md font-bold fas fa-comments"></i>Try Guided Setup with Cübo</button>
           <button v-if="auth.currentUser" @click="goToClinic()" class="btn-teal inline-flex items-center gap-2"><span class="text-md font-bold truncate">{{ auth.currentUser.clinicName }}</span></button>
         </div>

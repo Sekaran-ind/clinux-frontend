@@ -4,6 +4,8 @@ import { formData, listDataRecords, getAnswer, getAnswers, saveDataRecord, getGr
 import { activeVersionNumber } from '../data/collections/formsLibrary.js';
 import { extractResponse } from '../data/useSystemForms.js';
 import { useAuthStore } from './auth.js';
+import { deriveFacilitySetupState, canAcceptFacilityJoinToken, FACILITY_SETUP_STAGE_LABELS } from '../data/control/facilitySetupMachine.js';
+import { apiFetch, API_BASE } from '../config.js';
 
 const ONB_COLORS = ['#3B82F6', '#00D4B2', '#8B5CF6', '#F59E0B', '#EF4444', '#EC4899', '#06B6D4', '#10B981'];
 const ONB_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -46,11 +48,30 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   // Page" again, which nothing in the "Manage Settings" edit flow prompts them to do.
   const publishedClinic = computed(() => (everPublished.value ? buildClinicProfile() : {}));
 
+  // The real facilitySetupMachine (data/control/facilitySetupMachine.js), fed the same signals
+  // used elsewhere in this store — buildClinicProfile().name (a profile exists at all),
+  // everPublished (this store's own "go live" gate), and hospital_facility_id (the field
+  // FacilityHfrPanel.vue patches onto the record once HFR submit succeeds). Recomputes on every
+  // dataVersion bump, same reactive dependency buildClinicProfile()/publishedClinic already use.
+  const facilitySetupStage = computed(() => {
+    dataVersion.value; // register the reactive dependency
+    return deriveFacilitySetupState({
+      hasBasics: !!buildClinicProfile().name,
+      everPublished: everPublished.value,
+      hfrFacilityId: getAnswer(getProviderRecord(), 'hospital_facility_id') || null,
+    });
+  });
+  const facilitySetupStageLabel = computed(() => FACILITY_SETUP_STAGE_LABELS[facilitySetupStage.value]);
+  // Whether this facility is far enough along to accept a staff/affiliate join-token redemption —
+  // 'published' or better, not full HFR registration (see the machine's own comment on why).
+  const canAcceptJoinToken = computed(() => canAcceptFacilityJoinToken(facilitySetupStage.value));
+
   const providerRecordId = ref(listDataRecords(PROVIDER_FORM_ID)[0]?.id ?? null);
 
   // The one shared record every onboarding card now reads/writes — a thin wrapper since several
-  // pages (ConsultationDesk.vue's care-team picker, AbdmOnboarding.vue) need it directly, not
-  // just via buildClinicProfile()'s flattened snapshot.
+  // consumers (ConsultationDesk.vue's care-team picker, FacilityHfrPanel.vue/ProviderHprPanel.vue's
+  // real HFR/HPR registration) need it directly, not just via buildClinicProfile()'s flattened
+  // snapshot.
   function getProviderRecord() {
     return listDataRecords(PROVIDER_FORM_ID)[0] || null;
   }
@@ -117,6 +138,11 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     providerRecordId.value = saveDataRecord(PROVIDER_FORM_ID, activeVersionNumber(PROVIDER_FORM_ID), qr, providerRecordId.value);
     saveBranding();
     dataVersion.value++;
+    // Keeps the SPEC-26 §4 server-side mirror fresh even before the first publish, so
+    // facilitySetupMachine's server copy can see basics_saved -- not just published/hfr_registered
+    // -- without waiting for a full Publish click. published stays whatever it already was
+    // (upsertProviderComposition's own COALESCE never un-publishes on an ordinary save).
+    pushProviderCompositionMirror(everPublished.value);
     return true;
   }
 
@@ -240,6 +266,24 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     };
   }
 
+  // SPEC-26 §4/§8 — the durable server-side mirror facilitySetupMachine's own server copy
+  // (facility-setup-stage.js) needs to gate join-token issuance/redemption without trusting
+  // client state. Real gap found while wiring this: PUT /api/provider-composition (migrations/
+  // 0005) already existed with exactly this stated purpose ("the owning clinic's own devices keep
+  // pushing their local-first writes here via PUT on every save") but nothing in this app ever
+  // actually called it — best-effort, fire-and-forget (same "local write always succeeds, remote
+  // sync is best-effort" contract every other push in this app already has), never blocks the
+  // local save/publish it's called from.
+  function pushProviderCompositionMirror(published) {
+    const record = getProviderRecord();
+    if (!record) return;
+    apiFetch(`${API_BASE}/api/provider-composition`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: record.data, published: !!published }),
+    }).catch(() => { /* best-effort — local state is already correct either way */ });
+  }
+
   // Builds and persists the final clinic profile. Returns null if the Hospital step was never
   // completed — caller should treat that as a validation failure, not a successful publish.
   function publish() {
@@ -254,6 +298,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     localStorage.setItem('cf_onboarding_clinic', JSON.stringify(profile));
     everPublished.value = true;
     syncRegisteredUser(profile);
+    pushProviderCompositionMirror(true);
     return profile;
   }
 
@@ -280,6 +325,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
   return {
     PROVIDER_FORM_ID,
     registeredUser, branding, publishedClinic, everPublished, providerRecordId, dataVersion,
+    facilitySetupStage, facilitySetupStageLabel, canAcceptJoinToken,
     getProviderRecord, buildSeedFromRegistration, saveBranding, saveProviderRecord, ensureProviderRecord, buildClinicProfile, publish,
     importProviderProfile,
   };
