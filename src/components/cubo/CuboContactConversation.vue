@@ -66,7 +66,7 @@ async function loadJoinRequest() {
 
 async function decideRequest(decision) {
   decidingJoinRequest.value = decision;
-  const role = joinRequestFields.value?.linkKind === 'affiliate' ? joinRequestFields.value.declaredRole : undefined;
+  const role = ['affiliate', 'organization'].includes(joinRequestFields.value?.linkKind) ? joinRequestFields.value.declaredRole : undefined;
   const { error } = await decideJoinToken(props.contact.token, decision, role);
   decidingJoinRequest.value = '';
   if (error) { joinRequestError.value = error; return; }

@@ -21,8 +21,21 @@ const FIELDS = [
   { linkId: 'service_specialty_category', label: 'Core Specialty Category', kind: 'choice', choices: SPECIALTY_CHOICES, required: true },
   { linkId: 'service_program_name', label: 'Target Clinical Program Name', kind: 'text' },
   { linkId: 'service_description', label: 'Description', kind: 'text' },
+  // A service belongs to a branch, not the facility root (design call). Real FHIR
+  // HealthcareService.location, single — refTo:"Location" in the YAML, resolved by
+  // local-extractor.js's own finalization pass. Dynamic per-clinic data, not a static enum like
+  // service_specialty_category above, so it's its own 'branch' kind rather than 'choice' —
+  // choices come from branchChoices below, sourced from THIS record's own section_location
+  // instances, not a fixed list.
+  { linkId: 'service_location_id', label: 'Branch', kind: 'branch' },
 ];
 const FIELD_BY_ID = Object.fromEntries(FIELDS.map((f) => [f.linkId, f]));
+
+// section_location's own instance index IS the reference value local-extractor.js resolves
+// against — same convention section_location's own repeating-group order already establishes,
+// not a synthetic id invented here.
+const branchChoices = computed(() => (props.record ? getGroupInstances(props.record, 'section_location') : [])
+  .map((instance, i) => ({ value: String(i), label: getAnswer({ data: instance }, 'location_name') || `Branch ${i + 1}` })));
 
 function blankForm() { return reactive(Object.fromEntries(FIELDS.map((f) => [f.linkId, '']))); }
 const form = blankForm();
@@ -40,7 +53,13 @@ watch(() => props.record, rebuild, { immediate: true });
 
 const rows = computed(() => instances.value.map((instance, i) => {
   const rec = { data: instance };
-  return { index: i, name: getAnswer(rec, 'service_name') || '(unnamed)', category: getAnswer(rec, 'service_specialty_category') };
+  const branchIndex = getAnswer(rec, 'service_location_id');
+  return {
+    index: i,
+    name: getAnswer(rec, 'service_name') || '(unnamed)',
+    category: getAnswer(rec, 'service_specialty_category'),
+    branch: branchIndex !== undefined ? branchChoices.value.find((b) => b.value === branchIndex)?.label : undefined,
+  };
 }));
 
 function removeInstance(index) {
@@ -80,6 +99,7 @@ defineExpose({ extract });
         <div>
           <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ row.name }}</span>
           <span v-if="row.category" class="text-xs ml-2" style="color:var(--cf-text)">{{ row.category }}</span>
+          <span v-if="row.branch" class="text-xs ml-2" style="color:var(--cf-text)"><i class="fas fa-map-marker-alt"></i> {{ row.branch }}</span>
         </div>
         <button class="btn-ghost text-xs px-2 py-1" @click="removeInstance(row.index)"><i class="fas fa-times"></i> Remove</button>
       </div>
@@ -92,6 +112,10 @@ defineExpose({ extract });
         <div v-for="f in FIELDS" :key="f.linkId">
           <label class="cf-label">{{ f.label }}<span v-if="f.required" style="color:#dc2626"> *</span></label>
           <input v-if="f.kind === 'text'" class="cf-input" v-model="form[f.linkId]" />
+          <select v-else-if="f.kind === 'branch'" class="cf-input" v-model="form[f.linkId]">
+            <option value="">No specific branch…</option>
+            <option v-for="b in branchChoices" :key="b.value" :value="b.value">{{ b.label }}</option>
+          </select>
           <select v-else class="cf-input" v-model="form[f.linkId]">
             <option value="">Select…</option>
             <option v-for="c in f.choices" :key="c" :value="c">{{ c }}</option>

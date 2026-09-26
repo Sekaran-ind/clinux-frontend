@@ -16,10 +16,12 @@ import { publicAppointments } from '../data/collections/publicAppointments.js';
 import FrontDesk from './FrontDesk.vue';
 import ConsultationDesk from './ConsultationDesk.vue';
 import Checkout from './Checkout.vue';
-import TeamSettingsModal from '../components/TeamSettingsModal.vue';
 import SessionShareModal from '../components/SessionShareModal.vue';
 import ConnectionStatusControl from '../components/ConnectionStatusControl.vue';
 import TeamChat from '../components/TeamChat.vue';
+import Cubo from '../components/Cubo.vue';
+import { activeQuestionnaire } from '../data/useSystemForms.js';
+import { checkFacilityConformance } from '../data/control/facilityConformance.js';
 import { ensureSharedModeDetected } from '../data/sharedServerSync.js';
 import { startAssignmentPolling, stopAssignmentPolling } from '../data/runtime/encounterCoordination.js';
 
@@ -108,12 +110,48 @@ const clinic = computed(() => {
 });
 
 // isAdmin: was clinixflow's own fuzzy heuristic (clinicName prefix match OR just having an
-// email) — kept as-is since it's what the original did, even though it's a loose check.
+// email) — kept as the fallback for hospital_admin/admin_and_health_professional accounts, but a
+// real defect: it reduced to "is logged in" for EVERY role, including health_professional, which
+// has no facility of its own to administer — an independent practitioner account could see full
+// edit access to whatever clinic profile happened to be on the device. A pure health_professional
+// is never an admin here, full stop; the loose heuristic only still applies to the two roles that
+// can actually run a facility.
 const isAdmin = computed(() => {
   const u = auth.currentUser;
   if (!u || !clinic.value.name) return false;
+  if (u.role === 'health_professional') return false;
   return (u.clinicName && u.clinicName.toLowerCase().includes(clinic.value.name.toLowerCase().substring(0, 6))) || !!u.email;
 });
+
+// UPDATE — the per-section BottomSheet editing this page had is gone (explicit instruction:
+// "edit profile should take to data view and closing data view should take to page view"). Page
+// View (this page) is pure display + edit-triggers now; Data View (Onboarding.vue) is the one
+// real editing surface, reached by navigating there with ?section=<groupLinkId> (read by
+// Onboarding.vue's own activeSectionId init) and left via its own "Back to Clinic Home" button,
+// which lands back here. Also removes the last reason this page needed onboarding.dataVersion++/
+// publishIfReady() plumbing of its own — Onboarding.vue's saveActiveSection() already does both,
+// and `clinic` above already re-derives live off onboarding.publishedClinic, so a save made there
+// shows up here automatically the moment you navigate back, no separate sync step.
+function editSection(groupLinkId) {
+  router.push({ path: '/onboarding', query: { section: groupLinkId } });
+}
+
+// ABDM compliance status — still worth showing at a glance here even though editing it now means
+// navigating to Data View (FacilityHfrPanel already lives in section_hospital there, so "Edit
+// ABDM Compliance" below just deep-links to the same section Organisation Profile does). Same
+// real chain Onboarding.vue's own "FHIR Facility Conformance" panel already proves (extract ->
+// validate against ClinuxFlowFacility -> next-best-action) — a compact readout here instead of
+// the full diagnostic panel, since this section's job is "are we ABDM-ready", not a field-by-
+// field audit (that detail still lives on /onboarding for whoever wants it).
+const abdmConformance = ref(null); // { valid, errors } | { error } | null
+async function checkAbdmConformance() {
+  const questionnaireJson = activeQuestionnaire(onboarding.PROVIDER_FORM_ID);
+  const responseJson = onboarding.getProviderRecord()?.data;
+  abdmConformance.value = (questionnaireJson && responseJson)
+    ? await checkFacilityConformance(questionnaireJson, responseJson)
+    : null;
+}
+if (auth.currentUser) checkAbdmConformance();
 
 if (clinic.value.brandColor) {
   document.documentElement.style.setProperty('--brand', clinic.value.brandColor);
@@ -133,6 +171,59 @@ const showsHprJourney = computed(() => {
   const role = auth.currentUser?.role;
   return !role || role === 'health_professional' || role === 'admin_and_health_professional';
 });
+
+// Real discrepancy reported live: this page's own "Care Team" section (clinic.staff, below) is
+// entirely LOCAL FHIR data (section_staff, hand-entered by the admin) and had zero awareness that
+// facility_affiliates (D1, SPEC-26's join-token linking) exists at all. Two genuinely different
+// concepts (a curated clinical bio vs. an account-level cross-reference — this page
+// intentionally does NOT try to merge them into one fabricated FHIR record, since an affiliate's
+// specialty/qualification/bio was never actually captured anywhere) but showing NEITHER of them
+// together left a real facility relationship invisible on the one page that's actually
+// facility-facing. Admin-gated, same reasoning showLiveNow below already uses — this is
+// account/identity data, not curated public content, and GET /api/facility/affiliates itself is
+// requireUser()-gated (only the facility's own admin can call it — there is no public read
+// endpoint for this today). This section and its Data View counterpart (Onboarding.vue's own
+// section_affiliate_practitioners card) both read the identical endpoint, so the two can never
+// drift apart — the standalone Team Settings modal that also showed this (a 3rd, now-retired
+// surface) is what caused the original discrepancy report.
+const affiliates = ref([]);
+async function loadAffiliates() {
+  if (!isAdmin.value) return;
+  const { affiliates: list } = await auth.fetchAffiliates();
+  affiliates.value = list || [];
+}
+onMounted(loadAffiliates);
+
+// Organization Affiliates (migrations/0015) — the org-to-org counterpart to affiliates above,
+// same admin-gating reasoning. "Our Partners" (below) already showed clinic.affiliates, the
+// FREE-TEXT section_affiliate_organization entries — this is the real, resolvable list alongside
+// it: a partner that redeemed a real join link, not just a typed-in name.
+const orgAffiliates = ref([]);
+async function loadOrgAffiliates() {
+  if (!isAdmin.value) return;
+  const { affiliates: list } = await auth.fetchOrganizationAffiliates();
+  orgAffiliates.value = list || [];
+}
+onMounted(loadOrgAffiliates);
+
+// The reverse direction — facilities that added THIS clinic as their own partner (I redeemed
+// their join link, rather than issuing my own). A real partnership reads as mutual either way it
+// was set up, so both directions render together below — normalized to the same shape since
+// orgAffiliates' rows key off the OTHER clinic as affiliateClinicId/affiliateClinicName while
+// these key off it as facilityClinicId/facilityName (same fields listOrganizationAffiliatesByFacility/
+// listOrganizationAffiliationsByClinic already use server-side, see accounts-db.js).
+const myOrgAffiliations = ref([]);
+async function loadMyOrgAffiliations() {
+  if (!isAdmin.value) return;
+  const { affiliations: list } = await auth.fetchMyOrganizationAffiliations();
+  myOrgAffiliations.value = list || [];
+}
+onMounted(loadMyOrgAffiliations);
+
+const allOrgPartners = computed(() => [
+  ...orgAffiliates.value.map((a) => ({ clinicId: a.affiliateClinicId, name: a.affiliateClinicName, relationship: a.relationship })),
+  ...myOrgAffiliations.value.map((a) => ({ clinicId: a.facilityClinicId, name: a.facilityName, relationship: a.relationship })),
+]);
 
 // Admin-gated "Live Now" dashboard (Active Sessions / Upcoming Appointments, switchable) — this
 // route has no requiresAuth (confirmed in router/index.js), so isAdmin here is a cosmetic/
@@ -165,8 +256,6 @@ const appointmentsWindow = computed(() => {
 // outside-click close rather than Index.vue's vestigial (unregistered, no-op) v-click-outside
 // directive.
 const userMenuOpen = ref(false);
-// Phase D: multi-user accounts per clinic — see TeamSettingsModal.vue.
-const teamModalOpen = ref(false);
 // Phase C extension: generating a clinic-profile transfer key — moved here from Onboarding.vue's
 // hub screen (this is the discoverable "my account/clinic" surface for an admin, not the setup
 // wizard). See SessionShareModal.vue's kind="provider-profile" mode.
@@ -262,7 +351,6 @@ function sendMessage() {
   <div class="cf-toast" v-show="toast.show"><i class="fas fa-check-circle" style="color:var(--brand)"></i><span>{{ toast.msg }}</span></div>
 
   <TeamChat :show="teamChatOpen" @close="teamChatOpen = false" />
-  <TeamSettingsModal :open="teamModalOpen" @close="teamModalOpen = false" />
   <SessionShareModal :open="shareProfileModalOpen" :record="onboarding.getProviderRecord()" :branding="onboarding.branding" kind="provider-profile" @close="shareProfileModalOpen = false" />
 
   <div class="modal-bg" v-show="apptModal" @click.self="apptModal = false">
@@ -307,12 +395,17 @@ function sendMessage() {
   <div v-show="clinicView === 'public'">
   <nav class="site-nav">
     <div class="nav-inner">
+      <!-- Icon/text size, weight and treatment matched to Index.vue's own logo lockup
+           (explicit instruction) — solid brand-color badge with shadow, font-mono, text-2xl-
+           equivalent, Poppins bold name at Index's own text-xl scale. Content stays this
+           clinic's own (initial/name/brand color), not literally "ClinüxFlow" — only the STYLE
+           is shared, this is still a per-clinic branded page, not the product's own header. -->
       <div class="nav-logo">
-        <div v-if="clinic.logoUrl" style="height:36px;width:auto"><img :src="clinic.logoUrl" style="height:36px;width:auto;border-radius:.375rem" @error="clinic.logoUrl = ''" /></div>
-        <div v-else style="width:36px;height:36px;border-radius:.625rem;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.9rem;font-family:'Poppins',sans-serif" :style="`background:${clinic.brandColor || '#00D4B2'}22;color:${clinic.brandColor || '#00D4B2'}`">{{ (clinic.name || 'C').charAt(0).toUpperCase() }}</div>
+        <div v-if="clinic.logoUrl" style="height:44px;width:auto"><img :src="clinic.logoUrl" style="height:44px;width:auto;border-radius:.375rem" @error="clinic.logoUrl = ''" /></div>
+        <div v-else style="padding:.4rem .65rem;border-radius:.5rem;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:1.5rem;font-family:'JetBrains Mono',monospace;box-shadow:0 10px 15px -3px rgba(0,0,0,.15)" :style="`background:${clinic.brandColor || '#00D4B2'};color:#fff`">{{ (clinic.name || 'C').charAt(0).toUpperCase() }}</div>
         <div>
-          <p style="font-family:'Poppins',sans-serif;font-weight:700;font-size:.95rem;color:var(--text-strong)">{{ clinic.name || 'Your Clinic' }}</p>
-          <p style="font-size:.65rem;color:var(--brand);font-weight:600;font-family:'Poppins',sans-serif;margin-top:-.1rem">{{ clinic.type || 'Healthcare' }}</p>
+          <p style="font-family:'Poppins',sans-serif;font-weight:700;font-size:1.25rem;color:var(--text-strong);line-height:1.2">{{ clinic.name || 'Your Clinic' }}</p>
+          <p style="font-size:.7rem;color:var(--brand);font-weight:600;font-family:'Poppins',sans-serif">{{ clinic.type || 'Healthcare' }}</p>
         </div>
       </div>
       <div class="nav-links">
@@ -343,15 +436,27 @@ function sendMessage() {
               <p style="font-size:.75rem;font-weight:700;color:var(--text-strong)" class="truncate">{{ auth.currentUser.clinicName }}</p>
               <p style="font-size:.7rem;color:var(--text)" class="truncate">{{ auth.currentUser.email }}</p>
             </div>
+            <!-- Menu cleanup (explicit instruction): Front Desk dropped (already a primary nav
+                 button elsewhere on this page, redundant here); Register Your Facility (HFR)
+                 and Settings dropped — both pointed at the exact same functionality Edit Profile
+                 already covers (/onboarding and /designer respectively, with nothing distinct to
+                 offer beyond what editing the profile already does); AI Engine dropped in favor
+                 of the Cübo FAB now mounted directly on this page (see below) — no reason to
+                 route away to reach it. Room Setup deliberately NOT added here (explicit
+                 instruction: it belongs inside Services/Provider Onboarding once built, not this
+                 menu) — noted, not implemented this pass.
+                 Share Link dropped (this pass) — TeamSettingsModal.vue, the standalone popup it
+                 opened, is retired: Staff/Affiliate Practitioner/Affiliate Partner join-link
+                 issuing now lives inside their own Data View cards (Care Team, Affiliate
+                 Practitioners, Affiliate Partners — reachable via Edit Profile below, or directly
+                 via each section's own edit-pencil above), the same Page View/Data View pattern
+                 every other Organisation entity already follows, instead of a separate surface a
+                 third of this whole page's own "where do I manage X" confusion traced back to. -->
             <template v-if="isAdmin">
-              <button class="user-menu-item" @click="openClinicView('front-desk'); userMenuOpen = false"><i class="fas fa-user-clock" style="color:var(--brand)"></i>Front Desk</button>
-              <button class="user-menu-item" @click="teamModalOpen = true; userMenuOpen = false"><i class="fas fa-users" style="color:var(--brand)"></i>Team</button>
               <button v-show="onboarding.providerRecordId" class="user-menu-item" @click="shareProfileModalOpen = true; userMenuOpen = false"><i class="fas fa-share-nodes" style="color:var(--brand)"></i>Share Clinic Profile</button>
-              <RouterLink v-if="showsHfrJourney" to="/onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-hospital" style="color:var(--brand)"></i>Register Your Facility (HFR)</RouterLink>
-              <RouterLink v-if="showsHprJourney" to="/staff-onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-user-md" style="color:var(--brand)"></i>Register Yourself (HPR)</RouterLink>
+              <RouterLink v-if="showsHprJourney" to="/practitioner-home" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-user-md" style="color:var(--brand)"></i>Register Yourself (HPR)</RouterLink>
               <RouterLink to="/onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-pen" style="color:var(--brand)"></i>Edit Profile</RouterLink>
-              <RouterLink to="/designer" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-cog" style="color:var(--brand)"></i>Settings</RouterLink>
-              <RouterLink to="/ai-engine" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-brain" style="color:var(--brand)"></i>AI Engine</RouterLink>
+              <RouterLink to="/dashboard" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-chart-simple" style="color:var(--brand)"></i>Dashboard</RouterLink>
             </template>
             <button class="user-menu-item" style="color:#EF4444" @click="signOut(); userMenuOpen = false"><i class="fas fa-sign-out-alt"></i>Sign Out</button>
           </div>
@@ -381,12 +486,19 @@ function sendMessage() {
         </p>
         <div style="display:flex;flex-wrap:wrap;gap:.875rem;justify-content:center">
           <RouterLink v-if="showsHfrJourney" to="/onboarding" class="btn btn-brand" style="font-size:1rem;padding:.875rem 2rem"><i class="fas fa-hospital"></i>Register Your Facility (HFR)</RouterLink>
-          <RouterLink v-if="showsHprJourney" to="/staff-onboarding" class="btn btn-outline" style="font-size:.95rem;padding:.875rem 1.75rem"><i class="fas fa-user-md"></i>Register Yourself (HPR)</RouterLink>
+          <RouterLink v-if="showsHprJourney" to="/practitioner-home" class="btn btn-outline" style="font-size:.95rem;padding:.875rem 1.75rem"><i class="fas fa-user-md"></i>Register Yourself (HPR)</RouterLink>
         </div>
       </div>
       <div v-else style="display:grid;grid-template-columns:1fr 1fr;gap:3rem;align-items:center" class="hero-grid">
         <div>
           <span class="eyebrow">{{ clinic.type || 'Healthcare Partner' }}</span>
+          <button
+            v-if="isAdmin"
+            class="btn-outline btn-xs"
+            style="margin-left:.625rem;padding:.2rem .55rem;border-radius:999px"
+            title="Edit Organisation Profile"
+            @click="editSection('section_hospital')"
+          ><i class="fas fa-pencil"></i></button>
           <h1 style="font-size:3rem;font-weight:800;color:var(--text-strong);line-height:1.1;letter-spacing:-1.5px;margin-bottom:1rem">
             {{ clinic.name || 'Your Clinic' }}<br>
             <span v-if="!clinic.tagline" class="grad-text">Trusted Care,<br>Every Visit.</span>
@@ -394,7 +506,7 @@ function sendMessage() {
           </h1>
           <p style="font-size:1rem;color:var(--text);line-height:1.75;margin-bottom:2rem;max-width:480px">
             <span v-show="clinic.city || clinic.address">{{ `Located in ${clinic.city || clinic.address} — ` }}</span>
-            <span>providing compassionate, FHIR-compliant healthcare powered by ClinixFlow AI.</span>
+            <span>providing compassionate healthcare powered by ClinixFlow AI.</span>
           </p>
           <div style="display:flex;flex-wrap:wrap;gap:.875rem">
             <button class="btn btn-brand" @click="apptModal = true" style="font-size:1rem;padding:.875rem 2rem"><i class="fas fa-calendar-plus"></i>Book Appointment</button>
@@ -406,20 +518,16 @@ function sendMessage() {
                dedicated #hours section further down, which has the full weekly table). -->
           <div class="cf-card" style="border-radius:1.25rem;padding:1.75rem;box-shadow:0 20px 50px rgba(0,0,0,.08)">
             <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.25rem;padding-bottom:1rem;border-bottom:1px solid var(--border)">
-              <div style="width:40px;height:40px;border-radius:.625rem;display:flex;align-items:center;justify-content:center" :style="`background:${clinic.brandColor || '#00D4B2'}22`"><i class="fas fa-user-doctor" :style="`color:${clinic.brandColor || '#00D4B2'}`"></i></div>
-              <div><p style="font-weight:700;font-size:.95rem;color:var(--text-strong);font-family:'Poppins',sans-serif">Meet Our Experts</p><p style="font-size:.75rem;color:var(--text)">{{ clinic.staff?.length || 0 }} care team member{{ clinic.staff?.length === 1 ? '' : 's' }}</p></div>
+              <div style="width:40px;height:40px;border-radius:.625rem;display:flex;align-items:center;justify-content:center" :style="`background:${clinic.brandColor || '#00D4B2'}22`"><i class="fas fa-address-card" :style="`color:${clinic.brandColor || '#00D4B2'}`"></i></div>
+              <div><p style="font-weight:700;font-size:.95rem;color:var(--text-strong);font-family:'Poppins',sans-serif">Contact Information</p></div>
             </div>
-            <div v-if="clinic.staff?.length" style="display:flex;flex-direction:column;gap:1rem">
-              <div v-for="s in clinic.staff.slice(0, 4)" :key="s.id" style="display:flex;align-items:center;gap:.75rem">
-                <div class="expert-avatar-sm" :style="`background:${s.color || clinic.brandColor || '#00D4B2'}18;color:${s.color || clinic.brandColor || '#00D4B2'}`">{{ s.name?.charAt(0)?.toUpperCase() }}</div>
-                <div style="min-width:0">
-                  <p style="font-weight:700;font-size:.85rem;color:var(--text-strong);font-family:'Poppins',sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.name }}</p>
-                  <p style="font-size:.75rem;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.role }}{{ s.specialty ? ' · ' + s.specialty : '' }}</p>
-                </div>
+            <div v-if="contactItems.some((c) => c.value)" style="display:flex;flex-direction:column;gap:1rem">
+              <div v-for="contact in contactItems" :key="contact.label" style="display:flex;align-items:center;gap:.875rem" v-show="contact.value">
+                <div style="width:36px;height:36px;border-radius:.625rem;display:flex;align-items:center;justify-content:center;flex-shrink:0" :style="`background:${clinic.brandColor || '#00D4B2'}12`"><i :class="contact.icon" :style="`color:${clinic.brandColor || '#00D4B2'};font-size:.85rem`"></i></div>
+                <div style="min-width:0"><p style="font-size:.72rem;color:var(--text);font-weight:600;font-family:'Poppins',sans-serif">{{ contact.label }}</p><a :href="contact.href" style="font-size:.85rem;font-weight:600;color:var(--text-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block">{{ contact.value }}</a></div>
               </div>
             </div>
-            <p v-else style="font-size:.85rem;color:var(--text);padding:.5rem 0">Care team details coming soon.</p>
-            <a href="#team" class="btn btn-outline btn-xs" style="margin-top:1.25rem;width:100%;justify-content:center" v-show="clinic.staff?.length > 4">View Full Team</a>
+            <p v-else style="font-size:.85rem;color:var(--text);padding:.5rem 0">Contact details coming soon.</p>
           </div>
         </div>
       </div>
@@ -479,15 +587,18 @@ function sendMessage() {
     </div>
   </section>
 
-  <section id="team" class="section" v-show="clinic.staff?.length">
+  <section id="team" class="section" v-show="clinic.staff?.length || isAdmin">
     <div class="container">
       <div class="section-header">
         <span class="eyebrow">Care Team</span>
         <div class="teal-line" style="margin:0 auto .75rem"></div>
-        <h2 class="section-title">Our Medical Experts</h2>
+        <h2 class="section-title">Our Medical Experts
+          <button v-if="isAdmin" class="btn-outline btn-xs" style="margin-left:.5rem;padding:.2rem .55rem;border-radius:999px;vertical-align:middle" title="Edit Care Team" @click="editSection('section_staff')"><i class="fas fa-pencil"></i></button>
+        </h2>
         <p class="section-sub" style="max-width:520px;margin:0 auto">Highly trained professionals dedicated to your health and wellbeing.</p>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1.25rem" class="staff-grid">
+      <p v-if="!clinic.staff?.length" style="text-align:center;font-size:.85rem;color:var(--text)">No staff added yet.</p>
+      <div v-else style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1.25rem" class="staff-grid">
         <div v-for="s in clinic.staff" :key="s.id" class="staff-card">
           <div class="staff-avatar" :style="`background:${s.color || clinic.brandColor || '#00D4B2'}18;color:${s.color || clinic.brandColor || '#00D4B2'}`">{{ s.name?.charAt(0)?.toUpperCase() }}</div>
           <div style="padding:1.125rem">
@@ -505,15 +616,54 @@ function sendMessage() {
     </div>
   </section>
 
-  <section id="services" class="section section-alt" v-show="clinic.services?.length">
+  <!-- Affiliated practitioners — D1 account-level data (facility_affiliates), deliberately kept
+       separate from the Care Team grid above rather than merged into fabricated staff-cards: an
+       affiliate's specialty/qualification/bio was never actually captured anywhere, only their
+       account name/designation and the free-text role the admin typed in at approval time.
+       Admin-only (this data isn't publicly readable at all today). Same source of truth
+       (GET /api/facility/affiliates) as its own Data View card below, so the two can never drift
+       apart — the standalone Team Settings modal that used to also show this is retired; managing
+       it now happens in Data View/Page View like every other Organisation entity. -->
+  <section id="affiliates" class="section section-alt" v-if="isAdmin && affiliates.length">
+    <div class="container">
+      <div class="section-header">
+        <span class="eyebrow">Visiting Practitioners</span>
+        <div class="teal-line" style="margin:0 auto .75rem"></div>
+        <h2 class="section-title">Affiliate Practitioners
+          <button class="btn-outline btn-xs" style="margin-left:.5rem;padding:.2rem .55rem;border-radius:999px;vertical-align:middle" title="Edit Affiliate Practitioners" @click="editSection('section_affiliate_practitioners')"><i class="fas fa-pencil"></i></button>
+        </h2>
+        <p class="section-sub" style="max-width:520px;margin:0 auto">
+          Independent practitioners linked to this facility via Share Link.
+        </p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1.25rem">
+        <div v-for="a in affiliates" :key="a.accountId" class="staff-card">
+          <div class="staff-avatar" :style="`background:${clinic.brandColor || '#00D4B2'}18;color:${clinic.brandColor || '#00D4B2'}`">{{ (a.adminName || a.email)?.charAt(0)?.toUpperCase() }}</div>
+          <div style="padding:1.125rem">
+            <p style="font-weight:700;font-size:.95rem;color:var(--text-strong);font-family:'Poppins',sans-serif;margin-bottom:.3rem">{{ a.adminName || a.email }}</p>
+            <div style="display:flex;flex-wrap:wrap;gap:.3rem;margin-bottom:.625rem">
+              <span class="badge badge-brand">Affiliate</span>
+              <span v-show="a.role" class="badge badge-navy">{{ a.role }}</span>
+            </div>
+            <p v-show="a.designation" style="font-size:.75rem;color:var(--text)">{{ a.designation }}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="services" class="section section-alt" v-show="clinic.services?.length || isAdmin">
     <div class="container">
       <div class="section-header">
         <span class="eyebrow">What We Offer</span>
         <div class="teal-line" style="margin:0 auto .75rem"></div>
-        <h2 class="section-title">Our Services</h2>
+        <h2 class="section-title">Our Services
+          <button v-if="isAdmin" class="btn-outline btn-xs" style="margin-left:.5rem;padding:.2rem .55rem;border-radius:999px;vertical-align:middle" title="Edit Services" @click="editSection('section_services_matrix')"><i class="fas fa-pencil"></i></button>
+        </h2>
         <p class="section-sub" style="max-width:520px;margin:0 auto">Comprehensive care tailored to your needs at transparent, affordable rates.</p>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1.125rem" class="services-grid">
+      <p v-if="!clinic.services?.length" style="text-align:center;font-size:.85rem;color:var(--text)">No services added yet.</p>
+      <div v-else style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1.125rem" class="services-grid">
         <div v-for="svc in clinic.services" :key="svc.id" class="service-card">
           <div style="width:44px;height:44px;border-radius:.75rem;display:flex;align-items:center;justify-content:center;margin-bottom:1rem" :style="`background:${clinic.brandColor || '#00D4B2'}12`"><i class="fas fa-stethoscope" :style="`color:${clinic.brandColor || '#00D4B2'}`"></i></div>
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.3rem">
@@ -531,15 +681,18 @@ function sendMessage() {
     </div>
   </section>
 
-  <section id="locations" class="section section-alt" v-show="clinic.locations?.length">
+  <section id="locations" class="section section-alt" v-show="clinic.locations?.length || isAdmin">
     <div class="container">
       <div class="section-header">
         <span class="eyebrow">Find Us</span>
         <div class="teal-line" style="margin:0 auto .75rem"></div>
-        <h2 class="section-title">Our Locations</h2>
+        <h2 class="section-title">Our Locations
+          <button v-if="isAdmin" class="btn-outline btn-xs" style="margin-left:.5rem;padding:.2rem .55rem;border-radius:999px;vertical-align:middle" title="Edit Locations" @click="editSection('section_location')"><i class="fas fa-pencil"></i></button>
+        </h2>
         <p class="section-sub" style="max-width:520px;margin:0 auto">Visit us at any of our branches.</p>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1.125rem">
+      <p v-if="!clinic.locations?.length" style="text-align:center;font-size:.85rem;color:var(--text)">No branches added yet.</p>
+      <div v-else style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1.125rem">
         <div v-for="loc in clinic.locations" :key="loc.id" class="service-card">
           <div style="width:44px;height:44px;border-radius:.75rem;display:flex;align-items:center;justify-content:center;margin-bottom:1rem" :style="`background:${clinic.brandColor || '#00D4B2'}12`"><i class="fas fa-map-marker-alt" :style="`color:${clinic.brandColor || '#00D4B2'}`"></i></div>
           <h4 style="font-weight:700;font-size:.95rem;color:var(--text-strong);font-family:'Poppins',sans-serif;margin-bottom:.4rem">{{ loc.name }}</h4>
@@ -550,13 +703,80 @@ function sendMessage() {
     </div>
   </section>
 
+  <section id="partners" class="section" v-show="clinic.affiliates?.length || allOrgPartners.length || isAdmin">
+    <div class="container">
+      <div class="section-header">
+        <span class="eyebrow">Working Together</span>
+        <div class="teal-line" style="margin:0 auto .75rem"></div>
+        <h2 class="section-title">Affiliate Partners
+          <button v-if="isAdmin" class="btn-outline btn-xs" style="margin-left:.5rem;padding:.2rem .55rem;border-radius:999px;vertical-align:middle" title="Edit Affiliate Partners" @click="editSection('section_affiliate_organization')"><i class="fas fa-pencil"></i></button>
+        </h2>
+        <p class="section-sub" style="max-width:520px;margin:0 auto">Labs, imaging centres and other partner organizations we work with.</p>
+      </div>
+      <div v-if="clinic.affiliates?.length || allOrgPartners.length" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1.125rem">
+        <div v-for="aff in clinic.affiliates" :key="aff.id" class="service-card">
+          <div style="width:44px;height:44px;border-radius:.75rem;display:flex;align-items:center;justify-content:center;margin-bottom:1rem" :style="`background:${clinic.brandColor || '#00D4B2'}12`"><i class="fas fa-handshake" :style="`color:${clinic.brandColor || '#00D4B2'}`"></i></div>
+          <h4 style="font-weight:700;font-size:.95rem;color:var(--text-strong);font-family:'Poppins',sans-serif;margin-bottom:.3rem">{{ aff.name }}</h4>
+          <p v-show="aff.relationship" style="font-size:.78rem;color:var(--text);margin-bottom:.35rem">{{ aff.relationship }}</p>
+          <p v-show="aff.specialty" style="font-size:.78rem;color:var(--text)">{{ aff.specialty }}</p>
+        </div>
+        <!-- Real, resolvable partner links (migrations/0015) — admin-only, same reasoning
+             "Affiliated Practitioners" above already gives (facility_organization_affiliates is
+             account/identity data, requireUser()-gated, not curated public content). Rendered
+             alongside the free-text entries above, distinguished with a "Linked" badge rather
+             than merged into identical cards — a real link has no specialty/bio to show, just a
+             resolved organization name and the relationship type. allOrgPartners already merges
+             both directions (orgs I've linked + orgs that linked me) — a partnership reads as
+             mutual either way it was set up. -->
+        <template v-if="isAdmin">
+          <div v-for="oa in allOrgPartners" :key="oa.clinicId" class="service-card">
+            <div style="width:44px;height:44px;border-radius:.75rem;display:flex;align-items:center;justify-content:center;margin-bottom:1rem" :style="`background:${clinic.brandColor || '#00D4B2'}12`"><i class="fas fa-link" :style="`color:${clinic.brandColor || '#00D4B2'}`"></i></div>
+            <h4 style="font-weight:700;font-size:.95rem;color:var(--text-strong);font-family:'Poppins',sans-serif;margin-bottom:.3rem">{{ oa.name }}</h4>
+            <span class="badge badge-brand" style="margin-bottom:.35rem;display:inline-block">Linked</span>
+            <p v-show="oa.relationship" style="font-size:.78rem;color:var(--text)">{{ oa.relationship }}</p>
+          </div>
+        </template>
+      </div>
+      <p v-else style="text-align:center;font-size:.85rem;color:var(--text)">No affiliate organizations added yet.</p>
+    </div>
+  </section>
+
+  <section id="abdm" class="section section-alt">
+    <div class="container">
+      <div class="section-header">
+        <span class="eyebrow">Registry Status</span>
+        <div class="teal-line" style="margin:0 auto .75rem"></div>
+        <h2 class="section-title">ABDM Compliance
+          <button v-if="isAdmin" class="btn-outline btn-xs" style="margin-left:.5rem;padding:.2rem .55rem;border-radius:999px;vertical-align:middle" title="Edit ABDM Compliance" @click="editSection('section_abdm_hfr')"><i class="fas fa-pencil"></i></button>
+        </h2>
+        <p class="section-sub" style="max-width:520px;margin:0 auto">India's Health Facility Registry (HFR) registration — separate from the clinic profile above, since most clinics won't need this to operate.</p>
+      </div>
+      <div v-if="isAdmin" class="cf-card" style="max-width:420px;margin:0 auto;border-radius:1.125rem;padding:1.5rem;text-align:center">
+        <template v-if="!abdmConformance">
+          <p style="font-size:.85rem;color:var(--text)">Checking…</p>
+        </template>
+        <template v-else-if="abdmConformance.error">
+          <p style="font-size:.85rem;color:var(--text)">{{ abdmConformance.error }}</p>
+        </template>
+        <template v-else>
+          <p style="font-size:.9rem;font-weight:700" :style="abdmConformance.valid ? 'color:var(--brand)' : 'color:var(--text-strong)'">
+            <i class="fas" :class="abdmConformance.valid ? 'fa-circle-check' : 'fa-circle-info'"></i>
+            {{ abdmConformance.valid ? 'Fully HFR-conformant.' : `${abdmConformance.errors?.length || 0} field(s) still needed.` }}
+          </p>
+        </template>
+      </div>
+    </div>
+  </section>
+
   <section id="hours" class="section">
     <div class="container">
       <div class="two-col-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:3rem">
         <div>
           <span class="eyebrow">Opening Times</span>
           <div class="teal-line"></div>
-          <h2 style="font-size:1.75rem;font-weight:700;color:var(--text-strong);margin-bottom:1.5rem">Office Hours</h2>
+          <h2 style="font-size:1.75rem;font-weight:700;color:var(--text-strong);margin-bottom:1.5rem">Office Hours
+            <button v-if="isAdmin" class="btn-outline btn-xs" style="margin-left:.5rem;padding:.2rem .55rem;border-radius:999px;vertical-align:middle" title="Edit Office Hours" @click="editSection('section_hours')"><i class="fas fa-pencil"></i></button>
+          </h2>
           <div class="cf-card" style="border-radius:1.125rem;padding:1.5rem">
             <table class="hours-table" style="width:100%">
               <tr v-for="row in allHours" :key="row.day" :style="row.isToday ? `border-left:3px solid ${clinic.brandColor || '#00D4B2'};padding-left:.5rem` : ''">
@@ -570,17 +790,13 @@ function sendMessage() {
         <div id="contact">
           <span class="eyebrow">Reach Us</span>
           <div class="teal-line"></div>
-          <h2 style="font-size:1.75rem;font-weight:700;color:var(--text-strong);margin-bottom:1.5rem">Contact Information</h2>
-          <!-- .cf-card wrapper (matching Office Hours' own card, left) is what keeps the two
-               columns visually aligned — this list used to start as plain unwrapped rows, so it
-               sat flush against the heading while Office Hours' card started with visible
-               padding/border, making the two columns look misaligned. -->
-          <div class="cf-card" style="border-radius:1.125rem;padding:1.5rem;margin-bottom:1.5rem;display:flex;flex-direction:column;gap:1rem">
-            <div v-for="contact in contactItems" :key="contact.label" style="display:flex;align-items:center;gap:.875rem" v-show="contact.value">
-              <div style="width:40px;height:40px;border-radius:.625rem;display:flex;align-items:center;justify-content:center;flex-shrink:0" :style="`background:${clinic.brandColor || '#00D4B2'}12`"><i :class="contact.icon" :style="`color:${clinic.brandColor || '#00D4B2'};font-size:.9rem`"></i></div>
-              <div><p style="font-size:.72rem;color:var(--text);font-weight:600;font-family:'Poppins',sans-serif">{{ contact.label }}</p><a :href="contact.href" style="font-size:.9rem;font-weight:600;color:var(--text-strong)">{{ contact.value }}</a></div>
-            </div>
-          </div>
+          <!-- The at-a-glance contact list (phone/whatsapp/email/address) moved up to the hero,
+               replacing the old "Meet Our Experts" card (real gap found live: with zero staff
+               it just showed "0 care team members" / "coming soon" — an empty-looking card in
+               the hero's most prominent slot; Contact Information has real data from the moment
+               Organisation Profile itself is saved). This anchor + the message form stay — only
+               the duplicated list is gone. -->
+          <h2 style="font-size:1.75rem;font-weight:700;color:var(--text-strong);margin-bottom:1.5rem">Send Us a Message</h2>
           <div class="cf-card" style="border-radius:1rem;padding:1.5rem">
             <h4 style="font-family:'Poppins',sans-serif;font-weight:700;font-size:.95rem;color:var(--text-strong);margin-bottom:1rem">Send a Message</h4>
             <form @submit.prevent="sendMessage()" style="display:flex;flex-direction:column;gap:.75rem">
@@ -602,7 +818,7 @@ function sendMessage() {
         <span style="font-family:'Poppins',sans-serif;font-weight:700;color:#fff;font-size:.9rem">Clinix<span style="color:#00D4B2">Flow</span></span>
       </div>
       <p style="font-size:.8rem;color:rgba(255,255,255,.5)">{{ `© ${new Date().getFullYear()} ${clinic.name || 'Your Clinic'}. All rights reserved.` }}</p>
-      <p style="font-size:.75rem;color:rgba(255,255,255,.4)">Powered by <RouterLink to="/" style="color:#00D4B2">ClinixFlow</RouterLink> · FHIR R4 Compliant Healthcare Platform</p>
+      <p style="font-size:.75rem;color:rgba(255,255,255,.4)">Powered by <RouterLink to="/" style="color:#00D4B2">ClinixFlow</RouterLink> · Secure, Standards-Based Healthcare Platform</p>
       <div style="display:flex;gap:1.5rem;margin-top:.25rem">
         <a href="#team" style="font-size:.78rem;color:rgba(255,255,255,.5)">Team</a>
         <a href="#services" style="font-size:.78rem;color:rgba(255,255,255,.5)">Services</a>
@@ -612,6 +828,13 @@ function sendMessage() {
   </footer>
   </div>
   <!-- ── end public marketing content ── -->
+
+  <!-- Cübo FAB (explicit instruction: replaces the "AI Engine" menu link — no reason to route
+       away to reach it). v-if, not inside the v-show="clinicView === 'public'" block above: that
+       block stays mounted-but-hidden on switch, which would leave this Cübo instance alive
+       alongside Front Desk/Consultation/Checkout's own — each of those already keeps to "never
+       more than one Cübo instance alive at once" via v-if, this one needs the same discipline. -->
+  <Cubo v-if="clinicView === 'public'" category="clinic-home" page-context="Clinic Home — your public clinic page and admin overview." />
 
   <!-- ── Clinic operations (Front Desk / Consultation Desk / Checkout) ──
        Mounted/unmounted on switch (v-if), not kept alive as background tabs — confirmed with
@@ -635,6 +858,7 @@ function sendMessage() {
           <button class="btn-outline" :class="clinicView === 'front-desk' ? 'btn-teal' : ''" @click="openClinicView('front-desk')"><i class="fas fa-house" style="margin-right:.35rem"></i>Front Desk</button>
           <button class="btn-outline" :class="clinicView === 'consultation-desk' ? 'btn-teal' : ''" @click="openClinicView('consultation-desk')"><i class="fas fa-stethoscope" style="margin-right:.35rem"></i>Consultation Desk</button>
           <button v-if="clinical.activeEncounterId" class="btn-outline" :class="clinicView === 'checkout' ? 'btn-teal' : ''" @click="openClinicView('checkout')"><i class="fas fa-receipt" style="margin-right:.35rem"></i>Checkout</button>
+          <RouterLink to="/patient-home" class="btn-outline" style="white-space:nowrap"><i class="fas fa-user-injured" style="margin-right:.35rem"></i>Patients</RouterLink>
           <span style="width:1px;height:20px;background:var(--cf-border);flex-shrink:0"></span>
           <ConnectionStatusControl :shared-mode-live="sharedModeLive" />
           <button class="icon-btn-round" @click="teamChatOpen = true" title="Team Chat"><i class="fas fa-comment-dots"></i></button>
@@ -676,7 +900,7 @@ function sendMessage() {
          thin strip (not the full marketing footer) since these are dense working screens where
          vertical space actually matters. -->
     <footer class="ops-footer">
-      <span>Powered by <RouterLink to="/">ClinixFlow</RouterLink> · FHIR R4 Compliant Healthcare Platform</span>
+      <span>Powered by <RouterLink to="/">ClinixFlow</RouterLink> · Secure, Standards-Based Healthcare Platform</span>
       <span>{{ `© ${new Date().getFullYear()} ${clinic.name || 'Your Clinic'}` }}</span>
     </footer>
   </div>

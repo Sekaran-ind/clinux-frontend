@@ -29,6 +29,11 @@ const props = defineProps({
   // remove capability (default false). Existing rows still render as context either way; only the
   // per-row Remove button is gated.
   readOnly: { type: Boolean, default: false },
+  // Same StaffOnboarding.vue reuse case, the other half of it — this component's copy was written
+  // for an admin managing OTHER people ("Add a Staff Member", "No staff added yet."), which reads
+  // wrong when a practitioner is describing themselves. Copy-only override; the underlying add/
+  // extract/pairing behavior is identical either way.
+  selfService: { type: Boolean, default: false },
 });
 
 const STAFF_LINK_ID = 'section_staff';
@@ -65,14 +70,27 @@ const PRACTITIONER_FIELDS = [
 const ROLE_FIELDS = [
   { linkId: 'staff_role_active', label: 'Currently Active in this Role', kind: 'boolean' },
   { linkId: 'staff_provider_role', label: 'HPR Role (HPR master: role)', kind: 'choice', choices: HPR_ROLE_CHOICES },
+  // Staff can be associated with more than one branch (design call — real for a multi-branch
+  // clinic's shared staff, unlike Services' single-branch case in ServicesHost.vue). Real FHIR
+  // PractitionerRole.location is genuinely 0..*. Reuses the existing 'multichoice' kind
+  // (buildAnswerItems already serializes it to one answer per selection — no change needed there)
+  // but its option list is dynamic per-clinic data (branchChoices below), not a static array like
+  // every other multichoice field here — the template resolves this ONE field's options from
+  // branchChoices instead of f.choices, by linkId.
+  { linkId: 'staff_location_ids', label: 'Branches', kind: 'multichoice', choices: [] },
 ];
 const ALL_FIELDS = [...PRACTITIONER_FIELDS, ...ROLE_FIELDS];
 const FIELD_BY_ID = Object.fromEntries(ALL_FIELDS.map((f) => [f.linkId, f]));
 
+// section_location's own instance index IS the reference value local-extractor.js resolves
+// against (same convention ServicesHost.vue's own service_location_id already uses).
+const branchChoices = computed(() => (props.record ? getGroupInstances(props.record, 'section_location') : [])
+  .map((instance, i) => ({ value: String(i), label: getAnswer({ data: instance }, 'location_name') || `Branch ${i + 1}` })));
+
 const SECTIONS = [
   { id: 'person', label: 'Person', icon: 'fa-user', fields: ['staff_first_name', 'staff_last_name', 'staff_phone', 'staff_email', 'staff_qualification', 'staff_license', 'staff_status'] },
   { id: 'abdm', label: 'ABDM Registration', icon: 'fa-id-card', fields: ['staff_hprid', 'staff_hpr_id_number', 'staff_hp_category_code', 'staff_hp_subcategory_code', 'staff_state_code', 'staff_district_code', 'staff_council'] },
-  { id: 'role', label: 'Role', icon: 'fa-user-doctor', fields: ['staff_role', 'staff_specialty', 'staff_role_active', 'staff_provider_role'] },
+  { id: 'role', label: 'Role', icon: 'fa-user-doctor', fields: ['staff_role', 'staff_specialty', 'staff_role_active', 'staff_provider_role', 'staff_location_ids'] },
 ];
 const activeSectionId = ref(SECTIONS[0].id);
 
@@ -219,10 +237,10 @@ defineExpose({ extract });
         <button v-if="!props.readOnly" class="btn-ghost text-xs px-2 py-1" @click="removeStaff(row.index)"><i class="fas fa-times"></i> Remove</button>
       </div>
     </div>
-    <p v-else class="text-xs text-center py-2" style="color:var(--cf-text)">No staff added yet.</p>
+    <p v-else class="text-xs text-center py-2" style="color:var(--cf-text)">{{ selfService ? "You haven't added your details yet." : 'No staff added yet.' }}</p>
 
     <div class="cf-card rounded-2xl p-4">
-      <p class="cf-label mb-2">Add a Staff Member</p>
+      <p class="cf-label mb-2">{{ selfService ? 'Your Details' : 'Add a Staff Member' }}</p>
       <AdaptiveSectionNav :sections="SECTIONS" mode="tabs" storage-key="provider-basics" v-model:active-id="activeSectionId">
         <template v-for="section in SECTIONS" :key="section.id" #[section.id]>
           <div class="cf-form-field-grid">
@@ -235,6 +253,9 @@ defineExpose({ extract });
                 <option value="">Select…</option>
                 <option v-for="c in FIELD_BY_ID[linkId].choices" :key="c" :value="c">{{ c }}</option>
               </select>
+              <select v-else-if="linkId === 'staff_location_ids'" class="cf-input" multiple v-model="form[linkId]">
+                <option v-for="b in branchChoices" :key="b.value" :value="b.value">{{ b.label }}</option>
+              </select>
               <select v-else-if="FIELD_BY_ID[linkId].kind === 'multichoice'" class="cf-input" multiple v-model="form[linkId]">
                 <option v-for="c in FIELD_BY_ID[linkId].choices" :key="c" :value="c">{{ c }}</option>
               </select>
@@ -246,7 +267,7 @@ defineExpose({ extract });
         </template>
       </AdaptiveSectionNav>
       <button class="btn-outline text-sm mt-3" :disabled="!form.staff_first_name" @click="addStaff()">
-        <i class="fas fa-plus"></i> Add This Staff Member
+        <i class="fas fa-plus"></i> {{ selfService ? 'Continue' : 'Add This Staff Member' }}
       </button>
     </div>
   </div>

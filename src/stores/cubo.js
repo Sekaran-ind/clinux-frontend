@@ -16,6 +16,7 @@ const CUBO_CATEGORIES = {
   'abdm-facility': { label: 'ABDM Facility', icon: 'fa-hospital', color: 'text-teal-500' },
   'abdm-patient': { label: 'ABDM Patient', icon: 'fa-id-card', color: 'text-teal-500' },
   'front-desk': { label: 'Front Desk', icon: 'fa-concierge-bell', color: 'text-indigo-500' },
+  'patient-directory': { label: 'Patients', icon: 'fa-user-injured', color: 'text-violet-500' },
   billing: { label: 'Billing', icon: 'fa-file-invoice-dollar', color: 'text-rose-500' },
   'ai-engine': { label: 'AI Engine', icon: 'fa-robot', color: 'text-purple-500' },
   // 'administration' (SPEC-22 decision #3's "Hospital state" thread, entered by Cubo.vue's own

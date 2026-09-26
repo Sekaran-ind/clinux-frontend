@@ -59,6 +59,9 @@ export const useOnboardingStore = defineStore('onboarding', () => {
       hasBasics: !!buildClinicProfile().name,
       everPublished: everPublished.value,
       hfrFacilityId: getAnswer(getProviderRecord(), 'hospital_facility_id') || null,
+      // FacilityHfrPanel.vue's own Basic Information tracking id — the new hfr_in_progress
+      // intermediate stage, surfaced by FacilityStatusCard.vue.
+      hfrTrackingId: getAnswer(getProviderRecord(), 'hospital_tracking_id') || null,
     });
   });
   const facilitySetupStageLabel = computed(() => FACILITY_SETUP_STAGE_LABELS[facilitySetupStage.value]);
@@ -202,6 +205,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     const consentInstances = getGroupInstances(providerRec, 'section_consent');
     const hoursInstances = getGroupInstances(providerRec, 'section_hours');
     const locationInstances = getGroupInstances(providerRec, 'section_location');
+    const affiliateInstances = getGroupInstances(providerRec, 'section_affiliate_organization');
 
     return {
       name,
@@ -229,7 +233,11 @@ export const useOnboardingStore = defineStore('onboarding', () => {
         const rec = { data: instance };
         return {
           id: 'staff-' + i,
-          name: getAnswer(rec, 'staff_name'),
+          // Real bug found live: staff_name hasn't existed since the Practitioner/
+          // PractitionerRole split (ProviderBasicsHost.vue's own fields are staff_first_name/
+          // staff_last_name) — every Care Team card on ClinicHome rendered with a blank name.
+          // Same join ProviderBasicsHost.vue's own record-row list already uses.
+          name: [getAnswer(rec, 'staff_first_name'), getAnswer(rec, 'staff_last_name')].filter(Boolean).join(' '),
           role: getAnswer(rec, 'staff_role'),
           specialty: getAnswers(rec, 'staff_specialty').join(', '),
           qualification: getAnswer(rec, 'staff_qualification'),
@@ -259,6 +267,18 @@ export const useOnboardingStore = defineStore('onboarding', () => {
           name: getAnswer(rec, 'location_name'),
           address: getAnswer(rec, 'location_address'),
           phone: getAnswer(rec, 'location_phone'),
+        };
+      }),
+      // Not yet displayed anywhere before this pass — ClinicHome.vue's own "Our Partners"
+      // section (added alongside this) is the first real consumer.
+      affiliates: affiliateInstances.map((instance, i) => {
+        const rec = { data: instance };
+        return {
+          id: 'affiliate-' + i,
+          name: getAnswer(rec, 'affiliate_org_name'),
+          relationship: getAnswers(rec, 'affiliate_org_relationship').join(', '),
+          specialty: getAnswers(rec, 'affiliate_org_specialty').join(', '),
+          phone: getAnswer(rec, 'affiliate_org_phone'),
         };
       }),
       apptConfig: { onlineBooking: true },
@@ -302,6 +322,23 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     return profile;
   }
 
+  // Real gap found live: ClinicHome.vue's own "Nothing's published yet" empty state already
+  // promises "your clinic page goes live automatically as soon as your facility details are
+  // saved" — but nothing ever actually called publish() except the OLD Onboarding.vue Review
+  // screen's explicit "Publish Clinic Page" button. A facility saved entirely through the hub's
+  // inline per-section Save (or, now, ClinicHome's own edit sheets) never flipped everPublished,
+  // so the promise the copy already made was never kept for that entire path — confirmed live,
+  // not hypothetical. Called after every section save (both Onboarding.vue's saveActiveSection()
+  // and ClinicHome.vue's persistSectionSave()) instead of changing what everPublished MEANS —
+  // facilitySetupMachine.js's own 'published' stage (join-token eligibility) reads the exact same
+  // flag, so this is a real go-live transition, not a cosmetic display toggle. publish() itself is
+  // already safe to call repeatedly (importProviderProfile() already reuses it the same way), so
+  // this just calls it once the one real gate (a saved hospital_name) is met, instead of requiring
+  // a second, separate, explicit click on top of that.
+  function publishIfReady() {
+    if (!everPublished.value && buildClinicProfile().name) publish();
+  }
+
   // Phase C extension: applies an imported clinic-profile transfer (see sessionShare.js's
   // buildProviderProfileSharePayload/decodeProviderProfileShareKey) to THIS device's own local
   // state. existingRecordId = payload.recordId means this upserts by the SOURCE record's own id
@@ -326,7 +363,7 @@ export const useOnboardingStore = defineStore('onboarding', () => {
     PROVIDER_FORM_ID,
     registeredUser, branding, publishedClinic, everPublished, providerRecordId, dataVersion,
     facilitySetupStage, facilitySetupStageLabel, canAcceptJoinToken,
-    getProviderRecord, buildSeedFromRegistration, saveBranding, saveProviderRecord, ensureProviderRecord, buildClinicProfile, publish,
+    getProviderRecord, buildSeedFromRegistration, saveBranding, saveProviderRecord, ensureProviderRecord, buildClinicProfile, publish, publishIfReady,
     importProviderProfile,
   };
 });

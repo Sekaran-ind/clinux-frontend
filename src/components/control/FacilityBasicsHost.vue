@@ -29,7 +29,11 @@ const GROUP_LINK_ID = 'section_hospital';
 const FIELDS = [
   { linkId: 'hospital_name', label: 'Hospital Name', required: true },
   { linkId: 'hospital_legalname', label: 'Legal / Trade Name' },
-  { linkId: 'hospital_type', label: 'Facility Type' },
+  // Deliberately NOT labeled "Facility Type" — that's ABDM Registration's own hospital_facility_
+  // type, a different, HFR-coded field a few tabs away. This one is a generic, ABDM-independent
+  // classification any clinic has whether or not it ever registers with HFR (real naming
+  // collision found live: two "Facility Type" fields with two different meanings).
+  { linkId: 'hospital_type', label: 'Facility Category' },
   { linkId: 'hospital_npi', label: 'NPI / Registration No.' },
   { linkId: 'hospital_address', label: 'Street Address' },
   { linkId: 'hospital_city', label: 'City' },

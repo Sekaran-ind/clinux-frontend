@@ -131,6 +131,66 @@ export function patchRecordMultiField(recordId, linkId, values) {
   });
 }
 
+// Real, severe bug found live while rebuilding FacilityHfrPanel.vue's UX: patchRecordField's own
+// "never create, only mutate an existing item" contract (see its own header) is exactly right for
+// callers whose group is already seeded by a real extract()-based create step elsewhere (Facility
+// BasicsHost.vue's own mergeGroupResponseItem() call, e.g.) — but FacilityHfrPanel.vue's own
+// non-repeating ABDM groups (section_hospital_abdm_facility_type/_location/_registration/
+// _public_display) are NEVER created that way anywhere in this app; they exist ONLY as direct
+// field patches. A fresh record starts as real, literal `{item: []}` (see onboarding.js's own
+// ensureProviderRecord()) — so for as long as this panel has called patchRecordField on these
+// groups, EVERY write has silently no-op'd on a record that never happened to have the group
+// pre-seeded some other way. The UI never surfaced this: `step`/`trackingId`/`facilityId` are
+// local component refs that hold their own value in memory regardless of whether the underlying
+// write landed, so every stage still visually advanced — only a reload (or, as built now, any
+// caller reading the record back via getAnswer()) would reveal nothing was actually saved.
+//
+// Same walk-and-mutate semantics as patchRecordField when the item already exists anywhere in the
+// tree (so an already-seeded record, or a field some OTHER path already created, keeps working
+// exactly as before) — but when it's missing, creates it as a new leaf item inside the named
+// top-level group, creating that group too if needed, instead of silently doing nothing.
+export function patchOrCreateGroupField(recordId, groupLinkId, linkId, value) {
+  if (!formData.has(recordId)) return;
+  formData.update(recordId, (draft) => {
+    let found = false;
+    const walk = (items) => {
+      (items || []).forEach((item) => {
+        if (item.linkId === linkId) { item.answer = [answerFor(value)]; found = true; }
+        if (item.item) walk(item.item);
+      });
+    };
+    walk(draft.data.item);
+    if (found) return;
+    draft.data.item = draft.data.item || [];
+    let group = draft.data.item.find((item) => item.linkId === groupLinkId);
+    if (!group) { group = { linkId: groupLinkId, item: [] }; draft.data.item.push(group); }
+    group.item = group.item || [];
+    group.item.push({ linkId, answer: [answerFor(value)] });
+  });
+}
+
+// patchOrCreateGroupField's sibling for a genuinely multi-value field — same create-if-missing
+// fallback, patchRecordMultiField's own write shape (one answer entry per value) otherwise.
+export function patchOrCreateGroupMultiField(recordId, groupLinkId, linkId, values) {
+  if (!formData.has(recordId)) return;
+  formData.update(recordId, (draft) => {
+    let found = false;
+    const walk = (items) => {
+      (items || []).forEach((item) => {
+        if (item.linkId === linkId) { item.answer = values.map(answerFor); found = true; }
+        if (item.item) walk(item.item);
+      });
+    };
+    walk(draft.data.item);
+    if (found) return;
+    draft.data.item = draft.data.item || [];
+    let group = draft.data.item.find((item) => item.linkId === groupLinkId);
+    if (!group) { group = { linkId: groupLinkId, item: [] }; draft.data.item.push(group); }
+    group.item = group.item || [];
+    group.item.push({ linkId, answer: values.map(answerFor) });
+  });
+}
+
 // Persisting equivalent of withGroupFields, but scoped to ONE instance of a REPEATING group.
 // Repeating instances have no id of their own (getGroupInstances returns plain sibling items
 // sharing groupLinkId, addressed only by their position) — instanceIndex is the only way to
@@ -152,7 +212,14 @@ export function patchGroupInstanceField(recordId, groupLinkId, instanceIndex, fi
         field = { linkId };
         instance.item.push(field);
       }
-      field.answer = [answerFor(value)];
+      // A caller passing an Array (a MultiSelect field, e.g. staff_specialty) gets one answer
+      // entry per value — same shape a compiled MultiSelect field's own extraction already
+      // produces (see patchRecordMultiField's own comment on why). Real bug found live: before
+      // this, an array value fell through to answerFor()'s object branch, which wraps the whole
+      // array as a single `{valueString: [...]}` answer — getAnswer's own extractAnswerValue then
+      // returned the raw array as the "value", which Vue's template interpolation renders as the
+      // literal text "[]"/"[\"Cardiology\"]" instead of either the real values or nothing.
+      field.answer = Array.isArray(value) ? value.map(answerFor) : [answerFor(value)];
     });
   });
 }
@@ -165,6 +232,50 @@ export function patchGroupInstanceField(recordId, groupLinkId, instanceIndex, fi
 // record to already exist (same convention as patchGroupInstanceField) — callers create it via
 // saveDataRecord() first if needed. Returns the new instance's index within that group, or -1 if
 // the record doesn't exist.
+// Practitioner self-service rebuild (Personal Details / Qualifications / Work Experience as 3
+// separate tree elements — explicit instruction) — all 3 edit fields living on the SAME single
+// section_staff instance (index 0). Each section's own save must patch only its own fields
+// (patchGroupInstanceField, or patchNestedGroupInstances below for Qualifications' nested repeating
+// group), never mergeGroupResponseItems' replace-the-whole-instance semantics — that would let
+// saving Work Experience alone silently wipe Personal Details and Qualifications, since all three
+// live inside the one section_staff item. patchGroupInstanceField (and patchNestedGroupInstances)
+// both silently no-op when the target instance doesn't exist yet — this creates it, once, the
+// first time any of the three sections is ever saved; a no-op every time after.
+export function ensureGroupInstance(recordId, groupLinkId) {
+  if (!formData.has(recordId)) return;
+  formData.update(recordId, (draft) => {
+    draft.data.item = draft.data.item || [];
+    const exists = draft.data.item.some((item) => item.linkId === groupLinkId);
+    if (!exists) draft.data.item.push({ linkId: groupLinkId, item: [] });
+  });
+}
+
+// The nested-group counterpart to mergeGroupResponseItems — that helper replaces the full set of
+// TOP-LEVEL instances sharing groupLinkId; this replaces the full set of a NESTED repeating
+// group's instances living inside ONE top-level instance's own item array (e.g. every
+// section_staff_qualification entry inside section_staff instance 0) — needed because
+// Qualifications is a genuinely repeating sub-structure (see system-provider-composition-v1.yaml's
+// own comment on why it's nested rather than a sibling top-level block), so a single
+// patchGroupInstanceField-style field-by-field patch can't represent "replace entry 2, drop entry
+// 3, add a new entry 4" in one call the way LhcFormHost-style extraction naturally produces.
+export function patchNestedGroupInstances(recordId, parentGroupLinkId, parentInstanceIndex, childGroupLinkId, childResponseItems) {
+  if (!formData.has(recordId)) return;
+  formData.update(recordId, (draft) => {
+    const instances = (draft.data.item || []).filter((item) => item.linkId === parentGroupLinkId);
+    const instance = instances[parentInstanceIndex];
+    if (!instance) return;
+    instance.item = instance.item || [];
+    // In-place splice/push, not a `instance.item = [...]` reassignment — matches
+    // patchGroupInstanceField's own proven-working mutation style; a whole-array reassignment here
+    // was empirically confirmed NOT to commit correctly through this collection's update/sync path
+    // (old entries silently survived alongside the new ones instead of being replaced).
+    for (let i = instance.item.length - 1; i >= 0; i -= 1) {
+      if (instance.item[i].linkId === childGroupLinkId) instance.item.splice(i, 1);
+    }
+    childResponseItems.forEach((item) => instance.item.push(item));
+  });
+}
+
 export function appendGroupInstance(recordId, groupLinkId, fieldValues) {
   if (!formData.has(recordId)) return -1;
   let newIndex = -1;
@@ -257,6 +368,18 @@ export function recordSummary(record) {
 export function getGroupInstances(record, groupLinkId) {
   if (!record) return [];
   return (record.data.item || []).filter((item) => item.linkId === groupLinkId);
+}
+
+// The read counterpart to patchNestedGroupInstances — every childGroupLinkId instance living
+// inside ONE top-level parent instance's own item array (e.g. every section_staff_qualification
+// entry inside section_staff instance 0), each wrapped as a bare {linkId, item} node (the same
+// shape getGroupInstances' own elements already are, so getAnswer({data: instance}, ...) works
+// identically on either).
+export function getNestedGroupInstances(record, parentGroupLinkId, parentInstanceIndex, childGroupLinkId) {
+  if (!record) return [];
+  const parentInstance = getGroupInstances(record, parentGroupLinkId)[parentInstanceIndex];
+  if (!parentInstance) return [];
+  return (parentInstance.item || []).filter((item) => item.linkId === childGroupLinkId);
 }
 
 // Pure (non-persisting, unlike patchRecordField) — returns a NEW recordData object with the

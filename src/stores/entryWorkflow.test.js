@@ -35,11 +35,13 @@ describe('useEntryWorkflowStore', () => {
     // A fresh Pinia instance gives a fresh entryWorkflow store, but persistence (real
     // taskActorSnapshots.js, entryWorkflow.js's own design) is a module-level singleton
     // collection that survives across tests in this file regardless of Pinia. Without clearing
-    // it, an earlier test driving `register` (non-repeatable) to 'done' leaves a persisted
-    // snapshot a later test's fresh store rehydrates FROM — register.js's own FOCUS then gets
-    // silently dropped (already 'done', not repeatable), exactly like the real bug this session
-    // found and fixed, just here as a test-isolation artifact rather than the real thing. Found
-    // via a real failing test (passed in isolation, failed in the full run), not assumed.
+    // it, an earlier test driving `register` to 'done' leaves a persisted snapshot a later test's
+    // fresh store rehydrates FROM — test 1's own "starts with register ready" assertion would see
+    // 'done' instead. (register is repeatable now, same as login/forgot_password/change_password
+    // — a real bug this session found and fixed, a SECOND registration in the same browser
+    // session used to silently no-op — but repeatable only means 'done' can receive another FOCUS
+    // back to 'active'; it still isn't 'ready', so cross-test bleed here is still real regardless.)
+    // Found via a real failing test (passed in isolation, failed in the full run), not assumed.
     taskActorSnapshots.toArray.forEach((r) => taskActorSnapshots.delete(r.planId));
     // Same isolation reasoning as taskActorSnapshots above — chatThreads (cubo.js) is ALSO a
     // module-level singleton collection, so a thread inserted by one test (e.g. logout()'s own
@@ -87,7 +89,13 @@ describe('useEntryWorkflowStore', () => {
 
   // SPEC-21 §5's role-based next-action triggering.
   describe('onRoleKnown', () => {
-    it('fires with the real role and "register" after a successful register', async () => {
+    it('fires with the real role and "register" after a successful register — and again on a second register (a different account, same browser session), since register is repeatable', async () => {
+      // Real, live-reproduced bug: register used to be non-repeatable, so a SECOND registration
+      // attempt in the same browser session (sign out, then register a genuinely different
+      // account — a real local-dev/shared-device flow, not hypothetical) silently dropped its
+      // own FOCUS event once the first one reached 'done' — zero network calls, zero errors,
+      // exactly "I clicked Create Account and nothing happens." Same class of bug login's own
+      // test right below already pins; register just didn't have the fix applied to it too.
       const store = useEntryWorkflowStore();
       const auth = useAuthStore();
       vi.spyOn(auth, 'register').mockResolvedValue({ user: { id: 'acc1', email: 'a@b.com', role: 'hospital_admin' } });
@@ -97,6 +105,11 @@ describe('useEntryWorkflowStore', () => {
       store.focus('register', { email: 'a@b.com', password: 'password123', role: 'hospital_admin' });
       await vi.waitFor(() => expect(seen.length).toBe(1));
       expect(seen[0]).toEqual({ role: 'hospital_admin', actionId: 'register' });
+
+      auth.register.mockResolvedValue({ user: { id: 'acc2', email: 'c@d.com', role: 'health_professional' } });
+      store.focus('register', { email: 'c@d.com', password: 'password123', role: 'health_professional' });
+      await vi.waitFor(() => expect(seen.length).toBe(2));
+      expect(seen[1]).toEqual({ role: 'health_professional', actionId: 'register' });
     });
 
     it('fires with the real role and "login" after a successful login — and again on a second login, since login is repeatable', async () => {
@@ -153,7 +166,7 @@ describe('useEntryWorkflowStore', () => {
       expect(store.secondaryActionIds.sort()).toEqual(['change_password', 'forgot_password', 'logout', 'register']);
     });
 
-    it('a non-repeatable action that already reached done (register, after a real registration) drops out on its own — no special-case needed', async () => {
+    it('a done action drops out of secondaryActionIds on its own (register, after a real registration) — no special-case needed, repeatable or not', async () => {
       const store = useEntryWorkflowStore();
       const auth = useAuthStore();
       vi.spyOn(auth, 'register').mockResolvedValue({ user: { id: 'acc1', email: 'a@b.com', role: 'hospital_admin' } });

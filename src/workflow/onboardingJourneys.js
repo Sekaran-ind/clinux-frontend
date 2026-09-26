@@ -14,7 +14,10 @@
 // router.push(route), full page width), never rendered inline in Cübo's right-pane content tab.
 export const ONBOARDING_JOURNEYS = [
   { id: 'facility_registration', title: 'Register Your Facility', icon: 'fa-hospital', route: '/onboarding', roles: ['hospital_admin', 'admin_and_health_professional'] },
-  { id: 'staff_registration', title: 'Add My Details', icon: 'fa-id-badge', route: '/staff-onboarding', roles: ['health_professional', 'admin_and_health_professional'] },
+  // Routes to the practitioner's own Page View, not straight into Data View — matches the
+  // Page View/Data View/Cübo Thread pattern's own entry point (PractitionerHome.vue's "Build My
+  // Profile" CTA is what reaches /staff-onboarding from there).
+  { id: 'staff_registration', title: 'Add My Details', icon: 'fa-id-badge', route: '/practitioner-home', roles: ['health_professional', 'admin_and_health_professional'] },
   // Patient Registration — not yet built. Joins this plain list, not a PlanDefinition, when it is.
 ];
 

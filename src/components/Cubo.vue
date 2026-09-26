@@ -514,7 +514,10 @@ const contactsLoaded = ref(false);
 async function loadContacts() {
   const [teamRes, affiliatesRes, pendingRes] = await Promise.all([auth.fetchTeam(), auth.fetchAffiliates(), listPendingJoinRequests()]);
   const team = (teamRes.accounts || []).map((a) => ({ id: a.id, name: a.adminName || a.email, kind: 'staff' }));
-  const affiliates = (affiliatesRes.affiliates || []).map((a) => ({ id: a.accountId, name: a.practitionerName || a.practitionerEmail, kind: 'affiliate' }));
+  // Real pre-existing bug found while auditing this for the organization-affiliate extension:
+  // listAffiliatesByFacility (accounts-db.js) actually returns adminName/email, never
+  // practitionerName/practitionerEmail — every affiliate's contact name here was always blank.
+  const affiliates = (affiliatesRes.affiliates || []).map((a) => ({ id: a.accountId, name: a.adminName || a.email, kind: 'affiliate' }));
   const pending = (pendingRes.pending || []).map((p) => ({ id: p.accountId, name: p.adminName || p.email, kind: 'pending-join-request', token: p.token, linkKind: p.linkKind }));
   contacts.value = [...pending, ...team, ...affiliates].filter((c) => c.id !== auth.currentUser?.id);
   contactsLoaded.value = true;

@@ -4,7 +4,7 @@
 // carousel is rewritten as reactive Vue state (currentSlide ref) instead of the original's
 // direct DOM manipulation (track.style.transform, dots.forEach, etc.) — same visual behavior,
 // idiomatic to the new framework rather than a literal port of imperative DOM code.
-import { onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth.js';
 import { useEntryWorkflowStore } from '../stores/entryWorkflow.js';
@@ -110,7 +110,12 @@ function onRegisterSuccess({ role }) {
   // hprRoles.js — the same HPR-master wording RegisterForm.vue's own role picker just showed,
   // not a second local copy of it.
   showToast(`Welcome${role ? ', ' + hprRoleLabel(role) : ''}! Let's get you set up.`);
-  router.push('/clinic-home');
+  // A pure health_professional has no facility of their own — routing them into /clinic-home was
+  // a real defect (an unlinked practitioner would land on whatever clinic profile happened to be
+  // on the device, with nothing of their own to see). Their own home is /practitioner-home until
+  // they've associated with a clinic via Share Link (see StaffOnboarding.vue's "associate"
+  // section) — clinic-home stays the destination only for roles that actually run a facility.
+  router.push(role === 'health_professional' ? '/practitioner-home' : '/clinic-home');
 }
 
 function onLoginSuccess() {
@@ -141,12 +146,34 @@ function goToEngine() {
 }
 
 // Routes to the clinic's published public page if setup is already done, otherwise back into
-// onboarding to finish it.
+// onboarding to finish it. health_professional accounts have no facility to set up — same
+// defect/fix as onRegisterSuccess() above, this is the other real vector that was sending an
+// independent practitioner to /clinic-home (this button, not just the post-register redirect).
 function goToClinic() {
   if (!auth.currentUser) { showLogin.value = true; return; }
+  if (auth.currentUser.role === 'health_professional') { router.push('/practitioner-home'); return; }
   const hasProfile = !!localStorage.getItem('cf_clinic_profile');
   router.push(hasProfile ? '/clinic-home' : '/onboarding');
 }
+
+// Structural nav vs. Next Best Action (see clinux memory notes on the design principle),
+// applied at Index/entry level: "Talk to Cübo" (below) is the general-purpose, always-available
+// entry point — it can register, log in, or help with anything, not tied to any one journey's
+// progress. This is the other half — the state-specific recommendation, reusing goToClinic()'s
+// own hasProfile signal so the label and the click destination can never drift apart. Read off
+// auth.currentUser (reactive) rather than re-checking localStorage on every render; profile
+// completion in practice only changes via a navigation/reload of this page anyway, same as
+// goToClinic() itself already assumes.
+const heroNextAction = computed(() => {
+  if (!auth.currentUser) return null;
+  if (auth.currentUser.role === 'health_professional') {
+    return { label: 'Go to My Profile', icon: 'fas fa-arrow-right' };
+  }
+  const hasProfile = !!localStorage.getItem('cf_clinic_profile');
+  return hasProfile
+    ? { label: auth.currentUser.clinicName, icon: 'fas fa-arrow-right' }
+    : { label: 'Finish Setting Up Your Clinic', icon: 'fas fa-list-check' };
+});
 
 async function sendContact(e) {
   const payloadData = { type: 'email', name: contactForm.name, clinic: contactForm.clinic, email: contactForm.email, message: contactForm.message };
@@ -350,7 +377,10 @@ onUnmounted(stopAutoplay);
 
         <div class="flex flex-wrap gap-4">
           <button v-if="!auth.currentUser" @click="showRegister = true" class="btn-teal inline-flex items-center gap-2"><i class="fas fa-hospital-user"></i>Register Your Clinic</button>
-          <button v-if="auth.currentUser" @click="goToEngine()" class="btn-teal inline-flex items-center gap-2"><p  class="bg-(--color-secondary) text-(--color-primary) font-black text-2xl px-2.5 py-1 rounded shadow-lg font-mono" >CÜ </p>- Talk to Cübo</button>
+          <!-- Next best action (logged in): the state-specific recommendation — finish setup, or
+               go to your own live clinic page — leads as the primary CTA; see heroNextAction's
+               own header comment. -->
+          <button v-if="heroNextAction" @click="goToClinic()" class="btn-teal inline-flex items-center gap-2"><i :class="heroNextAction.icon"></i><span class="text-md font-bold truncate">{{ heroNextAction.label }}</span></button>
           <!-- SPEC-20 (docs/SPEC-20-REFERENCE-PATTERN-JOURNEY-WORKBENCH-AND-UNAUTH-CUBO-ENTRY.md) —
                additive entry point, same precedent HospitalOnboarding.vue's "Try the chat-based
                setup" card set for SPEC-14: the existing Register/Sign-in modals above are
@@ -359,7 +389,9 @@ onUnmounted(stopAutoplay);
                Cübo already IS the "how it works" demonstration, live, not a second static
                explainer competing with it for the same slot. -->
           <button v-if="!auth.currentUser" @click="openGuidedSetup()" class="btn-outline inline-flex items-center gap-2"><i class="text-md font-bold fas fa-comments"></i>Try Guided Setup with Cübo</button>
-          <button v-if="auth.currentUser" @click="goToClinic()" class="btn-teal inline-flex items-center gap-2"><span class="text-md font-bold truncate">{{ auth.currentUser.clinicName }}</span></button>
+          <!-- Structural nav (logged in): general-purpose, always-available — not tied to any
+               one journey's progress, demoted to outline now that heroNextAction leads. -->
+          <button v-if="auth.currentUser" @click="goToEngine()" class="btn-outline inline-flex items-center gap-2"><p class="bg-(--color-secondary) text-(--color-primary) font-black text-2xl px-2.5 py-1 rounded shadow-lg font-mono">CÜ </p>- Talk to Cübo</button>
         </div>
 
         <div class="hidden lg:flex absolute right-0 top-1/2 -translate-y-1/2 items-center justify-center" style="width:40%">

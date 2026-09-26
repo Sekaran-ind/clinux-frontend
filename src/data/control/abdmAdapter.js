@@ -20,6 +20,7 @@
 // section_staff and are always passed in as plain arguments from the caller's transient page
 // state.
 import { getAnswer, getAnswers } from '../collections/formData.js';
+import { hprRoleCode } from './hprRoles.js';
 
 // ─────────────────────────────── HPR (Health Professional Registry) ───────────────────────
 
@@ -53,7 +54,17 @@ export function buildHprVerifyMobileOtpBody(txnId, otp) {
 // staffRecord = one section_staff group instance, wrapped as { data: instance } by the caller.
 // txnId/selectedHpId/password are transient, supplied by the caller — password is typed by the
 // user in the moment and must never be stored back onto the record.
-export function buildHprCreateBody(staffRecord, { txnId, selectedHpId, password }) {
+// Real bug found live (and fixed): this used to read role from getAnswer(staffRecord,
+// 'staff_abdm_role') — a linkId that has never existed anywhere in system-provider-composition-v1
+// .yaml, ProviderBasicsHost.vue, or ProviderMyProfileHost.vue. Every createAccount() call
+// submitted role: undefined, and the gateway's own required-field check (hpr.js) 400'd before the
+// request ever reached ABDM. The real HPR role value is staff_provider_role — on the PAIRED
+// PractitionerRole (section_staff_role) instance, a DIFFERENT resource than staffRecord (the
+// Practitioner) — so this now takes roleRecord as its own explicit param rather than trying to
+// find it on staffRecord, and converts its label to the real 1/2/3 numeric code the spec's own
+// Roles table requires (hprRoles.js's own hprRoleCode()) — createHprIdWithPreVerified's `role` is
+// an int, not the label string PractitionerRole.code stores.
+export function buildHprCreateBody(staffRecord, roleRecord, { txnId, selectedHpId, password }) {
   return {
     txnId,
     email: getAnswer(staffRecord, 'staff_email'),
@@ -68,7 +79,14 @@ export function buildHprCreateBody(staffRecord, { txnId, selectedHpId, password 
     stateCode: getAnswer(staffRecord, 'staff_state_code'),
     districtCode: getAnswer(staffRecord, 'staff_district_code'),
     council: getAnswer(staffRecord, 'staff_council') === 'true' || getAnswer(staffRecord, 'staff_council') === true,
-    role: getAnswer(staffRecord, 'staff_abdm_role'),
+    role: hprRoleCode(getAnswer(roleRecord, 'staff_provider_role')),
+    // Real gap found live: the real HPR spec's own createHprIdWithPreVerified carries an optional
+    // profilePhoto field, and clinuxflow-abdm-gateway's /registration/create route already reads
+    // payload.profilePhotoBase64 (hpr.js) — nothing ever sent it. staff_photo is captured once, in
+    // ProviderPersonalDetailsHost.vue's own Personal Details section (same base64 FileReader
+    // pattern FacilityHfrPanel.vue's board/building photos already use), and reused here rather
+    // than asking for a second upload during ABDM registration.
+    profilePhotoBase64: getAnswer(staffRecord, 'staff_photo'),
   };
 }
 
@@ -87,35 +105,134 @@ export function buildHprProfessionalFetchBody(staffRecord) {
 }
 
 // "3. Update healthcare professional API.pdf" — the real update-professional-new body is a huge
-// nested structure (practitioner/personalInformation/communicationAddress/registrationAcademic
-// with per-qualification base64 certificate uploads/currentWorkDetails/facilityDeclarationData —
-// 60+ fields across several real government forms). Building full capture UI for all of it is a
-// genuinely separate, large profile-management feature, out of proportion for "finish the
-// pending onboarding items" — this deliberately covers only the subset already captured
-// elsewhere in this app (name/mobile/email, all already on section_staff), sent as a real,
-// minimal, valid update rather than either skipping the endpoint or attempting the full form.
-// Untested against whether the real API accepts a genuinely partial update vs. requiring the
-// whole nested structure on every call — same "structurally correct, not live-tested with real
-// government credentials" honesty this app's other HPR/HFR/ABHA work already carries.
-export function buildHprUpdateProfessionalBody(staffRecord, hprToken) {
+// nested structure: practitioner/personalInformation/communicationAddress/registrationAcademic
+// (with per-qualification base64 certificate uploads)/currentWorkDetails/facilityDeclarationData
+// — 60+ fields across several real government forms. A prior pass at this deliberately covered
+// only a small subset (name/mobile/email) because nothing in this app captured the rest yet;
+// system-provider-composition-v1.yaml's own real HPR-spec-fidelity rebuild (explicit instruction:
+// "create the Practitioner registration correctly including all the mandatory, optional and
+// conditional fields") now captures every one of these blocks for real (staff_salutation/
+// staff_gender/.../staff_address_*/staff_public_*/section_staff_qualification[]/staff_work_*), so
+// this is now the FULL structural mapping, not the earlier deliberate subset. Still carries the
+// same "structurally correct, not live-tested with real government credentials" honesty this
+// app's other HPR/HFR/ABHA work already carries — the real API's exact leaf-field spelling
+// (camelCase names below extrapolated from createHprIdWithPreVerified's own confirmed
+// hpCategoryCode/hpSubCategoryCode-style naming, not independently confirmed against a live
+// response) should be checked against a real sandbox call before relying on this beyond testing.
+//
+// Shared by buildHprRegisterProfessionalBody (register-professional-new, the CREATE counterpart)
+// below — both real API calls send the identical nested `practitioner` shape, register-side just
+// pairs it with a fresh HPR ID rather than an existing one.
+function buildPractitionerPayload(staffRecord, qualifications) {
   return {
-    hprToken,
-    practitioner: {
-      officialMobile: getAnswer(staffRecord, 'staff_phone') || '',
-      officialEmail: getAnswer(staffRecord, 'staff_email') || '',
-      personalInformation: {
-        firstName: getAnswer(staffRecord, 'staff_first_name') || '',
-        lastName: getAnswer(staffRecord, 'staff_last_name') || '',
+    officialMobile: getAnswer(staffRecord, 'staff_phone') || '',
+    officialEmail: getAnswer(staffRecord, 'staff_email') || '',
+    personalInformation: {
+      salutation: getAnswer(staffRecord, 'staff_salutation') || '',
+      firstName: getAnswer(staffRecord, 'staff_first_name') || '',
+      middleName: getAnswer(staffRecord, 'staff_middle_name') || '',
+      lastName: getAnswer(staffRecord, 'staff_last_name') || '',
+      gender: getAnswer(staffRecord, 'staff_gender') || '',
+      dateOfBirth: getAnswer(staffRecord, 'staff_date_of_birth') || '',
+      nationality: getAnswer(staffRecord, 'staff_nationality') || '',
+      fatherName: getAnswer(staffRecord, 'staff_father_name') || '',
+      motherName: getAnswer(staffRecord, 'staff_mother_name') || '',
+      spouseName: getAnswer(staffRecord, 'staff_spouse_name') || '',
+      languagesKnown: (getAnswer(staffRecord, 'staff_languages_spoken') || '').split(',').map((s) => s.trim()).filter(Boolean),
+    },
+    communicationAddress: {
+      address: getAnswer(staffRecord, 'staff_address_line') || '',
+      country: getAnswer(staffRecord, 'staff_address_country') || '',
+      state: getAnswer(staffRecord, 'staff_address_state') || '',
+      district: getAnswer(staffRecord, 'staff_address_district') || '',
+      pincode: getAnswer(staffRecord, 'staff_address_postal_code') || '',
+    },
+    contactInformation: {
+      publicMobile: getAnswer(staffRecord, 'staff_public_mobile') || '',
+      landLine: getAnswer(staffRecord, 'staff_landline') || '',
+      publicEmail: getAnswer(staffRecord, 'staff_public_email') || '',
+    },
+    registrationAcademic: {
+      registrationData: (qualifications || []).map((q) => ({
+        qualification: q.staff_qual_degree_code || '',
+        college: q.staff_qual_college || '',
+        university: q.staff_qual_university || '',
+        countryOfEducation: q.staff_qual_country || '',
+        stateOfEducation: q.staff_qual_state || '',
+        yearOfAwarding: q.staff_qual_year_awarded || '',
+        degreeCertificate: q.staff_qual_degree_certificate || '',
+        // NHPR user manual's own Step 16 — asked once per document (degree/registration), each
+        // with its own optional name-change affidavit when the answer is "No".
+        degreeNameMatchesAadhaar: q.staff_qual_degree_name_matches_aadhaar || '',
+        degreeNameChangeAffidavit: q.staff_qual_degree_name_change_affidavit || '',
+        registeredWithCouncil: q.staff_qual_registered_council || '',
+        registrationNumber: q.staff_qual_registration_number || '',
+        registrationDate: q.staff_qual_registration_date || '',
+        registrationCertificate: q.staff_qual_registration_certificate || '',
+        registrationNameMatchesAadhaar: q.staff_qual_registration_name_matches_aadhaar || '',
+        registrationNameChangeAffidavit: q.staff_qual_registration_name_change_affidavit || '',
+        isPermanentOrRenewable: q.staff_qual_permanent_or_renewable || '',
+        renewableDueDate: q.staff_qual_renewable_due_date || '',
+      })),
+    },
+    currentWorkDetails: {
+      currentlyWorking: getAnswer(staffRecord, 'staff_work_currently_working') === true || getAnswer(staffRecord, 'staff_work_currently_working') === 'true',
+      // NHPR user manual's own "Nature of Work" is a real multi-select — joined back into one
+      // string here since the real API's own singular/array shape isn't independently confirmed
+      // (system-provider-composition-v1.yaml's own comment on staff_work_purpose). getAnswers
+      // handles both a single legacy value and a real multi-selection identically.
+      purposeOfRegistration: getAnswers(staffRecord, 'staff_work_purpose').join(', '),
+      teleconsultationUrl: getAnswer(staffRecord, 'staff_work_teleconsultation_url') || '',
+      chooseWorkStatus: getAnswer(staffRecord, 'staff_work_status') || '',
+      reasonForNotWorking: getAnswer(staffRecord, 'staff_work_reason_not_working') || '',
+      // Central/State -> Ministry (above, inside facilityDeclarationData) -> PSU — mandatory only
+      // when chooseWorkStatus is Government or Both, per the manual's own screenshots; enforced in
+      // the UI, not here.
+      govtCategory: getAnswer(staffRecord, 'staff_work_govt_category') || '',
+      workingInPsu: getAnswer(staffRecord, 'staff_work_psu_yesno') || '',
+      psuName: getAnswer(staffRecord, 'staff_work_psu_name') || '',
+      govtEmploymentProof: getAnswer(staffRecord, 'staff_work_govt_proof_document') || '',
+      facilityDeclarationData: {
+        facilityName: getAnswer(staffRecord, 'staff_work_facility_name') || '',
+        facilityAddress: getAnswer(staffRecord, 'staff_work_facility_address') || '',
+        pincode: getAnswer(staffRecord, 'staff_work_facility_pincode') || '',
+        facilityType: getAnswer(staffRecord, 'staff_work_facility_type') || '',
+        department: getAnswer(staffRecord, 'staff_work_facility_department') || '',
+        designation: getAnswer(staffRecord, 'staff_work_facility_designation') || '',
+        ministry: getAnswer(staffRecord, 'staff_work_ministry') || '',
       },
     },
   };
 }
 
-// "4. Update_Professional_Documents.pdf" — despite the filename, the doc only documents
-// RETRIEVAL (fetch-documents-list), no separate upload endpoint exists (confirmed by reading the
-// whole doc, not assumed missing).
+export function buildHprUpdateProfessionalBody(staffRecord, qualifications, hprToken) {
+  return { hprToken, practitioner: buildPractitionerPayload(staffRecord, qualifications) };
+}
+
+// register-professional-new — the CREATE counterpart, submitting a practitioner's full profile to
+// ABDM's registry for the first time (separate from createHprIdWithPreVerified, which only
+// creates the bare HPR ID/account — explicit gap the user named: "I do not see create HPR id
+// which is likely the first step to registration"). Needs the caller's own per-user hprToken
+// (same as update — obtained via /auth/password-login or the OTP-login flow) plus the hprId just
+// created/selected, since this submission targets that specific professional record.
+export function buildHprRegisterProfessionalBody(staffRecord, qualifications, hprToken, hprId) {
+  return { hprToken, hprId, practitioner: buildPractitionerPayload(staffRecord, qualifications) };
+}
+
+// "4. Update_Professional_Documents.pdf" — this covers the RETRIEVAL half (fetch-documents-list).
 export function buildHprDocumentsListBody(hprid) {
   return { hprid };
+}
+
+// The upload half — real spec section 10/11 (POST .../uploads/upload-document), a prior session's
+// own comment above incorrectly claimed didn't exist; confirmed factually wrong against the real
+// spec PDF. `documentId` optionally correlates this upload to a specific registrationAcademic.
+// registrationData[] entry (a qualification's own degree/registration certificate) — omitted for
+// a document with no such correlation (e.g. profilePhoto).
+export function buildHprDocumentUploadBody(hprToken, hprId, documentType, documentBase64, documentId) {
+  const body = { hprToken, hprId, documentType, documentBase64 };
+  if (documentId) body.documentId = documentId;
+  return body;
 }
 
 // "5. Generate, regenerate & verify Email link API-1.pdf" — real 3-step flow, parallel to the
@@ -130,6 +247,41 @@ export function buildHprEmailResendOtpBody(hprToken, emailAddress) {
 }
 export function buildHprEmailVerifyOtpBody(hprToken, hprId, officialEmail, emailOtp) {
   return { hpr_token: hprToken, hprId, officialEmail, emailOtp };
+}
+
+// "HPID/2. Change password.pdf" / "HPID/3. Forgot hprid.pdf" / "HPID/1.
+// Logout_Idcard_Account_Profile api.pdf" — the 4 real gaps this pass fills. Thin passthroughs,
+// same discipline every builder above already follows: RSA encryption of otp/password fields
+// happens server-side in clinuxflow-abdm-gateway (see its own hpr.js header note), not here.
+export function buildHprForgotPasswordMobileOtpBody(hprId) {
+  return { hprId };
+}
+export function buildHprForgotPasswordAadhaarOtpBody(hprId) {
+  return { hprId };
+}
+export function buildHprPasswordResetBody(txnId, newPassword) {
+  return { txnId, newPassword };
+}
+export function buildHprChangePasswordBody(oldPassword, newPassword) {
+  return { oldPassword, newPassword };
+}
+export function buildHprForgotHpridAadhaarOtpBody(aadhaar) {
+  return { aadhaar };
+}
+export function buildHprForgotHpridMobileOtpBody(mobileNumber) {
+  return { mobileNumber };
+}
+export function buildHprForgotHpridVerifyBody(txnId, otp, staffRecord) {
+  return {
+    txnId,
+    otp,
+    firstName: getAnswer(staffRecord, 'staff_first_name'),
+    middleName: getAnswer(staffRecord, 'staff_middle_name'),
+    lastName: getAnswer(staffRecord, 'staff_last_name'),
+  };
+}
+export function buildHprAccountTokenBody(hprToken) {
+  return { hprToken };
 }
 
 // ─────────────────────────────── HFR (Health Facility Registry) ───────────────────────────
@@ -148,6 +300,16 @@ export function buildHfrSearchBody(hospitalRecord, { page = 1, resultsPerPage = 
   };
 }
 
+// Same real /facility/search endpoint as buildHfrSearchBody above, reused for a genuinely
+// different caller: a practitioner searching for an ALREADY-REGISTERED facility to link their own
+// Work Experience to (the real spec's own Search Facility step, register-professional-new's
+// currentWorkDetails.facilityId — explicit gap the user named as unbuilt), not an admin checking
+// before self-registering their own new facility. Takes plain args, not a hospitalRecord — there
+// is no "this org's own record" here, just a name/state the practitioner types in.
+export function buildHfrFacilitySearchByNameBody(facilityName, stateLGDCode, { page = 1, resultsPerPage = 10 } = {}) {
+  return { facilityName, stateLGDCode, page, resultsPerPage };
+}
+
 // Real body shape, grounded directly against New_HFR_APIs_Documentation_SBX.pdf §2.1's own worked
 // samples this session — replaces a flat "STARTER FIELD SET" that never matched the real API at
 // all (it's genuinely nested: facilityInformation.facilityAddressDetails/
@@ -156,13 +318,15 @@ export function buildHfrSearchBody(hospitalRecord, { page = 1, resultsPerPage = 
 // different field from Organization.active (hospital_operational_status, this profile's own
 // derived boolean, see the YAML's own comment on that distinction). country is hard-fixed to
 // 'India' — the doc's own sample error response rejects anything else ("Country should be
-// india"), and HFR is India-only by definition. facilityAddressProof/abdmCompliantSoftware are
-// sent as real, valid empty structures (confirmed against the doc's own samples, which do the
-// same) — address-proof document capture is a real, separate scope (out of this pass, same
-// "extend when a real caller needs it" discipline as detailed-information's specialities
-// section). facilityUploads.facilityBoardPhoto/facilityBuildingPhoto ARE real now — passed in by
-// the caller (FacilityHfrPanel.vue's own base64 FileReader capture), not a permanent stub.
-export function buildHfrBasicInfoBody(hospitalRecord, { boardPhoto, buildingPhoto } = {}) {
+// india"), and HFR is India-only by definition. abdmCompliantSoftware is sent as a real, valid
+// empty structure (confirmed against the doc's own samples, which do the same).
+// facilityUploads.facilityBoardPhoto/facilityBuildingPhoto ARE real now — passed in by the caller
+// (FacilityHfrPanel.vue's own base64 FileReader capture), not a permanent stub.
+// facilityAddressProof is likewise real now: an optional single {addressProofType,
+// addressProofAttachment} entry (the doc allows up to 3; FacilityHfrPanel.vue's own UI only
+// captures one, matching what the manual's own screenshots actually show) — omitted entirely
+// (real, doc-valid empty array) when the caller hasn't attached one.
+export function buildHfrBasicInfoBody(hospitalRecord, { boardPhoto, buildingPhoto, addressProof } = {}) {
   // MultiSelect (hospital_system_of_medicine) writes one array slot per selection on the SAME
   // item — getAnswer() (singular) only ever reads answer[0], so a real multi-selection needs
   // getAnswers() (plural) here, same distinction this app's own MultiSelect fix already
@@ -205,7 +369,9 @@ export function buildHfrBasicInfoBody(hospitalRecord, { boardPhoto, buildingPhot
         facilityBoardPhoto: boardPhoto ? { name: boardPhoto.name, value: boardPhoto.value } : { name: '', value: '' },
         facilityBuildingPhoto: buildingPhoto ? { name: buildingPhoto.name, value: buildingPhoto.value } : { name: '', value: '' },
       },
-      facilityAddressProof: [],
+      facilityAddressProof: addressProof?.file
+        ? [{ addressProofType: addressProof.type || '', addressProofAttachment: { name: addressProof.file.name, value: addressProof.file.value } }]
+        : [],
       facilitySubType: getAnswer(hospitalRecord, 'hospital_facility_subtype') || undefined,
       facilityOperationalStatus: getAnswer(hospitalRecord, 'hospital_operational_status_code') || 'F',
       timingsOfFacility: [],
@@ -218,8 +384,9 @@ export function buildHfrBasicInfoBody(hospitalRecord, { boardPhoto, buildingPhot
 // guessed) — replaces the old "known-gap" stub (SPEC-09 §7). hasX flags default 'N' (the correct,
 // valid value for a typical small clinic offering none of these — confirmed via the doc's own
 // error-response sample, which rejects an omitted/invalid flag the same as a wrong one) rather
-// than leaving them unset; linkedProgramIds are all genuinely optional national-scheme ids no
-// clinic has at onboarding time, sent empty.
+// than leaving them unset. linkedProgramIds are all genuinely optional national-scheme ids — now
+// real (FacilityHfrPanel.vue's own Additional Information section captures them, manual's own
+// step 10), still sent as valid empty strings for any a clinic doesn't have.
 export function buildHfrAdditionalInfoBody(hospitalRecord, trackingId) {
   // Real bug found and fixed: these are NOT plain Y/N booleans — get-master-data
   // type='GENERAL-INFO-OPTIONS' has 3 real codes (YALL/YIN/N), confirmed against the doc's own
@@ -246,7 +413,14 @@ export function buildHfrAdditionalInfoBody(hospitalRecord, trackingId) {
       servicesByImagingCenter: imagingCodes.map((service) => ({ service, count: 1 })),
     },
     linkedProgramIds: {
-      nhrrId: '', nin: '', abpmjayId: '', rohiniId: '', echsId: '', cghsId: '', ceaRegistration: '', stateInsuranceSchemeId: '',
+      nhrrId: getAnswer(hospitalRecord, 'hospital_linked_nhrr_id') || '',
+      nin: getAnswer(hospitalRecord, 'hospital_linked_nin') || '',
+      abpmjayId: getAnswer(hospitalRecord, 'hospital_linked_abpmjay_id') || '',
+      rohiniId: getAnswer(hospitalRecord, 'hospital_linked_rohini_id') || '',
+      echsId: getAnswer(hospitalRecord, 'hospital_linked_echs_id') || '',
+      cghsId: getAnswer(hospitalRecord, 'hospital_linked_cghs_id') || '',
+      ceaRegistration: getAnswer(hospitalRecord, 'hospital_linked_cea_registration') || '',
+      stateInsuranceSchemeId: getAnswer(hospitalRecord, 'hospital_linked_state_insurance_id') || '',
     },
   };
 }

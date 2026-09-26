@@ -41,15 +41,22 @@ export const ENTRY_PLAN_DEFINITION = {
   status: 'active',
   type: 'workflow-definition',
   action: [
-    // register is genuinely one-shot (an email can only register once) — no repeatable flag,
-    // defaults to planDefinitionRunner.js's normal final `done` state.
-    { id: 'register', title: 'Register' },
-    // login/forgot_password/change_password are real, legitimate repeat actions within one
-    // session (log out then log in again, possibly as someone else; reset a password more than
-    // once) — repeatable: true, a real bug fix (see planDefinitionRunner.js's own comment on
-    // `action.repeatable`): without it, a second attempt after the first `done` was silently
-    // dropped by XState's final-state semantics — no API call, no error, exactly what "I can't
-    // log in, nothing happens" looks like from the outside. Found live, not hypothetical.
+    // UPDATE — register is repeatable too, for the same reason login below already is. The
+    // original reasoning here ("an email can only register once") is true PER EMAIL, but this
+    // FSM's `done` is tied to the ACTION, not to which email was used — a non-repeatable
+    // `register` silently drops FOCUS for a SECOND, genuinely different registration in the same
+    // browser session (sign out, then register a different account — a real, live-reproduced bug,
+    // not hypothetical: zero network calls, zero errors, exactly "I clicked Create Account and
+    // nothing happens"). The server itself is still the real per-email uniqueness check
+    // (POST /api/auth/register's own email-already-exists rejection) — this flag only controls
+    // whether the CLIENT-side FSM lets a second attempt reach that server call at all.
+    // login/forgot_password/change_password are the same real, legitimate repeat-action case
+    // within one session (log out then log in again, possibly as someone else; reset a password
+    // more than once) — repeatable: true, a real bug fix (see planDefinitionRunner.js's own
+    // comment on `action.repeatable`): without it, a second attempt after the first `done` was
+    // silently dropped by XState's final-state semantics — no API call, no error, exactly what "I
+    // can't log in, nothing happens" looks like from the outside. Found live, not hypothetical.
+    { id: 'register', title: 'Register', repeatable: true },
     { id: 'login', title: 'Log In', repeatable: true },
     { id: 'forgot_password', title: 'Forgot Password', repeatable: true },
     { id: 'change_password', title: 'Change Password', repeatable: true },

@@ -55,7 +55,12 @@ async function submit() {
   // configured) doesn't need the admin to be online right now, unlike a live P2P chat send.
   const personEmail = isAuthenticated.value ? auth.currentUser.email : res.personEmail;
   const personName = isAuthenticated.value ? (auth.currentUser.adminName || auth.currentUser.email) : (form.adminName || personEmail);
-  const personSetupStage = derivePersonSetupState({
+  // personSetupMachine.js is genuinely about a PERSON's own setup completeness (basics + HPR
+  // verification) — doesn't apply to an 'organization' redemption at all (no HPR concept for an
+  // organization; HFR is that side's own separate, orthogonal registration, tracked in its own
+  // provider_composition, never checked here). Left blank for 'organization' rather than forced
+  // through a machine whose guards assume a practitioner.
+  const personSetupStage = res.linkKind === 'organization' ? '' : derivePersonSetupState({
     linkKind: res.linkKind,
     hasBasics: !!personName,
     hprVerified: false, // this form never captures an HPR login itself — a real one (if any) was
@@ -63,7 +68,7 @@ async function submit() {
   });
   const { key } = await buildJoinRequestSharePayload({
     linkKind: res.linkKind, personName, personEmail,
-    declaredRole: res.linkKind === 'affiliate' ? form.declaredRole : '',
+    declaredRole: ['affiliate', 'organization'].includes(res.linkKind) ? form.declaredRole : '',
     personSetupStage, token: form.token.trim().toUpperCase(),
   });
   await deliverJoinRequestPayload(form.token.trim().toUpperCase(), key);
@@ -99,7 +104,7 @@ watch(() => props.initialToken, (t) => { if (t) form.token = t; });
       <p class="text-xs" style="color:var(--cf-text)">Not registered yet? This creates your account — no separate registration needed.</p>
     </template>
     <template v-else>
-      <input class="cf-input" v-model="form.declaredRole" placeholder="Your role (e.g. Visiting Cardiologist) — affiliates only" />
+      <input class="cf-input" v-model="form.declaredRole" placeholder="Your role or relationship (e.g. Visiting Cardiologist, Partner Lab) — affiliates/organizations only" />
       <p class="text-xs" style="color:var(--cf-text)">Redeeming as {{ auth.currentUser.email }}.</p>
     </template>
     <p v-show="error" class="text-red-500 text-sm font-medium">{{ error }}</p>

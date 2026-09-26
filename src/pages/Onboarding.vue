@@ -3,17 +3,23 @@
 // published screens), each journey card backed by a real FHIR record via the same
 // SystemForms/LhcFormHost drawer pattern Front Desk uses.
 import { computed, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import FacilityBasicsHost from '../components/control/FacilityBasicsHost.vue';
 import FacilityHfrPanel from '../components/control/FacilityHfrPanel.vue';
+import FacilityStatusCard from '../components/FacilityStatusCard.vue';
 import ProviderBasicsHost from '../components/control/ProviderBasicsHost.vue';
 import ProviderHprPanel from '../components/control/ProviderHprPanel.vue';
 import AffiliateOrganizationHost from '../components/control/AffiliateOrganizationHost.vue';
+import JoinTokenRedeemForm from '../components/auth/JoinTokenRedeemForm.vue';
+import JoinLinkPanel from '../components/control/JoinLinkPanel.vue';
 import ServicesHost from '../components/control/ServicesHost.vue';
+import LocationsHost from '../components/control/LocationsHost.vue';
 import HoursHost from '../components/control/HoursHost.vue';
 import ConsentsHost from '../components/control/ConsentsHost.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import AdaptiveSectionNav from '../components/AdaptiveSectionNav.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
+import { useAuthStore } from '../stores/auth.js';
 import {
   activeQuestionnaire, sliceRecordGroup, seedSystemForms,
   getGroupInstances, getAnswer, mergeGroupResponseItem, mergeGroupResponseItems,
@@ -22,6 +28,7 @@ import {
 import { checkFacilityConformance } from '../data/control/facilityConformance.js';
 import { checkProviderConformance } from '../data/control/providerConformance.js';
 import { checkAffiliateOrganizationConformance } from '../data/control/affiliateOrganizationConformance.js';
+import { checkAffiliatePractitionerConformance } from '../data/control/affiliatePractitionerConformance.js';
 import { API_BASE } from '../config.js';
 
 // Cards whose drawer needs the FULL Provider record rather than a single-group slice — either
@@ -30,11 +37,36 @@ import { API_BASE } from '../config.js';
 // the auto-link reasoning facilityConformance.js/providerConformance.js already document
 // (section_affiliate_organization). Services/Hours/Consents don't cross-reference anything and
 // have no conformance panel, so they stay on the plain sliced-record contract below.
-const HAND_AUTHORED_GROUP_LINK_IDS = new Set(['section_hospital', 'section_staff', 'section_affiliate_organization']);
+//
+// Real bug found live while rebuilding FacilityHfrPanel.vue's UX: section_abdm_hfr was missing
+// from this set. sliceRecordGroup(fullRecord, 'section_abdm_hfr') filters the record's top-level
+// items for linkId === 'section_abdm_hfr' — but no real composition block is EVER named that; the
+// actual ABDM blocks are section_hospital_abdm_facility_type/_location/_registration/
+// _public_display, and hospital_name itself lives in section_hospital. So the filter always
+// returned an empty array, meaning FacilityHfrPanel.vue's rebuildFromRecord() has been reading an
+// always-empty sliced record ever since SPEC-24's AdaptiveSectionNav migration — every getAnswer()
+// call inside it silently returned '', so a saved trackingId/facilityId/any HFR field never
+// actually restored on remount, even though patchRecordField()'s own writes (keyed by record.id,
+// not this prop) genuinely persisted correctly the whole time. Same multi-group-block reasoning as
+// section_hospital/section_staff above — this card's own capture spans 4 real blocks, not 1.
+const HAND_AUTHORED_GROUP_LINK_IDS = new Set(['section_hospital', 'section_staff', 'section_affiliate_organization', 'section_abdm_hfr']);
 
 const onboarding = useOnboardingStore();
+const auth = useAuthStore();
+const route = useRoute();
+const router = useRouter();
 
-const screen = ref(localStorage.getItem('cf_onboarding_screen') || 'hub'); // 'hub' | 'review' | 'published'
+// Real gap found live: this page used to require Continue to Review -> Publish Clinic Page
+// before ClinicHome would show real data at all — a forced second step on top of a save that
+// already persisted everything, and confusing now that onboarding.publishIfReady() (see its own
+// header comment in the store) already takes a facility live the moment it has a name. Data View
+// (this page) and Page View (ClinicHome) are now just two ends of the same editing loop: ClinicHome's
+// own edit icons navigate here (see routeToSection below), and "Back to Clinic Home" below is how
+// you close this view and land back on Page View — no separate review/publish gate in between.
+function backToClinicHome() {
+  router.push('/clinic-home');
+}
+
 const toast = ref({ show: false, msg: '' });
 let toastTimer = null;
 function showToast(msg) {
@@ -75,17 +107,35 @@ const journeyCards = computed(() => [
   {
     groupLinkId: 'section_hospital', mode: 'single', icon: 'fas fa-hospital', color: '#3B82F6', bg: 'rgba(59,130,246,.1)',
     title: isIndividual.value ? 'Practice Profile' : 'Hospital Profile',
-    desc: isIndividual.value ? 'Your consultation practice as a FHIR Organization resource.' : 'Your clinic profile as a FHIR Organization resource.',
+    desc: isIndividual.value ? 'Your name, contact details and where you practice.' : 'Your clinic\'s name, address and contact details.',
   },
+  // Branches, ahead of Care Team/Services below — a real gap found while wiring ClinicHome's
+  // own Locations section: service_location_id/staff_location_ids (both added this pass) had
+  // nothing to reference, since no card here ever created a section_location instance at all.
+  { groupLinkId: 'section_location', mode: 'repeatable', icon: 'fas fa-map-marker-alt', color: '#14B8A6', bg: 'rgba(20,184,166,.1)', title: 'Branches', desc: 'Add your clinic\'s branch locations, one at a time.' },
   {
     groupLinkId: 'section_staff', mode: 'repeatable', icon: 'fas fa-user-md', color: '#00D4B2', bg: 'rgba(0,212,178,.1)',
     title: isIndividual.value ? 'Assistants (optional)' : 'Care Team',
-    desc: isIndividual.value ? 'Add any assistants or support staff, if you have them.' : 'Add physicians, nurses and staff as FHIR Practitioner records.',
+    desc: isIndividual.value ? 'Add any assistants or support staff, if you have them.' : 'Add your doctors, nurses and other staff.',
   },
   { groupLinkId: 'section_services_matrix', mode: 'repeatable', icon: 'fas fa-stethoscope', color: '#8B5CF6', bg: 'rgba(139,92,246,.1)', title: 'Services', desc: "List the services your clinic offers." },
   { groupLinkId: 'section_hours', mode: 'repeatable', icon: 'fas fa-clock', color: '#F59E0B', bg: 'rgba(245,158,11,.1)', title: 'Office Hours', desc: 'Add operating hours, one day-range at a time.' },
   { groupLinkId: 'section_consent', mode: 'repeatable', icon: 'fas fa-file-signature', color: '#EF4444', bg: 'rgba(239,68,68,.1)', title: 'Legal Consents', desc: 'Add the consent types your clinic collects from patients.' },
-  { groupLinkId: 'section_affiliate_organization', mode: 'repeatable', icon: 'fas fa-handshake', color: '#0EA5E9', bg: 'rgba(14,165,233,.1)', title: 'Affiliate Organizations', desc: 'Partner labs, imaging centres or billing services as FHIR OrganizationAffiliation records.' },
+  // Renamed from "Affiliate Organizations" (explicit instruction). This is ONLY the free-text
+  // half (section_affiliate_organization's own FHIR-shaped QuestionnaireResponse group) — real,
+  // resolvable D1 links to another ClinuxFlow-registered facility (migrations/0015), Affiliate
+  // Practitioners, and Team Accounts all moved to the "External Associations" section BELOW this
+  // nav instead (architecture guideline, explicit instruction): information contained in the
+  // Graph Definition renders as a nav section here; externally-linked information (an
+  // account/clinic cross-reference, not part of this Organization's own FHIR resource) renders as
+  // a dedicated section below, so it never competes with the graph-defined sections for the same
+  // accordion/sidebar/tabs switching control.
+  { groupLinkId: 'section_affiliate_organization', mode: 'repeatable', icon: 'fas fa-handshake', color: '#0EA5E9', bg: 'rgba(14,165,233,.1)', title: 'Affiliate Partners', desc: 'Partner labs, imaging centres or other facilities you work with (free-text only — see External Associations below for real links).' },
+  // A real, separate government registration process (India's ABDM Health Facility Registry),
+  // not app-internal data capture — split out of Hospital Profile into its own card (explicit
+  // instruction). mode: 'abdm' — see cardStatus()'s own handling for why it doesn't count
+  // group instances like the repeatable cards above.
+  { groupLinkId: 'section_abdm_hfr', mode: 'abdm', icon: 'fas fa-landmark', color: '#DC2626', bg: 'rgba(220,38,38,.1)', title: 'ABDM Registration (HFR)', desc: 'Optional — register your facility with India\'s national health registry.' },
   // Open Designer used to be an 'action'-only entry here (no groupLinkId, routed away instead of
   // rendering content) — now a plain RouterLink in the hub's own intro button row below, since
   // navSections (further down) only ever wants real content sections, not nav actions.
@@ -110,7 +160,60 @@ function onProfileImported() {
   showToast('Clinic profile imported.');
 }
 
-const screenLabel = computed(() => ({ hub: 'Setup', review: 'Review', published: 'Published' }[screen.value] || 'Setup'));
+// Real Organization-to-Organization linking (migrations/0015) — alongside, not replacing,
+// AffiliateOrganizationHost's free-text section_affiliate_organization fields above: a partner
+// with no real ClinuxFlow account (most real-world labs/imaging centres today) still only has the
+// free-text path available, same "may or may not be registered" reasoning that applies to ABDM
+// registration for staff/affiliates too. This is for when the partner DOES have their own real
+// ClinuxFlow account and issued a join link for it — same JoinTokenRedeemForm.vue every other
+// relationship kind already uses, just embedded here instead of a practitioner's Data View.
+function onOrgJoinSuccess() {
+  showToast('Join request sent — you\'ll be notified once the partner facility decides.');
+}
+
+// Retired TeamSettingsModal.vue's own D1 reads/writes — moved here so Staff (Care Team, below),
+// Affiliate Practitioners, and Affiliate Partners are managed in Data View/Page View like every
+// other Organisation entity, not a separate popup. Eager-loaded once at mount (not gated on
+// which section is active) since Care Team's own status badge and this page's other cards may
+// render before their own section is ever opened.
+const staffAccounts = ref([]);
+async function loadStaffAccounts() {
+  const { accounts: list } = await auth.fetchTeam();
+  staffAccounts.value = list || [];
+}
+loadStaffAccounts();
+
+const practitionerAffiliates = ref([]);
+async function loadPractitionerAffiliates() {
+  const { affiliates: list } = await auth.fetchAffiliates();
+  practitionerAffiliates.value = list || [];
+}
+loadPractitionerAffiliates();
+async function removePractitionerAffiliate(accountId) {
+  await auth.revokeAffiliate(accountId);
+  await loadPractitionerAffiliates();
+}
+
+const orgAffiliates = ref([]);
+async function loadOrgAffiliates() {
+  const { affiliates: list } = await auth.fetchOrganizationAffiliates();
+  orgAffiliates.value = list || [];
+}
+loadOrgAffiliates();
+async function removeOrgAffiliateLink(clinicId) {
+  await auth.revokeOrganizationAffiliate(clinicId);
+  await loadOrgAffiliates();
+}
+
+// SPEC-24 §7 step 6 — moved from TeamSettingsModal.vue, same ClinuxFlowAffiliatePractitionerRole
+// conformance check, now living alongside the D1 list it describes.
+const practitionerAffiliateConformanceLoading = ref(false);
+const practitionerAffiliateConformanceResult = ref(null);
+async function checkPractitionerAffiliateConformance() {
+  practitionerAffiliateConformanceLoading.value = true;
+  practitionerAffiliateConformanceResult.value = await checkAffiliatePractitionerConformance();
+  practitionerAffiliateConformanceLoading.value = false;
+}
 
 function groupInstances(groupLinkId) {
   onboarding.dataVersion; // register the reactive dependency
@@ -119,6 +222,13 @@ function groupInstances(groupLinkId) {
 
 function cardStatus(card) {
   if (card.mode === 'single') return getAnswer(onboarding.getProviderRecord(), 'hospital_name') ? 'Saved' : 'Not started';
+  // ABDM registration isn't a captured QuestionnaireResponse group (FacilityHfrPanel.vue talks
+  // to the real gateway directly) — hospital_tracking_id is the real signal that at least the
+  // first stage (Basic Information) has gone through, patched onto the record by that panel's
+  // own doBasicInfo().
+  if (card.mode === 'abdm') return getAnswer(onboarding.getProviderRecord(), 'hospital_tracking_id') ? 'Started' : 'Not started';
+  // D1 data, not a QuestionnaireResponse group — practitionerAffiliates is its own reactive ref
+  // (loadPractitionerAffiliates above), not groupInstances().
   const n = groupInstances(card.groupLinkId).length;
   return n > 0 ? `${n} added` : 'Not started';
 }
@@ -135,12 +245,18 @@ function cardStatus(card) {
 // all yet" guard this computed still depends on.
 //
 // A computed (recomputes on onboarding.dataVersion, same reactive-dependency convention
-// groupInstances()/fhirPreview below already use), not an imperative "open" call — a click just
+// groupInstances() below already uses), not an imperative "open" call — a click just
 // changes `activeSectionId` now (the page-level AdaptiveSectionNav's own v-model), and whichever
 // record that section needs follows automatically. getProviderRecord()/buildSeedFromRegistration()
 // are both pure reads (see onboarding.js's own header on buildSeedFromRegistration — "never
 // persisted itself"), safe to call from here.
-const activeSectionId = ref('section_hospital');
+// ?section=<groupLinkId> is how ClinicHome.vue's own edit icons deep-link in (e.g. Edit Services
+// -> /onboarding?section=section_services_matrix) — read once on entry, same "just changes
+// activeSectionId" mechanism the NBA jump-to-section links above already use, not a second
+// navigation system.
+const activeSectionId = ref(
+  (typeof route.query.section === 'string' && route.query.section) || 'section_hospital'
+);
 function cardById(groupLinkId) { return journeyCards.value.find((c) => c.groupLinkId === groupLinkId) || null; }
 const activeCard = computed(() => cardById(activeSectionId.value));
 const activeRecord = computed(() => {
@@ -183,6 +299,28 @@ async function checkConformance() {
     ? await checkFacilityConformance(questionnaireJson, responseJson)
     : { error: 'Save the Hospital Profile first.' };
   conformanceLoading.value = false;
+}
+
+// Structural nav vs. Next Best Action: AdaptiveSectionNav's sidebar (navSections above) is
+// always-available wayfinding — every section, reachable any time, regardless of progress. The
+// items below are the other, narrower thing: a Next Best Action, computed from
+// ClinuxFlowOnboardingGraph.json's own reference topology (next-best-action.js, server-side),
+// specifically recommending what advances this onboarding graph toward completion. Making each
+// one clickable (not just descriptive text, as before) is the concrete difference between the
+// two — this jumps you TO the recommended section, same activeSectionId the sidebar itself
+// drives, it just picks the destination for you instead of leaving it to browsing. Scoped to
+// exactly the 4 links ClinuxFlowOnboardingGraph.json authors (same deliberate scoping
+// next-best-action.js's own header already documents for itself, not a general
+// GraphDefinition-link-to-section resolver).
+const NEXT_ACTION_SECTION = {
+  'role-at-facility': 'section_staff',
+  'affiliation-from-facility': 'section_affiliate_organization',
+  'practitioner-behind-role': 'section_staff',
+  'affiliate-partner-org': 'section_affiliate_organization',
+};
+function goToNextAction(linkId) {
+  const section = NEXT_ACTION_SECTION[linkId];
+  if (section) activeSectionId.value = section;
 }
 
 // SPEC-24 §7 step 6 — the same real chain for Provider, over the WHOLE record (a PractitionerRole's
@@ -255,50 +393,28 @@ function saveActiveSection() {
   }
   saveDataRecord(onboarding.PROVIDER_FORM_ID, activeVersionNumber(onboarding.PROVIDER_FORM_ID), mergedData, recordId);
   onboarding.dataVersion++;
+  // Real gap found live: ClinicHome.vue's own empty state already promises "goes live
+  // automatically as soon as your facility details are saved" — this is what actually keeps
+  // that promise for a save made here, not just for the Review screen's own explicit Publish
+  // button (see publishIfReady()'s own header comment on why the fix lives in the store, not
+  // duplicated per call site).
+  onboarding.publishIfReady();
   showToast(activeCard.value.mode === 'repeatable' ? 'Added.' : 'Saved.');
 }
 
-function goToReview() {
+// Real gap found while removing the Review screen this stayed part of: not "does the current
+// section make one blank" (saveActiveSection's own required-field check already handles that)
+// but "was a Hospital Name ever actually saved at all" — the one real prerequisite for
+// publishIfReady() to have anything to go live with. Kept as its own guard on the way back to
+// Clinic Home specifically, not folded into every section save, since it's a one-time "you're not
+// done yet" nudge, not a per-save validation.
+function goToClinicHome() {
   if (!getAnswer(onboarding.getProviderRecord(), 'hospital_name')) {
     showToast('Please complete your Hospital Profile first.');
     activeSectionId.value = 'section_hospital';
     return;
   }
-  screen.value = 'review';
-  localStorage.setItem('cf_onboarding_screen', 'review');
-  window.scrollTo(0, 0);
-}
-
-function backToHub() {
-  screen.value = 'hub';
-  localStorage.setItem('cf_onboarding_screen', 'hub');
-  window.scrollTo(0, 0);
-}
-
-const reviewStats = computed(() => [
-  { label: 'Staff Members', value: groupInstances('section_staff').length },
-  { label: 'Services', value: groupInstances('section_services_matrix').length },
-  { label: 'Consents Added', value: groupInstances('section_consent').length },
-  { label: 'Hours Entries', value: groupInstances('section_hours').length },
-]);
-
-const fhirPreview = computed(() => {
-  onboarding.dataVersion;
-  const providerRec = onboarding.getProviderRecord();
-  return providerRec ? JSON.stringify(providerRec.data, null, 2) : '// Complete the Hospital Profile card to see the Provider record\'s FHIR QuestionnaireResponse here.';
-});
-
-function copyFhir() {
-  navigator.clipboard.writeText(fhirPreview.value).then(() => showToast('FHIR data copied to clipboard.')).catch(() => showToast('Copy failed.'));
-}
-
-function publishClinic() {
-  const profile = onboarding.publish();
-  if (!profile) { showToast('Please complete the clinic profile first.'); screen.value = 'hub'; return; }
-  screen.value = 'published';
-  localStorage.setItem('cf_onboarding_screen', 'published');
-  window.scrollTo(0, 0);
-  showToast(`🚀 ${profile.name} is now live!`);
+  backToClinicHome();
 }
 </script>
 
@@ -311,7 +427,7 @@ function publishClinic() {
   <div style="max-width:1100px;margin:0 auto;padding:2rem 1.5rem 4rem">
 
     <!-- HUB -->
-    <div v-show="screen === 'hub'" class="screen-panel">
+    <div class="screen-panel">
       <div style="margin-bottom:2rem">
         <span class="section-eyebrow" style="display:block;margin-bottom:.75rem">{{ onboarding.registeredUser ? 'Welcome back' : 'Welcome to ClinixFlow' }}</span>
         <div class="teal-line" style="margin-bottom:1.25rem"></div>
@@ -322,15 +438,14 @@ function publishClinic() {
           {{ onboarding.registeredUser?.adminName }}, let's finish setting up<br><span style="color:var(--color-primary)">{{ onboarding.registeredUser?.clinicName }}</span>.
         </h1>
         <p style="font-size:.95rem;color:var(--cf-text);line-height:1.7;margin-bottom:1.5rem;max-width:52rem">
-          Pick a section below to add that piece of your clinic's profile — each saves as a real FHIR record. Add as much or as little as you like, then review and publish when ready.
+          Pick a section below to add that piece of your clinic's profile — each one saves and goes live on your Clinic Home page immediately, no separate publish step.
         </p>
         <div style="display:flex;gap:.75rem;flex-wrap:wrap">
-          <button class="btn-teal" @click="goToReview()" style="display:flex;align-items:center;gap:.5rem"><i class="fas fa-arrow-right"></i>Continue to Review</button>
-          <RouterLink to="/clinic-home" target="_blank" class="btn-outline" style="display:flex;align-items:center;gap:.5rem"><i class="fas fa-eye"></i>See Sample Page</RouterLink>
+          <button class="btn-teal" @click="goToClinicHome()" style="display:flex;align-items:center;gap:.5rem"><i class="fas fa-arrow-right"></i>Back to Clinic Home</button>
           <!-- Was its own card in the old grid ('Open Designer', an action entry with no
-               groupLinkId) — now a plain nav link alongside Review, not a section: it navigates
-               away rather than rendering content inline, so it never belonged in navSections
-               below (see navSections' own header comment). -->
+               groupLinkId) — now a plain nav link alongside Back to Clinic Home, not a section:
+               it navigates away rather than rendering content inline, so it never belonged in
+               navSections below (see navSections' own header comment). -->
           <RouterLink to="/designer" class="btn-outline" style="display:flex;align-items:center;gap:.5rem"><i class="fas fa-layer-group"></i>Open Designer</RouterLink>
         </div>
         <!-- Already part of this clinic on another device? Import brings over the whole
@@ -349,6 +464,11 @@ function publishClinic() {
            gives every section's own content the full page width to breathe instead of a drawer's
            ~420px. Users can still switch to tabs/accordion via the nav's own "⋮ Display" menu
            (AdaptiveSectionNav.vue's existing, unchanged capability) if they prefer. -->
+      <FacilityStatusCard
+        v-if="activeSectionId === 'section_hospital' || activeSectionId === 'section_abdm_hfr'"
+        :stage="onboarding.facilitySetupStage"
+        @continue-hfr="activeSectionId = 'section_abdm_hfr'"
+      />
       <AdaptiveSectionNav :sections="navSections" mode="sidebar" storage-key="onboarding-hub" v-model:active-id="activeSectionId">
         <template #section_hospital>
           <div class="cf-card rounded-2xl p-4">
@@ -363,33 +483,62 @@ function publishClinic() {
                Patient get the same treatment once THEY have a real Profile-anchored capture UI. -->
           <div class="cf-card rounded-2xl p-4 mt-3">
             <div class="flex items-center justify-between mb-2">
-              <p class="cf-label mb-0">FHIR Facility Conformance <span style="font-weight:400">(ClinuxFlowFacility profile)</span></p>
+              <p class="cf-label mb-0">Profile Completeness Check</p>
               <button class="btn-ghost text-xs px-2 py-1" :disabled="conformanceLoading" @click="checkConformance()">
                 <i class="fas" :class="conformanceLoading ? 'fa-spinner fa-spin' : 'fa-shield-halved'"></i> Check
               </button>
             </div>
             <p v-if="!conformanceResult" class="text-xs" style="color:var(--cf-text)">
-              Checks the saved profile — across this page AND ABDM Registration — against the full HFR-grounded Facility schema. Most clinics won't see this go green unless they've completed ABDM registration too; that's expected, not required to publish.
+              Checks how complete your clinic profile is, including ABDM Registration. Most clinics won't see this fully green unless they've completed ABDM registration too — that's expected, and not required to publish your page.
             </p>
             <p v-else-if="conformanceResult.error" class="text-xs" style="color:#b91c1c">{{ conformanceResult.error }}</p>
             <template v-else>
               <p class="text-xs font-semibold mb-2" :style="conformanceResult.valid ? 'color:var(--color-primary)' : 'color:var(--cf-text)'">
                 <i class="fas" :class="conformanceResult.valid ? 'fa-circle-check' : 'fa-circle-info'"></i>
-                {{ conformanceResult.valid ? 'Fully conformant.' : `${conformanceResult.errors.length} field(s) still needed for full conformance.` }}
+                {{ conformanceResult.valid ? 'Everything looks complete.' : `${conformanceResult.errors.length} field(s) still needed.` }}
               </p>
               <ul v-if="!conformanceResult.valid" style="font-size:.72rem;color:var(--cf-text);padding-left:1rem;max-height:140px;overflow-y:auto">
                 <li v-for="e in conformanceResult.errors" :key="e.path">{{ e.message }}</li>
               </ul>
               <div v-if="conformanceResult.valid && conformanceResult.nextActions?.length" class="mt-2">
-                <p class="text-xs font-semibold" style="color:var(--cf-text-strong)">Next up:</p>
-                <ul style="font-size:.72rem;color:var(--cf-text);padding-left:1rem">
-                  <li v-for="a in conformanceResult.nextActions" :key="a.linkId">{{ a.reason }}</li>
-                </ul>
+                <p class="text-xs font-semibold" style="color:var(--cf-text-strong)">
+                  <i class="fas fa-diamond-turn-right" style="color:var(--color-primary)"></i> Suggested next step
+                </p>
+                <div class="flex flex-col gap-1 mt-1">
+                  <button
+                    v-for="a in conformanceResult.nextActions"
+                    :key="`${a.linkId}:${a.sourceResourceId}`"
+                    class="btn-ghost text-xs px-2 py-1.5 text-left flex items-center justify-between gap-2"
+                    style="border:1px solid var(--cf-border);border-radius:.5rem"
+                    @click="goToNextAction(a.linkId)"
+                  >
+                    <span>{{ a.reason }}</span>
+                    <i class="fas fa-arrow-right" style="color:var(--color-primary)"></i>
+                  </button>
+                </div>
               </div>
             </template>
           </div>
+        </template>
 
+        <template #section_abdm_hfr>
+          <div class="cf-card rounded-2xl p-4 mb-3">
+            <p class="text-sm" style="color:var(--cf-text)">
+              This registers your facility with <strong>ABDM</strong>, India's national health registry — a real
+              government process, separate from your clinic profile above, and optional. The steps below are real
+              submissions to the registry, not drafts — each one unlocks the next once it succeeds.
+            </p>
+          </div>
           <FacilityHfrPanel :record="activeRecord" @submitted="onboarding.dataVersion++" />
+        </template>
+
+        <template #section_location>
+          <div class="cf-card rounded-2xl p-4">
+            <LocationsHost ref="customFormHost" :record="activeRecord" />
+            <div class="flex justify-end mt-3">
+              <button class="btn-teal" @click="saveActiveSection()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-plus"></i><span>Add</span></button>
+            </div>
+          </div>
         </template>
 
         <template #section_staff>
@@ -402,13 +551,13 @@ function publishClinic() {
 
           <div class="cf-card rounded-2xl p-4 mt-3">
             <div class="flex items-center justify-between mb-2">
-              <p class="cf-label mb-0">FHIR Provider Conformance <span style="font-weight:400">(ClinuxFlowProvider / ClinuxFlowProviderRole)</span></p>
+              <p class="cf-label mb-0">Staff Completeness Check</p>
               <button class="btn-ghost text-xs px-2 py-1" :disabled="providerConformanceLoading" @click="checkProviderConformanceNow()">
                 <i class="fas" :class="providerConformanceLoading ? 'fa-spinner fa-spin' : 'fa-shield-halved'"></i> Check
               </button>
             </div>
             <p v-if="!providerConformanceResult" class="text-xs" style="color:var(--cf-text)">
-              Checks each saved staff member's Practitioner and PractitionerRole records against the real HPR-grounded schema.
+              Checks whether each saved staff member's details are complete enough for HPR registration.
             </p>
             <p v-else-if="providerConformanceResult.error" class="text-xs" style="color:#b91c1c">{{ providerConformanceResult.error }}</p>
             <template v-else-if="providerConformanceResult.providers.length === 0">
@@ -471,16 +620,20 @@ function publishClinic() {
               <button class="btn-teal" @click="saveActiveSection()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-plus"></i><span>Add</span></button>
             </div>
           </div>
+          <p class="text-xs text-center my-2" style="color:var(--cf-text)">
+            Free-text entries only — for a real, resolvable link to another ClinuxFlow facility, see
+            <strong>External Associations</strong> below.
+          </p>
 
           <div class="cf-card rounded-2xl p-4 mt-3">
             <div class="flex items-center justify-between mb-2">
-              <p class="cf-label mb-0">FHIR Affiliate Organization Conformance <span style="font-weight:400">(ClinuxFlowAffiliateOrganization)</span></p>
+              <p class="cf-label mb-0">Affiliate Completeness Check</p>
               <button class="btn-ghost text-xs px-2 py-1" :disabled="affiliateOrgConformanceLoading" @click="checkAffiliateOrgConformanceNow()">
                 <i class="fas" :class="affiliateOrgConformanceLoading ? 'fa-spinner fa-spin' : 'fa-shield-halved'"></i> Check
               </button>
             </div>
             <p v-if="!affiliateOrgConformanceResult" class="text-xs" style="color:var(--cf-text)">
-              Checks each saved affiliate organization against the real ClinuxFlowAffiliateOrganization schema.
+              Checks whether each saved affiliate organization's details are complete.
             </p>
             <p v-else-if="affiliateOrgConformanceResult.error" class="text-xs" style="color:#b91c1c">{{ affiliateOrgConformanceResult.error }}</p>
             <template v-else-if="affiliateOrgConformanceResult.affiliations.length === 0">
@@ -502,86 +655,100 @@ function publishClinic() {
       </AdaptiveSectionNav>
     </div>
 
-    <!-- REVIEW & PUBLISH -->
-    <div v-show="screen === 'review'" class="screen-panel">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem">
-        <div>
-          <span class="section-eyebrow" style="display:block;margin-bottom:.4rem">Review & Publish</span>
-          <h2 style="font-size:1.5rem;font-weight:700;color:var(--cf-text-strong);margin-bottom:.35rem">Everything look right?</h2>
-          <p style="font-size:.85rem;color:var(--cf-text)">Launch your clinic page and start onboarding patients — or go back and add more.</p>
-        </div>
-        <button class="btn-ghost" @click="backToHub()"><i class="fas fa-arrow-left text-xs mr-1"></i>Back</button>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;margin-bottom:1.5rem">
-        <div class="cf-card" style="border-radius:1rem;padding:1.25rem">
-          <h4 style="font-size:.85rem;font-weight:700;color:var(--cf-text-strong);font-family:'Poppins',sans-serif;margin-bottom:.875rem;display:flex;align-items:center;gap:.5rem"><i class="fas fa-hospital" style="color:var(--color-primary)"></i>Clinic Profile</h4>
-          <div style="display:flex;flex-direction:column;gap:.45rem">
-            <div style="display:flex;justify-content:space-between;font-size:.82rem"><span style="color:var(--cf-text)">Name</span><span style="font-weight:600;color:var(--cf-text-strong)">{{ onboarding.buildClinicProfile().name || '—' }}</span></div>
-            <div style="display:flex;justify-content:space-between;font-size:.82rem"><span style="color:var(--cf-text)">Type</span><span style="font-weight:600;color:var(--cf-text-strong)">{{ onboarding.buildClinicProfile().type || '—' }}</span></div>
-            <div style="display:flex;justify-content:space-between;font-size:.82rem"><span style="color:var(--cf-text)">City</span><span style="font-weight:600;color:var(--cf-text-strong)">{{ onboarding.buildClinicProfile().city || '—' }}</span></div>
-            <div style="display:flex;justify-content:space-between;font-size:.82rem"><span style="color:var(--cf-text)">Phone</span><span style="font-weight:600;color:var(--cf-text-strong)">{{ onboarding.buildClinicProfile().phone || '—' }}</span></div>
-            <div style="display:flex;justify-content:space-between;font-size:.82rem"><span style="color:var(--cf-text)">URL</span><span style="font-weight:600;color:var(--color-primary)">{{ 'clinixflow.ai/' + (onboarding.buildClinicProfile().slug || 'your-clinic') }}</span></div>
-            <div style="display:flex;justify-content:space-between;font-size:.82rem;align-items:center">
-              <span style="color:var(--cf-text)">Setup stage</span>
-              <span class="tag-chip" :style="onboarding.canAcceptJoinToken ? 'color:#10B981' : ''" :title="onboarding.facilitySetupStageLabel">
-                <i class="fas" :class="onboarding.canAcceptJoinToken ? 'fa-circle-check' : 'fa-circle-half-stroke'"></i>
-                <span>{{ onboarding.facilitySetupStageLabel }}</span>
-              </span>
-            </div>
-          </div>
-        </div>
-        <div class="cf-card" style="border-radius:1rem;padding:1.25rem">
-          <h4 style="font-size:.85rem;font-weight:700;color:var(--cf-text-strong);font-family:'Poppins',sans-serif;margin-bottom:.875rem;display:flex;align-items:center;gap:.5rem"><i class="fas fa-chart-bar" style="color:var(--color-primary)"></i>Setup Summary</h4>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
-            <div v-for="stat in reviewStats" :key="stat.label" style="background:var(--cf-bg);border:1px solid var(--cf-border);border-radius:.625rem;padding:.75rem;text-align:center">
-              <div style="font-size:1.5rem;font-weight:800;color:var(--color-primary);font-family:'Poppins',sans-serif">{{ stat.value }}</div>
-              <div style="font-size:.72rem;color:var(--cf-text);margin-top:.2rem">{{ stat.label }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="cf-card" style="border-radius:1rem;padding:1.25rem">
-          <h4 style="font-size:.85rem;font-weight:700;color:var(--cf-text-strong);font-family:'Poppins',sans-serif;margin-bottom:.875rem;display:flex;align-items:center;gap:.5rem"><i class="fas fa-file-signature" style="color:var(--color-primary)"></i>Consents Collected</h4>
-          <div style="display:flex;flex-wrap:wrap;gap:.4rem">
-            <span v-for="c in onboarding.buildClinicProfile().consents" :key="c.id" class="tag-chip"><i class="fas fa-check text-xs"></i><span>{{ c.title }}</span></span>
-            <span v-show="onboarding.buildClinicProfile().consents.length === 0" style="font-size:.82rem;color:var(--cf-text)">No consents added</span>
-          </div>
-        </div>
-        <div class="cf-card" style="border-radius:1rem;padding:1.25rem">
-          <h4 style="font-size:.85rem;font-weight:700;color:var(--cf-text-strong);font-family:'Poppins',sans-serif;margin-bottom:.875rem;display:flex;align-items:center;gap:.5rem"><i class="fas fa-stethoscope" style="color:var(--color-primary)"></i>Services</h4>
-          <div style="display:flex;flex-wrap:wrap;gap:.4rem">
-            <span v-for="s in onboarding.buildClinicProfile().services" :key="s.id" class="tag-chip"><span>{{ s.name }}</span></span>
-            <span v-show="onboarding.buildClinicProfile().services.length === 0" style="font-size:.82rem;color:var(--cf-text)">No services added</span>
-          </div>
-        </div>
-      </div>
-      <div class="cf-card" style="border-radius:1rem;padding:1.25rem;margin-bottom:1.5rem">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.875rem">
-          <h4 style="font-size:.85rem;font-weight:700;color:var(--cf-text-strong);font-family:'Poppins',sans-serif"><i class="fas fa-code mr-2" style="color:var(--color-primary)"></i>FHIR QuestionnaireResponse Preview (Provider)</h4>
-          <button class="btn-ghost" @click="copyFhir()" style="font-size:.75rem"><i class="fas fa-copy mr-1.5"></i>Copy JSON</button>
-        </div>
-        <pre style="font-family:'JetBrains Mono',monospace;font-size:.72rem;color:var(--color-primary);background:var(--cf-bg);border:1px solid var(--cf-border);border-radius:.5rem;padding:1rem;overflow-x:auto;max-height:220px;white-space:pre-wrap">{{ fhirPreview }}</pre>
-      </div>
-      <div style="background:var(--color-secondary);border-radius:1.25rem;padding:2rem;text-align:center">
-        <h3 style="color:#fff;font-size:1.25rem;font-weight:700;font-family:'Poppins',sans-serif;margin-bottom:.5rem">Ready to go live?</h3>
-        <p style="color:rgba(255,255,255,.7);font-size:.9rem;margin-bottom:1.5rem">Your clinic page will be available at clinixflow.ai/{{ onboarding.buildClinicProfile().slug || 'your-clinic' }}</p>
-        <div style="display:flex;gap:.875rem;justify-content:center;flex-wrap:wrap">
-          <button class="btn-teal" @click="publishClinic()" style="font-size:.95rem;padding:.875rem 2rem;display:flex;align-items:center;gap:.5rem"><i class="fas fa-rocket"></i>Publish Clinic Page</button>
-          <RouterLink to="/designer" class="btn-outline" style="color:#fff;border-color:rgba(255,255,255,.3);font-size:.9rem;padding:.875rem 1.75rem;display:inline-flex;align-items:center;gap:.5rem"><i class="fas fa-cog"></i>Advanced Settings</RouterLink>
-        </div>
-      </div>
-    </div>
+    <!-- External Associations (explicit instruction) — everything cross-referencing another real
+         account/clinic (D1 identity data, migrations/0005 + 0015), kept OUT of the graph-driven
+         nav above so it never competes with the graph-defined sections for the same
+         accordion/sidebar/tabs switching control. Moved here from the now-retired
+         TeamSettingsModal.vue: Staff accounts, Affiliate Practitioners, and Affiliate Partners'
+         real (non-free-text) links all managed through the same consistent join-token
+         issue/redeem/decide pipeline (JoinLinkPanel), one dedicated section per relationship. -->
+    <div class="screen-panel mt-6">
+      <span class="section-eyebrow" style="display:block;margin-bottom:.75rem">Linked Elsewhere</span>
+      <h2 style="font-size:1.5rem;font-weight:800;color:var(--cf-text-strong);margin-bottom:1.5rem">External Associations</h2>
 
-    <!-- PUBLISHED -->
-    <div v-show="screen === 'published'" class="screen-panel" style="text-align:center;padding:3rem 1rem">
-      <div class="completion-ring"><i class="fas fa-check" style="color:var(--color-primary);font-size:2.5rem"></i></div>
-      <h2 style="font-size:2rem;font-weight:800;color:var(--cf-text-strong);margin-bottom:.625rem">{{ (onboarding.publishedClinic.name || 'Your clinic') + ' is live!' }}</h2>
-      <p style="color:var(--cf-text);font-size:1rem;margin-bottom:.5rem">Your clinic landing page is ready at:</p>
-      <RouterLink :to="`/clinic-home?slug=${onboarding.publishedClinic.slug}`" style="font-size:1.1rem;font-weight:700;color:var(--color-primary);font-family:'JetBrains Mono',monospace">clinixflow.ai/{{ onboarding.publishedClinic.slug || 'your-clinic' }}</RouterLink>
-      <div style="display:flex;gap:.875rem;justify-content:center;flex-wrap:wrap;margin-top:2rem">
-        <RouterLink :to="`/clinic-home?slug=${onboarding.publishedClinic.slug}`" target="_blank" class="btn-teal" style="display:inline-flex;align-items:center;gap:.5rem;font-size:.95rem"><i class="fas fa-external-link-alt"></i>View Clinic Page</RouterLink>
-        <RouterLink to="/designer" class="btn-primary" style="display:inline-flex;align-items:center;gap:.5rem;font-size:.95rem"><i class="fas fa-cog"></i>Manage Settings</RouterLink>
-        <RouterLink to="/" class="btn-outline" style="display:inline-flex;align-items:center;gap:.5rem;font-size:.95rem"><i class="fas fa-home"></i>Back to ClinixFlow</RouterLink>
+      <p class="cf-label mb-2">Team Accounts <span style="font-weight:400">(logins on this clinic)</span></p>
+      <div class="cf-card rounded-2xl p-4 mb-2">
+        <div class="flex flex-col gap-2 mb-2">
+          <div v-for="a in staffAccounts" :key="a.id" class="record-card flex items-center justify-between p-2.5">
+            <div>
+              <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ a.adminName || a.email }}</span>
+              <span v-if="a.designation" class="text-xs ml-2" style="color:var(--cf-text)">{{ a.designation }}</span>
+              <span v-if="a.status === 'pending'" class="text-xs ml-2" style="color:#b45309">(pending approval)</span>
+              <span v-else-if="a.status === 'rejected'" class="text-xs ml-2" style="color:#b91c1c">(rejected)</span>
+              <div class="text-xs" style="color:var(--cf-text)">{{ a.email }}</div>
+            </div>
+          </div>
+        </div>
+        <p v-show="staffAccounts.length >= 4" class="text-xs" style="color:var(--cf-text)">This clinic already has the maximum of 4 team accounts.</p>
       </div>
+      <JoinLinkPanel link-kind="staff" audience-label="new teammate" redeemed-by-label=" with their own email and password" class="mb-5" />
+
+      <p class="cf-label mb-2">Affiliate Practitioners</p>
+      <div class="cf-card rounded-2xl p-4 mb-2">
+        <p v-show="practitionerAffiliates.length === 0" class="text-xs text-center py-2" style="color:var(--cf-text)">No affiliate practitioners linked yet.</p>
+        <div class="flex flex-col gap-2">
+          <div v-for="a in practitionerAffiliates" :key="a.accountId" class="record-card flex items-center justify-between p-2.5">
+            <div>
+              <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ a.adminName || a.email }}</span>
+              <span v-if="a.role" class="text-xs ml-2" style="color:var(--cf-text)">{{ a.role }}</span>
+              <div class="text-xs" style="color:var(--cf-text)">{{ a.email }}</div>
+            </div>
+            <button class="btn-ghost text-xs px-2 py-1" @click="removePractitionerAffiliate(a.accountId)"><i class="fas fa-times"></i> Remove</button>
+          </div>
+        </div>
+      </div>
+      <div v-if="practitionerAffiliates.length" class="cf-card rounded-2xl p-4 mb-2">
+        <div class="flex items-center justify-between mb-2">
+          <p class="cf-label mb-0">FHIR Affiliate Conformance <span style="font-weight:400">(ClinuxFlowAffiliatePractitionerRole)</span></p>
+          <button class="btn-ghost text-xs px-2 py-1" :disabled="practitionerAffiliateConformanceLoading" @click="checkPractitionerAffiliateConformance()">
+            <i class="fas" :class="practitionerAffiliateConformanceLoading ? 'fa-spinner fa-spin' : 'fa-shield-halved'"></i> Check
+          </button>
+        </div>
+        <p v-if="!practitionerAffiliateConformanceResult" class="text-xs" style="color:var(--cf-text)">
+          Checks each linked affiliate as a real FHIR PractitionerRole against this facility's own Organization.
+        </p>
+        <p v-else-if="practitionerAffiliateConformanceResult.error" class="text-xs" style="color:#b91c1c">{{ practitionerAffiliateConformanceResult.error }}</p>
+        <template v-else>
+          <p v-if="!practitionerAffiliateConformanceResult.hasOrganization" class="text-xs mb-2" style="color:var(--cf-text)">
+            No Hospital Profile saved yet — every affiliate below will show a missing Organization link until one is.
+          </p>
+          <div class="flex flex-col gap-2" style="max-height:220px;overflow-y:auto">
+            <div v-for="a in practitionerAffiliateConformanceResult.affiliates" :key="a.role.id" class="record-card p-2">
+              <p class="text-xs font-semibold mb-1" :style="a.valid ? 'color:var(--color-primary)' : 'color:var(--cf-text-strong)'">
+                <i class="fas" :class="a.valid ? 'fa-circle-check' : 'fa-circle-info'"></i>
+                {{ a.affiliate.adminName || a.affiliate.email }}
+              </p>
+              <ul style="font-size:.7rem;color:var(--cf-text);padding-left:1rem">
+                <li v-for="e in a.errors" :key="e.path">{{ e.message }}</li>
+              </ul>
+            </div>
+          </div>
+        </template>
+      </div>
+      <JoinLinkPanel link-kind="affiliate" audience-label="practitioner" redeemed-by-label=" from their own account" class="mb-5" />
+
+      <p class="cf-label mb-2">Affiliate Partners <span style="font-weight:400">(real, resolvable links)</span></p>
+      <div class="cf-card rounded-2xl p-4 mb-2">
+        <p class="text-xs mb-3" style="color:var(--cf-text)">
+          Have a join link or code from another ClinuxFlow-registered facility? Redeem it here to
+          link your organizations for real — resolvable, unlike the free-text entries in Affiliate
+          Partners above.
+        </p>
+        <JoinTokenRedeemForm @success="onOrgJoinSuccess" />
+      </div>
+      <div class="cf-card rounded-2xl p-4 mb-2">
+        <p v-show="orgAffiliates.length === 0" class="text-xs text-center py-2" style="color:var(--cf-text)">No real linked partners yet.</p>
+        <div class="flex flex-col gap-2">
+          <div v-for="o in orgAffiliates" :key="o.affiliateClinicId" class="record-card flex items-center justify-between p-2.5">
+            <div>
+              <span class="text-sm font-semibold" style="color:var(--cf-text-strong)">{{ o.affiliateClinicName }}</span>
+              <span v-if="o.relationship" class="text-xs ml-2" style="color:var(--cf-text)">{{ o.relationship }}</span>
+            </div>
+            <button class="btn-ghost text-xs px-2 py-1" @click="removeOrgAffiliateLink(o.affiliateClinicId)"><i class="fas fa-times"></i> Remove</button>
+          </div>
+        </div>
+      </div>
+      <JoinLinkPanel link-kind="organization" audience-label="partner organization's admin" redeemed-by-label=" from their own facility account" />
     </div>
 
   </div>

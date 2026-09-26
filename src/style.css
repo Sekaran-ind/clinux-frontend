@@ -239,6 +239,33 @@ body {
     border-color: var(--cf-border);
 }
 
+/* Extends the real pending/rejected colors Onboarding.vue already uses inline for join-token
+   status (#b45309/#b91c1c) into proper pills, for FacilityStatusCard's own multi-stage badge —
+   same tone vocabulary, not new colors. */
+.badge-amber {
+    background: rgba(180, 83, 9, .12);
+    color: #b45309;
+    border: 1px solid rgba(180, 83, 9, .25);
+}
+
+.dark .badge-amber {
+    background: rgba(242, 184, 77, .12);
+    color: #f2b84d;
+    border-color: rgba(242, 184, 77, .28);
+}
+
+.badge-red {
+    background: rgba(185, 28, 28, .12);
+    color: #b91c1c;
+    border: 1px solid rgba(185, 28, 28, .25);
+}
+
+.dark .badge-red {
+    background: rgba(248, 113, 113, .12);
+    color: #f87171;
+    border-color: rgba(248, 113, 113, .28);
+}
+
 .feature-card {
     transition: all .3s;
     border: 1px solid var(--cf-border);
@@ -357,7 +384,13 @@ body {
     position: fixed;
     bottom: 1.5rem;
     right: 1.5rem;
-    z-index: 99;
+    /* Was 99 — too low. AdaptiveSectionNav.vue's own header comment already documents this
+       exact class of bug once (a Reka DropdownMenuPortal teleport painting over a positioned
+       ancestor whose z-index wasn't high enough), fixed there by going to 1000. A failed
+       publish's ONLY feedback is this toast (publishClinic() just re-shows the 'hub' screen
+       otherwise) — matched to the same threshold so a failure toast can't silently lose to
+       whatever's on screen, which reads as "Publish did nothing, no error" from the outside. */
+    z-index: 1000;
     padding: .875rem 1.5rem;
     border-radius: .75rem;
     background: var(--color-secondary);

@@ -213,9 +213,50 @@ export const useAuthStore = defineStore('auth', () => {
     return { success: true };
   }
 
+  // The reverse of fetchAffiliates() — every facility THIS account is affiliated with. Real gap
+  // found live: an independent practitioner who redeemed a facility's join link and got approved
+  // had no way to see that anywhere — the approval only ever wrote a facility-side
+  // facility_affiliates row (see GET /api/facility/affiliates above); nothing read it back on the
+  // practitioner's own side until this. Powers PractitionerHome.vue's "Clinic Association" card.
+  async function fetchMyAffiliations() {
+    const res = await apiFetch(`${API_BASE}/api/practitioner/affiliations`).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+    if (!res.success) return { error: res.error };
+    return { affiliations: res.affiliations };
+  }
+
+  // Organization Affiliates (migrations/0015) — the org-to-org counterpart to
+  // fetchAffiliates/revokeAffiliate/fetchMyAffiliations just above. Product direction: "There 2
+  // groupings one for Practitioner as Staff, Practitioner as Affiliate. Similarly there is
+  // Organization affiliate... all these needs to be managed in similar way" — same shape, same
+  // reasoning, just clinic-to-clinic (a real partner lab/imaging centre, etc.) instead of
+  // clinic-to-account. Linking itself goes through the SAME join-token flow
+  // (data/control/joinTokenAdapter.js, linkKind: 'organization'), not a separate mechanism.
+  async function fetchOrganizationAffiliates() {
+    const res = await apiFetch(`${API_BASE}/api/facility/organization-affiliates`).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+    if (!res.success) return { error: res.error };
+    return { affiliates: res.affiliates };
+  }
+
+  async function revokeOrganizationAffiliate(clinicId) {
+    const res = await apiFetch(`${API_BASE}/api/facility/organization-affiliates/${encodeURIComponent(clinicId)}`, { method: 'DELETE' })
+      .then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+    if (!res.success) return { error: res.error };
+    return { success: true };
+  }
+
+  // The reverse of fetchOrganizationAffiliates() — every facility MY organization is affiliated
+  // WITH, as a partner (I redeemed THEIR join link). Powers ClinicHome.vue's "Our Partners" real
+  // (non-free-text) entries and TeamSettingsModal.vue's own reverse view.
+  async function fetchMyOrganizationAffiliations() {
+    const res = await apiFetch(`${API_BASE}/api/facility/organization-affiliations`).then((r) => r.json()).catch(() => ({ success: false, error: 'Network error — please try again.' }));
+    if (!res.success) return { error: res.error };
+    return { affiliations: res.affiliations };
+  }
+
   return {
     currentUser, register, login, logout, saveProfile, updateClinicName, changePassword, refreshSession, fetchTeam,
     setSecurityQuestion, getSecurityQuestion, resetPassword,
-    fetchAffiliates, revokeAffiliate,
+    fetchAffiliates, revokeAffiliate, fetchMyAffiliations,
+    fetchOrganizationAffiliates, revokeOrganizationAffiliate, fetchMyOrganizationAffiliations,
   };
 });

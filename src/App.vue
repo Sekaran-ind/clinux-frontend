@@ -1,18 +1,22 @@
 <script setup>
 import { useRoute, useRouter } from 'vue-router';
 import { useThemeStore } from './stores/theme.js';
+import { useAuthStore } from './stores/auth.js';
 import { homeDestination } from './router/homeDestination.js';
 
 const theme = useThemeStore();
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
 
 // "Home" goes to the clinic's own published page once it's registered, matching Index.vue's own
 // goToClinic() check (cf_clinic_profile) — see clinux-unified-header-and-home-routing memory
 // note. A function (not a reactive :to binding) since cf_clinic_profile is plain localStorage,
 // not a reactive store — same "compute at click time" convention Index.vue's goToClinic() uses.
+// role passed through now — homeDestination() itself explains why (a health_professional's home
+// is never /clinic-home, regardless of what's in device-wide localStorage).
 function goHome() {
-  router.push(homeDestination(!!localStorage.getItem('cf_clinic_profile')));
+  router.push(homeDestination(auth.currentUser?.role, !!localStorage.getItem('cf_clinic_profile')));
 }
 
 // front-desk/consultation-desk keys removed — those pages are no longer their own routes, see

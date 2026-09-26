@@ -20,7 +20,7 @@ import { useAuthStore } from '../stores/auth.js';
 import { useSlotFillHighlightsStore } from '../stores/slotFillHighlights.js';
 import { getEncounterCustomFormLinks, attachCustomFormRecord } from '../data/collections/encounterDocs.js';
 import { assignToSpecialist, getEncounterAssignmentStatus, acquireWorklistLock, releaseWorklistLock } from '../data/runtime/encounterCoordination.js';
-import { checkPatientConformance } from '../data/control/patientConformance.js';
+import { checkResourceConformance } from '../data/control/resourceRecords.js';
 
 const PATIENT_FORM_ID = 'system-patient-profile-v1';
 
@@ -289,19 +289,26 @@ function closeDrawer() {
 }
 
 // SPEC-24 §7 step 6 — the same on-demand "FHIR Conformance" check Onboarding.vue's cards already
-// have. Single Patient slice, not the whole document — see patientConformance.js's own header.
+// have. Single Patient slice, not the whole document.
 // Reads the LIVE in-progress form (extract()), not a saved record like Onboarding.vue's own
 // checks do — openStep('patient') always opens blank (this page's job is "register a NEW
 // patient," never editing one), so there is no saved record to check against until Save is
 // clicked; checking pre-save is the actually useful moment here.
+//
+// Cutover (Patient GraphDefinition + generic conformance/search/save API): was
+// POST /api/patient/conformance (patientConformance.js), now the same registry-driven
+// POST /api/resources/Patient/conformance PatientHome.vue's own Design Page also calls —
+// behaviorally equivalent (proven equivalent by index.test.js before this cutover), now with a
+// real next-best-action step too (ClinuxFlowPatientGraph.json), which this page just doesn't
+// render — nothing here reads .nextActions.
 const patientConformanceLoading = ref(false);
-const patientConformanceResult = ref(null); // { valid, errors, patient } | { error } | null
+const patientConformanceResult = ref(null); // { valid, errors, resource, nextActions } | { error } | null
 async function checkPatientConformanceNow() {
   patientConformanceLoading.value = true;
   const questionnaireJson = activeQuestionnaire(PATIENT_FORM_ID);
   const responseJson = lhcFormHost.value?.extract();
   patientConformanceResult.value = (questionnaireJson && responseJson)
-    ? await checkPatientConformance(questionnaireJson, responseJson)
+    ? await checkResourceConformance('Patient', questionnaireJson, responseJson)
     : { error: 'Fill in the patient\'s details first.' };
   patientConformanceLoading.value = false;
 }

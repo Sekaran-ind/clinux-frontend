@@ -3,7 +3,10 @@ import Index from '../pages/Index.vue';
 import Onboarding from '../pages/Onboarding.vue';
 import ClinicHome from '../pages/ClinicHome.vue';
 import StaffOnboarding from '../pages/StaffOnboarding.vue';
+import PractitionerHome from '../pages/PractitionerHome.vue';
+import PatientHome from '../pages/PatientHome.vue';
 import Designer from '../pages/Designer.vue';
+import Dashboard from '../pages/Dashboard.vue';
 import Cubo from '../components/Cubo.vue';
 import { useAuthStore } from '../stores/auth.js';
 import { resolveGuard } from './guardLogic.js';
@@ -42,6 +45,15 @@ const routes = [
   // A teammate's own self-service onboarding (name/role/specialization/HPR fields + importing
   // the clinic's existing profile) — distinct from /onboarding (the admin's full clinic setup).
   { path: '/staff-onboarding', name: 'staff-onboarding', component: StaffOnboarding, meta: { requiresAuth: true } },
+  // Practitioner's own Page View (explicit instruction: a real page independent of ClinicHome,
+  // same 3-surface pattern) — hideAppNav since it renders its own nav, matching ClinicHome's
+  // own meta for the identical reason.
+  { path: '/practitioner-home', name: 'practitioner-home', component: PractitionerHome, meta: { requiresAuth: true, hideAppNav: true } },
+  // Patient's own staff-facing directory/record surface (Patient GraphDefinition + generic
+  // conformance/search/save API build) — same 3-surface pattern as ClinicHome/PractitionerHome,
+  // but never a login destination: Patient itself never gets an account (SPEC-21 §6), so this is
+  // reached only via a staff nav link, never homeDestination.js.
+  { path: '/patient-home', name: 'patient-home', component: PatientHome, meta: { requiresAuth: true, hideAppNav: true } },
   // RETIRED (real onboarding-UI audit/rebuild) — HospitalOnboarding.vue's own drawer (AbdmFieldForm-
   // based, a bespoke non-FHIR-native renderer) and HospitalOnboardingChat.vue (an in-progress HFSM
   // proof-of-concept, "additive... not a replacement yet" — never finished, never actually the
@@ -63,6 +75,10 @@ const routes = [
   // for anyone to reach unauthenticated (see clinux-authenticated-vs-sandbox-mode memory note),
   // so it keeps the "no requiresAuth" treatment that page used to have.
   { path: '/designer', name: 'designer', component: Designer, meta: { requiresAuth: true } },
+  // The old Onboarding.vue "Review & Publish" screen's real content (entity counts, FHIR JSON
+  // preview) — given its own real destination once publishIfReady() made the forced publish
+  // step it used to gate redundant (explicit instruction). Linked from ClinicHome's user menu.
+  { path: '/dashboard', name: 'dashboard', component: Dashboard, meta: { requiresAuth: true } },
   // SPEC-22 (docs/SPEC-22-PERSISTED-WORKFLOW-SYSTEM-FLOWS-CUBO-STATE-MIRROR-DRAWER-CAPTURE.md)
   // §5.1's 3-pane Cübo shell — user's explicit correction: "ai-engine is the cubo in 3 pane
   // layout... open cubo as a separate page route". No wrapper page needed — Cubo.vue mounts

@@ -3,7 +3,7 @@ import {
     buildHprAadhaarOtpBody, buildHprVerifyAadhaarOtpBody, buildHprCheckAccountBody,
     buildHprDemographicAuthBody, buildHprMobileOtpBody, buildHprVerifyMobileOtpBody,
     buildHprCreateBody, buildHprPasswordLoginBody, buildHprProfessionalFetchBody,
-    buildHprUpdateProfessionalBody, buildHprDocumentsListBody,
+    buildHprUpdateProfessionalBody, buildHprRegisterProfessionalBody, buildHprDocumentsListBody, buildHprDocumentUploadBody,
     buildHprEmailGenerateOtpBody, buildHprEmailResendOtpBody, buildHprEmailVerifyOtpBody,
     buildHfrSearchBody, buildHfrBasicInfoBody, buildHfrAdditionalInfoBody, buildHfrDetailedInfoBody, buildHfrSubmitBody,
 } from './abdmAdapter.js';
@@ -27,7 +27,7 @@ describe('HPR body builders', () => {
         expect(buildHprVerifyMobileOtpBody('txn-1', '654321')).toEqual({ txnId: 'txn-1', otp: '654321' });
     });
 
-    it('buildHprCreateBody reads staff fields off the record and merges in the transient args, never persisting the password', () => {
+    it('buildHprCreateBody reads staff fields off the record, resolves role from the PAIRED PractitionerRole record, and merges in the transient args, never persisting the password', () => {
         const staff = staffRecord({
             staff_email: 'doc@example.com',
             staff_first_name: 'Ada',
@@ -38,9 +38,9 @@ describe('HPR body builders', () => {
             staff_state_code: '29',
             staff_district_code: '110',
             staff_council: 'true',
-            staff_abdm_role: 'Doctor',
         });
-        const body = buildHprCreateBody(staff, { txnId: 'txn-9', selectedHpId: 'hp-123', password: 'sekret' });
+        const role = staffRecord({ staff_provider_role: 'Healthcare Professional' });
+        const body = buildHprCreateBody(staff, role, { txnId: 'txn-9', selectedHpId: 'hp-123', password: 'sekret' });
         expect(body).toEqual({
             txnId: 'txn-9',
             email: 'doc@example.com',
@@ -55,8 +55,17 @@ describe('HPR body builders', () => {
             stateCode: '29',
             districtCode: '110',
             council: true,
-            role: 'Doctor',
+            role: 1,
+            profilePhotoBase64: '',
         });
+    });
+
+    it('buildHprCreateBody reuses a captured staff_photo as profilePhotoBase64, unchanged, never asking for a second upload', () => {
+        const staff = staffRecord({ staff_first_name: 'Ada', staff_photo: 'base64jpegdata' });
+        const role = staffRecord({ staff_provider_role: 'Facility Manager' });
+        const body = buildHprCreateBody(staff, role, { txnId: 'txn-1', selectedHpId: 'hp-1', password: 'sekret' });
+        expect(body.profilePhotoBase64).toBe('base64jpegdata');
+        expect(body.role).toBe(2);
     });
 
     it('buildHprPasswordLoginBody passes hprId/password straight through', () => {
@@ -69,19 +78,93 @@ describe('HPR body builders', () => {
         });
     });
 
-    it('buildHprUpdateProfessionalBody sends the real minimal subset this app already captures, with the caller\'s hprToken', () => {
-        const staff = staffRecord({ staff_first_name: 'Ada', staff_last_name: 'Lovelace', staff_phone: '9876543210', staff_email: 'ada@example.com' });
-        expect(buildHprUpdateProfessionalBody(staff, 'token-xyz')).toEqual({
-            hprToken: 'token-xyz',
-            practitioner: {
-                officialMobile: '9876543210', officialEmail: 'ada@example.com',
-                personalInformation: { firstName: 'Ada', lastName: 'Lovelace' },
-            },
+    it('buildHprUpdateProfessionalBody maps the full practitioner profile (personal/contact/registrationAcademic/currentWorkDetails), with the caller\'s hprToken', () => {
+        const staff = staffRecord({
+            staff_first_name: 'Ada', staff_last_name: 'Lovelace', staff_phone: '9876543210', staff_email: 'ada@example.com',
+            staff_salutation: 'Dr.', staff_gender: 'female', staff_date_of_birth: '1990-01-01', staff_languages_spoken: 'English, Hindi',
+            staff_address_line: 'MG Road', staff_address_state: '27', staff_public_mobile: '9000000000',
+            staff_work_currently_working: true, staff_work_purpose: 'Practice', staff_work_status: 'Private', staff_work_facility_name: 'Ruby Hall',
         });
+        const qualifications = [{ staff_qual_degree_code: '4060 - MBBS (Modern Medicine)', staff_qual_college: 'Grant Medical College', staff_qual_registration_number: 'REG-1' }];
+        const body = buildHprUpdateProfessionalBody(staff, qualifications, 'token-xyz');
+        expect(body.hprToken).toBe('token-xyz');
+        expect(body.practitioner.officialMobile).toBe('9876543210');
+        expect(body.practitioner.officialEmail).toBe('ada@example.com');
+        expect(body.practitioner.personalInformation).toEqual({
+            salutation: 'Dr.', firstName: 'Ada', middleName: '', lastName: 'Lovelace', gender: 'female', dateOfBirth: '1990-01-01',
+            nationality: '', fatherName: '', motherName: '', spouseName: '', languagesKnown: ['English', 'Hindi'],
+        });
+        expect(body.practitioner.communicationAddress).toEqual({ address: 'MG Road', country: '', state: '27', district: '', pincode: '' });
+        expect(body.practitioner.contactInformation.publicMobile).toBe('9000000000');
+        expect(body.practitioner.registrationAcademic.registrationData).toEqual([
+            {
+                qualification: '4060 - MBBS (Modern Medicine)', college: 'Grant Medical College', university: '', countryOfEducation: '', stateOfEducation: '', yearOfAwarding: '',
+                degreeCertificate: '', degreeNameMatchesAadhaar: '', degreeNameChangeAffidavit: '',
+                registeredWithCouncil: '', registrationNumber: 'REG-1', registrationDate: '', registrationCertificate: '',
+                registrationNameMatchesAadhaar: '', registrationNameChangeAffidavit: '', isPermanentOrRenewable: '', renewableDueDate: '',
+            },
+        ]);
+        expect(body.practitioner.currentWorkDetails).toEqual({
+            currentlyWorking: true, purposeOfRegistration: 'Practice', teleconsultationUrl: '', chooseWorkStatus: 'Private', reasonForNotWorking: '',
+            govtCategory: '', workingInPsu: '', psuName: '', govtEmploymentProof: '',
+            facilityDeclarationData: { facilityName: 'Ruby Hall', facilityAddress: '', pincode: '', facilityType: '', department: '', designation: '', ministry: '' },
+        });
+    });
+
+    it('buildHprUpdateProfessionalBody joins a real multi-select Nature of Work into one string, and carries the govt/PSU/teleconsultation fields', () => {
+        const staff = {
+            id: 'staff-1',
+            data: { item: [
+                { linkId: 'staff_work_purpose', answer: [{ valueString: 'Practice' }, { valueString: 'Teleconsultation' }] },
+                { linkId: 'staff_work_teleconsultation_url', answer: [{ valueString: 'https://clinic.example/tc' }] },
+                { linkId: 'staff_work_status', answer: [{ valueString: 'Government' }] },
+                { linkId: 'staff_work_govt_category', answer: [{ valueString: 'Central' }] },
+                { linkId: 'staff_work_psu_yesno', answer: [{ valueString: 'Yes' }] },
+                { linkId: 'staff_work_psu_name', answer: [{ valueString: 'SAIL' }] },
+                { linkId: 'staff_work_govt_proof_document', answer: [{ valueString: 'base64proof' }] },
+            ] },
+        };
+        const body = buildHprUpdateProfessionalBody(staff, [], 'token-xyz');
+        expect(body.practitioner.currentWorkDetails).toMatchObject({
+            purposeOfRegistration: 'Practice, Teleconsultation', teleconsultationUrl: 'https://clinic.example/tc',
+            chooseWorkStatus: 'Government', govtCategory: 'Central', workingInPsu: 'Yes', psuName: 'SAIL', govtEmploymentProof: 'base64proof',
+        });
+    });
+
+    it('buildHprUpdateProfessionalBody carries each qualification\'s own name-match/affidavit answers', () => {
+        const staff = staffRecord({ staff_first_name: 'Ada' });
+        const qualifications = [{
+            staff_qual_degree_code: '4060 - MBBS (Modern Medicine)',
+            staff_qual_degree_name_matches_aadhaar: 'No', staff_qual_degree_name_change_affidavit: 'base64affidavit1',
+            staff_qual_registration_name_matches_aadhaar: 'Yes', staff_qual_registration_name_change_affidavit: '',
+        }];
+        const body = buildHprUpdateProfessionalBody(staff, qualifications, 'token-xyz');
+        expect(body.practitioner.registrationAcademic.registrationData[0]).toMatchObject({
+            degreeNameMatchesAadhaar: 'No', degreeNameChangeAffidavit: 'base64affidavit1',
+            registrationNameMatchesAadhaar: 'Yes', registrationNameChangeAffidavit: '',
+        });
+    });
+
+    it('buildHprRegisterProfessionalBody sends the same practitioner shape as update, plus the target hprId', () => {
+        const staff = staffRecord({ staff_first_name: 'Ada', staff_last_name: 'Lovelace' });
+        const body = buildHprRegisterProfessionalBody(staff, [], 'token-xyz', 'hp-123');
+        expect(body.hprToken).toBe('token-xyz');
+        expect(body.hprId).toBe('hp-123');
+        expect(body.practitioner.personalInformation.firstName).toBe('Ada');
+        expect(body.practitioner.registrationAcademic.registrationData).toEqual([]);
     });
 
     it('buildHprDocumentsListBody passes hprid straight through', () => {
         expect(buildHprDocumentsListBody('71-9999-9999-1358')).toEqual({ hprid: '71-9999-9999-1358' });
+    });
+
+    it('buildHprDocumentUploadBody omits documentId when not given, includes it when given', () => {
+        expect(buildHprDocumentUploadBody('token-xyz', 'hp-123', 'profilePhoto', 'base64data')).toEqual({
+            hprToken: 'token-xyz', hprId: 'hp-123', documentType: 'profilePhoto', documentBase64: 'base64data',
+        });
+        expect(buildHprDocumentUploadBody('token-xyz', 'hp-123', 'degreeCertificate', 'base64data', 'doc-42')).toEqual({
+            hprToken: 'token-xyz', hprId: 'hp-123', documentType: 'degreeCertificate', documentBase64: 'base64data', documentId: 'doc-42',
+        });
     });
 
     it('buildHprEmailGenerateOtpBody/ResendOtpBody/VerifyOtpBody use the real hpr_token field name and otp_type', () => {
@@ -155,6 +238,18 @@ describe('HFR body builders', () => {
         expect(buildHfrBasicInfoBody(hospital).facilityInformation.systemOfMedicineCode).toBe('M,D');
     });
 
+    it('buildHfrBasicInfoBody sends an empty facilityAddressProof array when no proof was attached', () => {
+        expect(buildHfrBasicInfoBody(hospitalRecord({})).facilityInformation.facilityAddressProof).toEqual([]);
+    });
+
+    it('buildHfrBasicInfoBody includes the real single-entry facilityAddressProof shape once a proof is attached', () => {
+        const addressProof = { type: 'PAN', file: { name: 'proof.pdf', value: 'base64data' } };
+        const body = buildHfrBasicInfoBody(hospitalRecord({}), { addressProof });
+        expect(body.facilityInformation.facilityAddressProof).toEqual([
+            { addressProofType: 'PAN', addressProofAttachment: { name: 'proof.pdf', value: 'base64data' } },
+        ]);
+    });
+
     it('buildHfrAdditionalInfoBody defaults every hasX flag to N — the real, valid body for a typical small clinic', () => {
         expect(buildHfrAdditionalInfoBody(hospitalRecord({}), 'track-1')).toMatchObject({
             trackingId: 'track-1',
@@ -178,6 +273,18 @@ describe('HFR body builders', () => {
         const hospital = { id: 'hosp-1', data: { item: [{ linkId: 'hospital_imaging_services', answer: [{ valueString: 'S136' }, { valueString: 'S137' }] }] } };
         const body = buildHfrAdditionalInfoBody(hospital, 'track-1');
         expect(body.generalInformation.servicesByImagingCenter).toEqual([{ service: 'S136', count: 1 }, { service: 'S137', count: 1 }]);
+    });
+
+    it('buildHfrAdditionalInfoBody reads real linkedProgramIds off the record instead of always-empty stubs', () => {
+        const hospital = hospitalRecord({
+            hospital_linked_nhrr_id: 'NHRR-1', hospital_linked_nin: 'NIN-1', hospital_linked_abpmjay_id: 'PMJAY-1',
+            hospital_linked_rohini_id: 'ROH-1', hospital_linked_cghs_id: 'CGHS-1', hospital_linked_echs_id: 'ECHS-1',
+            hospital_linked_cea_registration: 'CEA-1', hospital_linked_state_insurance_id: 'SIS-1',
+        });
+        expect(buildHfrAdditionalInfoBody(hospital, 'track-1').linkedProgramIds).toEqual({
+            nhrrId: 'NHRR-1', nin: 'NIN-1', abpmjayId: 'PMJAY-1', rohiniId: 'ROH-1',
+            echsId: 'ECHS-1', cghsId: 'CGHS-1', ceaRegistration: 'CEA-1', stateInsuranceSchemeId: 'SIS-1',
+        });
     });
 
     // Real, doc-confirmed behavior: sending a conditional section for a facility that doesn't

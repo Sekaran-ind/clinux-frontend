@@ -23,6 +23,10 @@ export const facilitySetupMachine = createMachine({
     hasBasics: !!input?.hasBasics,
     everPublished: !!input?.everPublished,
     hfrFacilityId: input?.hfrFacilityId || null,
+    // FacilityHfrPanel.vue's own tracking id (hospital_tracking_id, set once Basic Information
+    // returns one) — a real intermediate ABDM-side signal between "published" and a full
+    // facilityId, added for FacilityStatusCard.vue's own HFR-track pill (§ below).
+    hfrTrackingId: input?.hfrTrackingId || null,
   }),
   initial: 'draft',
   states: {
@@ -43,6 +47,21 @@ export const facilitySetupMachine = createMachine({
     // required to publish" precedent) — requiring it here too would lock every free-tier clinic
     // out of inviting staff at all.
     published: {
+      // Multiple guarded transitions, first match wins: a facilityId (the strongest signal)
+      // always wins outright even without an explicit hfrTrackingId in the input — preserves the
+      // machine's original direct published -> hfr_registered path exactly as before. Only when
+      // there's no facilityId yet does a tracking id alone move the stage to the new intermediate
+      // 'hfr_in_progress'.
+      always: [
+        { target: 'hfr_registered', guard: ({ context }) => !!context.hfrFacilityId },
+        { target: 'hfr_in_progress', guard: ({ context }) => !!context.hfrTrackingId },
+      ],
+    },
+    // FacilityHfrPanel.vue's Basic Information step returned a real trackingId, but Submit hasn't
+    // (successfully) run yet — genuinely "in the middle of" HFR registration, not merely
+    // published-and-untouched. Counts as join-token-eligible (see canAcceptFacilityJoinToken) —
+    // it's strictly further along than 'published' already was.
+    hfr_in_progress: {
       always: { target: 'hfr_registered', guard: ({ context }) => !!context.hfrFacilityId },
     },
     // FacilityHfrPanel.vue's submit step returned a real ABDM facilityId (persisted onto the
@@ -57,8 +76,8 @@ export const facilitySetupMachine = createMachine({
 // join-token redemption route/UI) never touch the machine or an actor directly, just this.
 // Snapshot of real stored-data signals in, lifecycle stage string out. No events, no persistence,
 // no side effects — safe to call on every render.
-export function deriveFacilitySetupState({ hasBasics, everPublished, hfrFacilityId } = {}) {
-  const actor = createActor(facilitySetupMachine, { input: { hasBasics, everPublished, hfrFacilityId } });
+export function deriveFacilitySetupState({ hasBasics, everPublished, hfrFacilityId, hfrTrackingId } = {}) {
+  const actor = createActor(facilitySetupMachine, { input: { hasBasics, everPublished, hfrFacilityId, hfrTrackingId } });
   actor.start();
   const stage = actor.getSnapshot().value;
   actor.stop();
@@ -68,7 +87,7 @@ export function deriveFacilitySetupState({ hasBasics, everPublished, hfrFacility
 // 'published' or 'hfr_registered' — the default eligibility bar (see the 'published' state's own
 // comment above for why HFR completion isn't required).
 export function canAcceptFacilityJoinToken(stage) {
-  return stage === 'published' || stage === 'hfr_registered';
+  return stage === 'published' || stage === 'hfr_in_progress' || stage === 'hfr_registered';
 }
 
 // Display copy for the stage badge — kept alongside the machine so a new stage can't be added
@@ -77,5 +96,6 @@ export const FACILITY_SETUP_STAGE_LABELS = {
   draft: 'Draft — profile not started',
   basics_saved: 'Profile saved — not yet published',
   published: 'Published — can accept team join links',
+  hfr_in_progress: 'ABDM registration in progress',
   hfr_registered: 'HFR-registered — published + ABDM facility ID',
 };

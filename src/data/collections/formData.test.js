@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getAnswer, getAnswers, recordSummary, getGroupInstances, withGroupFields, mergeGroupResponseItem, mergeGroupResponseItems, sliceRecordGroup, patchGroupInstanceField, appendGroupInstance, appendGroupResponseItem, saveDataRecord, formData } from './formData.js';
+import { getAnswer, getAnswers, recordSummary, getGroupInstances, getNestedGroupInstances, withGroupFields, mergeGroupResponseItem, mergeGroupResponseItems, sliceRecordGroup, patchGroupInstanceField, ensureGroupInstance, patchNestedGroupInstances, appendGroupInstance, appendGroupResponseItem, patchOrCreateGroupField, patchOrCreateGroupMultiField, saveDataRecord, formData } from './formData.js';
 
 // getAnswer/getAnswers/recordSummary are pure functions over a FHIR QuestionnaireResponse-shaped
 // record ({ data: { item: [...] } }) — tested directly with plain fixtures, no TanStack DB/
@@ -309,6 +309,207 @@ describe('patchGroupInstanceField', () => {
 
     it('does nothing for a record id that does not exist', () => {
         expect(() => patchGroupInstanceField('rec-does-not-exist', 'section_staff', 0, { staff_hprid: 'x' })).not.toThrow();
+    });
+
+    // Real bug found live (ProviderPersonalDetailsHost.vue's own Specialty MultiSelect field):
+    // an Array value used to fall through to answerFor()'s object branch, wrapping the WHOLE array
+    // as one `{valueString: [...]}` answer — getAnswer then returned the raw array, which Vue's
+    // template interpolation renders as the literal text "[]" instead of real values or nothing.
+    it('writes one answer entry per value when given an Array (a MultiSelect field), matching a compiled MultiSelect field\'s own extraction shape', () => {
+        const id = 'rec-patch-multiselect-test';
+        formData.insert({ id, formId: 'system-provider-composition-v1', version: 1, data: { item: [{ linkId: 'section_staff', item: [] }] }, savedAt: new Date().toISOString() });
+
+        patchGroupInstanceField(id, 'section_staff', 0, { staff_specialty: ['Cardiology', 'Neurology'] });
+        let rec = formData.get(id);
+        let instance = getGroupInstances(rec, 'section_staff')[0];
+        expect(getAnswers({ data: instance }, 'staff_specialty')).toEqual(['Cardiology', 'Neurology']);
+
+        // Re-saving with an empty array must clear it, not render as a literal "[]" (getAnswer
+        // returns '' — the field is genuinely unanswered, not answered-with-an-empty-array).
+        patchGroupInstanceField(id, 'section_staff', 0, { staff_specialty: [] });
+        rec = formData.get(id);
+        instance = getGroupInstances(rec, 'section_staff')[0];
+        expect(getAnswer({ data: instance }, 'staff_specialty')).toBe('');
+
+        formData.delete(id);
+    });
+});
+
+describe('ensureGroupInstance', () => {
+    // Practitioner self-service rebuild — Personal Details/Qualifications/Work Experience each
+    // patch the SAME single section_staff instance independently; this is what lets the first of
+    // the three to ever save create that one instance, so patchGroupInstanceField (which silently
+    // no-ops against a missing instance) has something to write into.
+    it('creates a blank instance the first time, and is a no-op once one already exists', () => {
+        const id = 'rec-ensure-instance-test';
+        formData.insert({ id, formId: 'system-provider-composition-v1', version: 1, data: { item: [] }, savedAt: new Date().toISOString() });
+
+        ensureGroupInstance(id, 'section_staff');
+        expect(getGroupInstances(formData.get(id), 'section_staff').length).toBe(1);
+
+        patchGroupInstanceField(id, 'section_staff', 0, { staff_first_name: 'Ada' });
+        ensureGroupInstance(id, 'section_staff'); // second call must not add a second instance
+        const instances = getGroupInstances(formData.get(id), 'section_staff');
+        expect(instances.length).toBe(1);
+        expect(getAnswer({ data: instances[0] }, 'staff_first_name')).toBe('Ada');
+
+        formData.delete(id);
+    });
+
+    it('does nothing for a record id that does not exist', () => {
+        expect(() => ensureGroupInstance('rec-does-not-exist', 'section_staff')).not.toThrow();
+    });
+});
+
+describe('patchOrCreateGroupField', () => {
+    // The real bug this closes: patchRecordField's own "never create" contract silently no-ops
+    // every write against a group that was never seeded some other way — FacilityHfrPanel.vue's
+    // own non-repeating ABDM groups are never created via an extract()-based flow anywhere in this
+    // app, so a fresh `{item: []}` record (onboarding.js's own ensureProviderRecord() shape) lost
+    // every single field it ever tried to save, with no error and no visible sign anything was
+    // wrong — the UI's own local step/trackingId refs kept looking like it worked.
+    it('creates the group and the field when neither exists yet on a fresh record', () => {
+        const id = 'rec-patch-or-create-fresh';
+        formData.insert({ id, formId: 'system-provider-composition-v1', version: 1, data: { item: [] }, savedAt: new Date().toISOString() });
+
+        patchOrCreateGroupField(id, 'section_hospital_abdm_registration', 'hospital_tracking_id', 'TRK-1');
+
+        expect(getAnswer(formData.get(id), 'hospital_tracking_id')).toBe('TRK-1');
+        const group = formData.get(id).data.item.find((i) => i.linkId === 'section_hospital_abdm_registration');
+        expect(group).toBeTruthy();
+        expect(group.item.some((i) => i.linkId === 'hospital_tracking_id')).toBe(true);
+
+        formData.delete(id);
+    });
+
+    it('creates the field inside an already-existing group without duplicating the group', () => {
+        const id = 'rec-patch-or-create-existing-group';
+        formData.insert({
+            id, formId: 'system-provider-composition-v1', version: 1,
+            data: { item: [{ linkId: 'section_hospital_abdm_registration', item: [{ linkId: 'hospital_tracking_id', answer: [{ valueString: 'TRK-1' }] }] }] },
+            savedAt: new Date().toISOString(),
+        });
+
+        patchOrCreateGroupField(id, 'section_hospital_abdm_registration', 'hospital_facility_id', 'IN0910000001');
+
+        const record = formData.get(id);
+        const groups = record.data.item.filter((i) => i.linkId === 'section_hospital_abdm_registration');
+        expect(groups.length).toBe(1);
+        expect(getAnswer(record, 'hospital_tracking_id')).toBe('TRK-1');
+        expect(getAnswer(record, 'hospital_facility_id')).toBe('IN0910000001');
+
+        formData.delete(id);
+    });
+
+    it('mutates an already-existing field in place rather than appending a duplicate', () => {
+        const id = 'rec-patch-or-create-mutate';
+        formData.insert({
+            id, formId: 'system-provider-composition-v1', version: 1,
+            data: { item: [{ linkId: 'section_hospital_abdm_registration', item: [{ linkId: 'hospital_tracking_id', answer: [{ valueString: 'OLD' }] }] }] },
+            savedAt: new Date().toISOString(),
+        });
+
+        patchOrCreateGroupField(id, 'section_hospital_abdm_registration', 'hospital_tracking_id', 'NEW');
+
+        const record = formData.get(id);
+        const group = record.data.item.find((i) => i.linkId === 'section_hospital_abdm_registration');
+        expect(group.item.filter((i) => i.linkId === 'hospital_tracking_id').length).toBe(1);
+        expect(getAnswer(record, 'hospital_tracking_id')).toBe('NEW');
+
+        formData.delete(id);
+    });
+
+    it('finds and mutates a field even if it exists in a DIFFERENT group than the one passed — same tree-wide walk patchRecordField already does', () => {
+        const id = 'rec-patch-or-create-elsewhere';
+        formData.insert({
+            id, formId: 'system-provider-composition-v1', version: 1,
+            data: { item: [{ linkId: 'section_hospital', item: [{ linkId: 'hospital_name', answer: [{ valueString: 'Old Name' }] }] }] },
+            savedAt: new Date().toISOString(),
+        });
+
+        patchOrCreateGroupField(id, 'section_hospital_abdm_registration', 'hospital_name', 'New Name');
+
+        const record = formData.get(id);
+        expect(getAnswer(record, 'hospital_name')).toBe('New Name');
+        // Did NOT also create a spurious second copy under section_hospital_abdm_registration.
+        expect(record.data.item.some((i) => i.linkId === 'section_hospital_abdm_registration')).toBe(false);
+
+        formData.delete(id);
+    });
+
+    it('does nothing for a record id that does not exist', () => {
+        expect(() => patchOrCreateGroupField('rec-does-not-exist', 'section_hospital_abdm_registration', 'hospital_tracking_id', 'X')).not.toThrow();
+    });
+});
+
+describe('patchOrCreateGroupMultiField', () => {
+    it('creates the group and a real multi-answer field on a fresh record', () => {
+        const id = 'rec-patch-or-create-multi-fresh';
+        formData.insert({ id, formId: 'system-provider-composition-v1', version: 1, data: { item: [] }, savedAt: new Date().toISOString() });
+
+        patchOrCreateGroupMultiField(id, 'section_hospital_abdm_facility_type', 'hospital_system_of_medicine', ['M', 'D']);
+
+        expect(getAnswers(formData.get(id), 'hospital_system_of_medicine')).toEqual(['M', 'D']);
+        formData.delete(id);
+    });
+
+    it('replaces an existing multi-answer field in place', () => {
+        const id = 'rec-patch-or-create-multi-existing';
+        formData.insert({
+            id, formId: 'system-provider-composition-v1', version: 1,
+            data: { item: [{ linkId: 'section_hospital_abdm_facility_type', item: [{ linkId: 'hospital_system_of_medicine', answer: [{ valueString: 'M' }] }] }] },
+            savedAt: new Date().toISOString(),
+        });
+
+        patchOrCreateGroupMultiField(id, 'section_hospital_abdm_facility_type', 'hospital_system_of_medicine', ['A', 'H']);
+
+        expect(getAnswers(formData.get(id), 'hospital_system_of_medicine')).toEqual(['A', 'H']);
+        formData.delete(id);
+    });
+});
+
+describe('patchNestedGroupInstances / getNestedGroupInstances', () => {
+    // Qualifications is a genuinely repeating group NESTED inside section_staff's own single
+    // instance (not a top-level repeating group) — mergeGroupResponseItems only replaces top-level
+    // instances, so saving a new set of qualifications needs its own nested counterpart.
+    it('replaces the full set of a nested group instances inside one parent instance, leaving sibling parent fields untouched', () => {
+        const id = 'rec-nested-group-test';
+        formData.insert({
+            id, formId: 'system-provider-composition-v1', version: 1,
+            data: {
+                item: [
+                    { linkId: 'section_staff', item: [
+                        { linkId: 'staff_first_name', answer: [{ valueString: 'Ada' }] },
+                        { linkId: 'section_staff_qualification', item: [{ linkId: 'staff_qual_degree_code', answer: [{ valueString: 'OLD' }] }] },
+                    ] },
+                ],
+            },
+            savedAt: new Date().toISOString(),
+        });
+
+        patchNestedGroupInstances(id, 'section_staff', 0, 'section_staff_qualification', [
+            { linkId: 'section_staff_qualification', item: [{ linkId: 'staff_qual_degree_code', answer: [{ valueString: '4060 - MBBS (Modern Medicine)' }] }] },
+            { linkId: 'section_staff_qualification', item: [{ linkId: 'staff_qual_degree_code', answer: [{ valueString: '4074 - BDS (Dentistry)' }] }] },
+        ]);
+
+        const rec = formData.get(id);
+        const staffInstance = getGroupInstances(rec, 'section_staff')[0];
+        expect(getAnswer({ data: staffInstance }, 'staff_first_name')).toBe('Ada'); // sibling field survives untouched
+
+        const quals = getNestedGroupInstances(rec, 'section_staff', 0, 'section_staff_qualification');
+        expect(quals.length).toBe(2);
+        expect(getAnswer({ data: quals[0] }, 'staff_qual_degree_code')).toBe('4060 - MBBS (Modern Medicine)');
+        expect(getAnswer({ data: quals[1] }, 'staff_qual_degree_code')).toBe('4074 - BDS (Dentistry)');
+
+        formData.delete(id);
+    });
+
+    it('does nothing for a record id that does not exist', () => {
+        expect(() => patchNestedGroupInstances('rec-does-not-exist', 'section_staff', 0, 'section_staff_qualification', [])).not.toThrow();
+    });
+
+    it('getNestedGroupInstances returns [] when the parent instance does not exist', () => {
+        expect(getNestedGroupInstances({ data: { item: [] } }, 'section_staff', 0, 'section_staff_qualification')).toEqual([]);
     });
 });
 

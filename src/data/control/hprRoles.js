@@ -30,3 +30,15 @@ export function hprRoleLabel(accountRole) { return HPR_ROLE_LABELS[accountRole] 
 // (ProviderBasicsHost.vue's "HPR Role" column), a per-staff-member capture independent of who's
 // logged in, so it reads from `label` only, never the account-role enum.
 export const HPR_ROLE_CODE_CHOICES = HPR_ROLES.map((r) => r.label);
+
+// Real bug found live: createHprIdWithPreVerified's own `role` field is a NUMERIC code (1/2/3,
+// see this file's own header), but the field the app actually captures per staff member
+// (staff_provider_role, PractitionerRole.code) stores the LABEL string — abdmAdapter.js's
+// buildHprCreateBody used to read a completely different, nonexistent linkId (staff_abdm_role)
+// for this, meaning every createAccount() call submitted role: undefined and 400'd before ever
+// reaching ABDM. This is the real conversion: HPR_ROLES is already ordered to match the real 1/2/3
+// table, so a label's position + 1 IS its code — no separate lookup table needed.
+export function hprRoleCode(label) {
+  const index = HPR_ROLES.findIndex((r) => r.label === label);
+  return index === -1 ? undefined : index + 1;
+}
