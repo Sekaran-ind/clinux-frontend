@@ -1,0 +1,29 @@
+{
+  "$comment": "HFR (Health Facility Registry) journey: register a facility with ABDM (Basic Information and Submit). Needs the Facility Manager's HPR token (x-hprid-auth), reused from the HPR journey when this session already signed in. Steps and transitions are here; gateway calls and prompts are the named handlers in hfrJourney.js. Run by engine.js on XState.",
+  "id": "hfr",
+  "title": "HFR facility",
+  "summary": "Register your facility with the Health Facility Registry",
+  "icon": "fa-hospital",
+  "start": "begin",
+  "steps": {
+    "begin":         { "type": "auto", "run": "loadSaved", "next": [
+                         { "if": "data.saved.trackingId && !data.saved.facilityId", "to": "resume" },
+                         { "if": "data.hasHpr", "to": "loadBasics" },
+                         { "to": "managerLogin" } ] },
+    "resume":        { "type": "ask", "prompt": "resume", "run": "chooseResume", "next": [
+                         { "if": "data.resume && data.hasHpr", "to": "submit" },
+                         { "if": "data.resume", "to": "managerLogin" },
+                         { "if": "data.hasHpr", "to": "loadBasics" },
+                         { "to": "managerLogin" } ] },
+    "managerLogin":  { "type": "ask", "prompt": "managerLogin", "run": "managerLogin", "next": [{ "if": "data.resume", "to": "submit" }, { "to": "loadBasics" }], "ledger": { "label": "Facility manager's HPR sign-in" } },
+    "loadBasics":    { "type": "auto", "run": "loadBasics", "next": "facility" },
+    "facility":      { "type": "ask", "prompt": "facility", "run": "describeFacility", "next": "loadDependent", "ledger": { "label": "Facility" } },
+    "loadDependent": { "type": "auto", "run": "loadDependent", "next": "classify" },
+    "classify":      { "type": "ask", "prompt": "classify", "run": "classifyFacility", "next": "loadLocation", "ledger": { "label": "Ownership and type" } },
+    "loadLocation":  { "type": "auto", "run": "loadLocation", "next": "location" },
+    "location":      { "type": "ask", "prompt": "location", "run": "locateFacility", "next": "review", "ledger": { "label": "Location" } },
+    "review":        { "type": "ask", "prompt": "review", "run": "saveDraft", "next": [{ "if": "data.stopped", "to": "done" }, { "to": "submit" }], "ledger": { "label": "Review and save draft" } },
+    "submit":        { "type": "ask", "prompt": "submit", "run": "submitToHfr", "next": "done", "ledger": { "label": "Submit to HFR" } },
+    "done":          { "type": "final", "run": "result" }
+  }
+}

@@ -1410,11 +1410,6 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
     <!-- Forms Library content — this route now requires auth (see the router), so no
          "sandbox mode / sign in" fallback branch is needed here any more. -->
     <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
-      <div style="display:flex;gap:.5rem;padding:1rem 1.5rem 0;flex-shrink:0;position:relative;z-index:110">
-        <span class="btn-outline btn-teal" style="font-size:.78rem;cursor:default">
-          <i class="fas fa-pen-ruler" style="margin-right:.4rem"></i>Forms Library
-        </span>
-      </div>
 
   <main style="flex:1;overflow:hidden;display:flex;justify-content:center">
   <div style="max-width:1500px;width:100%;overflow-y:auto;padding:1.5rem">
@@ -1422,9 +1417,11 @@ function prevStep() { if (currentStep.value > 0) { currentStep.value--; window.s
     <!-- ── Rooms grid (default landing, SPEC-22 §5.8) — Provider/Facility/Patient/Encounter/
          Account, the top-level entities the Room Architect actually lists now. ── -->
     <div v-show="currentView === 'rooms'">
-      <div style="margin-bottom:1.25rem">
-        <span class="cf-label" style="margin-bottom:.2rem;display:block">Rooms</span>
-        <p style="font-size:.8rem;color:var(--cf-text)">Every real workspace ClinüxFlow manages. Open a room to view its entities, design its workflow, or edit which account roles it applies to.</p>
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Forms library</h1>
+          <p class="page-subtitle">Every room ClinüxFlow manages. Open a room to see its entities, design its workflow, or change which account roles it applies to.</p>
+        </div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1rem">
         <div v-for="room in ROOM_DEFINITIONS" :key="room.roomId" style="position:relative">

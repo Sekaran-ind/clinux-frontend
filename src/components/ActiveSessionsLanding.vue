@@ -121,20 +121,28 @@ onBeforeUnmount(() => observer?.disconnect());
 
 <template>
   <div class="max-w-[820px] mx-auto">
-    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <h2 class="text-2xl font-bold" style="color:var(--cf-text-strong)">Active Sessions</h2>
-      <slot name="actions" />
+    <div class="page-header" style="margin-bottom:1rem">
+      <div>
+        <h2 class="page-title">Active sessions</h2>
+        <p class="page-subtitle">Every open visit, grouped by day. Pick a stage to jump straight into it.</p>
+      </div>
+      <div class="page-actions"><slot name="actions" /></div>
     </div>
 
-    <div v-if="!sharedModeLive" class="text-xs mb-3 px-3 py-2 rounded-lg" style="color:var(--cf-text);background:var(--cf-bg);border:1px solid var(--cf-border)">
-      <i class="fas fa-house-laptop mr-1.5"></i>Local Only — sessions created on other devices won't appear here unless shared or imported. Switch to Live Server (top right) if this clinic runs the shared LAN server.
+    <div v-if="!sharedModeLive" class="ui-banner" style="padding:.625rem .875rem;margin-bottom:1rem">
+      <div class="ui-banner-icon" style="width:28px;height:28px;font-size:.75rem"><i class="fas fa-house-laptop"></i></div>
+      <div class="ui-banner-text"><strong style="color:var(--shell-text-strong)">Local Only.</strong> Sessions created on other devices won't appear here unless they're shared or imported. Switch to Live Server (top right) if this clinic runs the shared LAN server.</div>
     </div>
 
     <div v-if="isLoading" class="cf-card rounded-2xl p-5 text-sm text-center" style="color:var(--cf-text)">
       <i class="fas fa-spinner fa-spin mr-2"></i>Loading sessions...
     </div>
-    <div v-else-if="sessions.length === 0" class="cf-card rounded-2xl p-5 text-sm" style="color:var(--cf-text)">
-      No sessions yet. Start a new check-in from Front Desk.
+    <div v-else-if="sessions.length === 0" class="panel">
+      <div class="empty-state">
+        <div class="empty-state-icon"><i class="fas fa-clipboard-user"></i></div>
+        <div class="empty-state-title">No open visits</div>
+        <p class="empty-state-text">A visit appears here when a patient checks in at Front Desk, and stays until checkout.</p>
+      </div>
     </div>
 
     <div v-else class="flex flex-col gap-5">

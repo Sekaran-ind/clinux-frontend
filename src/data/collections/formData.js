@@ -52,6 +52,13 @@ export function listDataRecords(formId) {
 // equally exposed. Fixed at this single choke point (every save in the whole app funnels through
 // here) rather than patching each write path individually -- only fills in what's missing, never
 // overwrites a real LForms-extracted resourceType/status that's already correct.
+// One listener for "a record was saved" (main.js registers the provenance recorder) — keeps this
+// data layer free of any knowledge of accounts or provenance.
+let recordSavedListener = null;
+export function setRecordSavedListener(fn) {
+  recordSavedListener = fn;
+}
+
 export function saveDataRecord(formId, version, questionnaireResponse, existingRecordId) {
   const id = existingRecordId || 'rec-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
   const data = {
@@ -61,11 +68,13 @@ export function saveDataRecord(formId, version, questionnaireResponse, existingR
   };
   const record = { id, formId, version, clinicId: currentClinicId(), data, savedAt: new Date().toISOString() };
 
-  if (formData.has(id)) {
+  const created = !formData.has(id);
+  if (!created) {
     formData.update(id, (draft) => Object.assign(draft, record));
   } else {
     formData.insert(record);
   }
+  try { recordSavedListener?.({ id, formId, created }); } catch { /* provenance never blocks a save */ }
   return id;
 }
 

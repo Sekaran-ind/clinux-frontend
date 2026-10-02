@@ -32,7 +32,6 @@ import { useRouter } from 'vue-router';
 import Cubo from '../components/Cubo.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
 import { useAuthStore } from '../stores/auth.js';
-import { useThemeStore } from '../stores/theme.js';
 import { useLiveQuery } from '@tanstack/vue-db';
 import { getGroupInstances, getNestedGroupInstances, getAnswer, getAnswers } from '../data/useSystemForms.js';
 import { practitionerDocuments } from '../data/collections/practitionerDocs.js';
@@ -40,7 +39,6 @@ import { practitionerDocuments } from '../data/collections/practitionerDocs.js';
 const router = useRouter();
 const onboarding = useOnboardingStore();
 const auth = useAuthStore();
-const theme = useThemeStore();
 
 function editSection(sectionId) {
   router.push({ path: '/staff-onboarding', query: { section: sectionId } });
@@ -120,35 +118,30 @@ const workDesignation = computed(() => myRecord.value ? getAnswer(myRecord.value
 </script>
 
 <template>
-  <div style="min-height:100vh;display:flex;flex-direction:column">
-    <nav class="site-nav">
-      <div class="nav-inner">
-        <div class="nav-logo">
-          <div style="width:2.5rem;height:2.5rem;border-radius:50%;overflow:hidden;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:1.15rem;font-family:'JetBrains Mono',monospace;box-shadow:0 10px 15px -3px rgba(0,0,0,.15);background:#00D4B2;color:#fff">
-            <img v-if="photo" :src="`data:image/jpeg;base64,${photo}`" alt="" style="width:100%;height:100%;object-fit:cover" />
-            <span v-else>{{ (name || 'P').charAt(0).toUpperCase() }}</span>
-          </div>
+  <!-- Renders inside AppShell (requiresAuth route) — the shell's sidebar/top bar replace the
+       site-nav this page used to carry (photo/name lockup, theme toggle, Home link); the resume
+       card below already shows the photo/name/headline. -->
+  <div class="page" style="max-width:820px">
+        <div class="page-header">
           <div>
-            <p style="font-family:'Poppins',sans-serif;font-weight:700;font-size:1.25rem;color:var(--text-strong);line-height:1.2">{{ name || 'Your Profile' }}</p>
-            <p style="font-size:.7rem;color:var(--brand);font-weight:600;font-family:'Poppins',sans-serif">{{ headline }}</p>
+            <h1 class="page-title">My profile</h1>
+            <p class="page-subtitle">Your professional profile as other clinics and the Healthcare Professionals Registry (HPR) see it. It belongs to you, not to any one clinic.</p>
+          </div>
+          <div v-if="!needsSetup" class="page-actions">
+            <button class="ui-btn" @click="editSection('registry')"><i class="fas fa-id-card"></i> HPR registration</button>
+            <button class="ui-btn ui-btn-primary" @click="editSection('personal')"><i class="fas fa-user-pen"></i> Edit profile</button>
           </div>
         </div>
-        <div style="display:flex;align-items:center;gap:.625rem">
-          <button class="icon-btn-round" @click="theme.toggle()"><i class="fas" :class="theme.isDark ? 'fa-sun' : 'fa-moon'"></i></button>
-          <RouterLink to="/" class="btn-outline text-sm"><i class="fas fa-arrow-left"></i> Home</RouterLink>
-        </div>
-      </div>
-    </nav>
 
-    <main style="flex:1;overflow-y:auto">
-      <div style="max-width:760px;margin:0 auto;padding:3rem 1.5rem 4rem">
-        <div v-if="needsSetup" style="text-align:center;padding:2rem 0">
-          <span class="eyebrow">Let's build your profile</span>
-          <h1 style="font-size:2rem;font-weight:800;color:var(--text-strong);margin-bottom:1rem">Nothing filled in yet.</h1>
-          <p style="font-size:1rem;color:var(--text);margin-bottom:2rem">
-            Your details go live here automatically as soon as they're saved — no separate publish step.
-          </p>
-          <button class="btn btn-brand" style="padding:.875rem 2rem" @click="editSection('personal')"><i class="fas fa-user-pen"></i> Build My Profile</button>
+        <div v-if="needsSetup" class="panel">
+          <div class="empty-state">
+            <div class="empty-state-icon"><i class="fas fa-id-badge"></i></div>
+            <div class="empty-state-title">Nothing filled in yet</div>
+            <p class="empty-state-text">Your details show up here as soon as they're saved. There's no separate publish step.</p>
+            <div class="empty-state-actions">
+              <button class="ui-btn ui-btn-primary" @click="editSection('personal')"><i class="fas fa-user-pen"></i> Build my profile</button>
+            </div>
+          </div>
         </div>
 
         <template v-else>
@@ -156,7 +149,7 @@ const workDesignation = computed(() => myRecord.value ? getAnswer(myRecord.value
                headline live above already (site-nav); this is the body: contact strip, then
                qualifications/registry as real resume sections, each with a quiet edit affordance
                rather than the content BEING "click to edit". -->
-          <div class="cf-card" style="border-radius:1.25rem;padding:2rem;box-shadow:0 20px 50px rgba(0,0,0,.08);margin-bottom:1.5rem;position:relative">
+          <div class="cf-card" style="border-radius:.625rem;padding:1.5rem;margin-bottom:1.5rem;position:relative">
             <button class="btn-outline btn-xs" title="Edit" style="position:absolute;top:1.25rem;right:1.25rem" @click="editSection('personal')"><i class="fas fa-pencil"></i></button>
             <div style="display:flex;align-items:center;gap:1.25rem;margin-bottom:1.5rem;flex-wrap:wrap">
               <div style="width:88px;height:88px;border-radius:50%;overflow:hidden;flex-shrink:0;background:var(--bg-alt);border:2px solid var(--brand);display:flex;align-items:center;justify-content:center">
@@ -176,7 +169,7 @@ const workDesignation = computed(() => myRecord.value ? getAnswer(myRecord.value
             </div>
           </div>
 
-          <div class="cf-card" style="border-radius:1.25rem;padding:1.75rem;box-shadow:0 20px 50px rgba(0,0,0,.08);margin-bottom:1.5rem;position:relative">
+          <div class="cf-card" style="border-radius:.625rem;padding:1.25rem 1.5rem;margin-bottom:1.5rem;position:relative">
             <button class="btn-outline btn-xs" title="Edit" style="position:absolute;top:1.25rem;right:1.25rem" @click="editSection('qualifications')"><i class="fas fa-pencil"></i></button>
             <h2 style="font-size:1.05rem;font-weight:700;color:var(--text-strong);margin-bottom:.875rem"><i class="fas fa-graduation-cap mr-2" style="color:var(--brand)"></i>Qualifications</h2>
             <div v-if="myQualifications.length" class="flex flex-col gap-2.5">
@@ -190,7 +183,7 @@ const workDesignation = computed(() => myRecord.value ? getAnswer(myRecord.value
             <p v-if="!myQualifications.length && !license" style="font-size:.85rem;color:var(--text)">No qualifications added yet.</p>
           </div>
 
-          <div class="cf-card" style="border-radius:1.25rem;padding:1.75rem;box-shadow:0 20px 50px rgba(0,0,0,.08);margin-bottom:1.5rem;position:relative">
+          <div class="cf-card" style="border-radius:.625rem;padding:1.25rem 1.5rem;margin-bottom:1.5rem;position:relative">
             <button class="btn-outline btn-xs" title="Edit" style="position:absolute;top:1.25rem;right:1.25rem" @click="editSection('work')"><i class="fas fa-pencil"></i></button>
             <h2 style="font-size:1.05rem;font-weight:700;color:var(--text-strong);margin-bottom:.875rem"><i class="fas fa-briefcase mr-2" style="color:var(--brand)"></i>Work Experience</h2>
             <p v-if="workFacilityName" style="font-size:.9rem;color:var(--text)">
@@ -202,7 +195,7 @@ const workDesignation = computed(() => myRecord.value ? getAnswer(myRecord.value
             <p v-if="!workFacilityName && !workStatus" style="font-size:.85rem;color:var(--text)">No work experience added yet.</p>
           </div>
 
-          <div class="cf-card" style="border-radius:1.25rem;padding:1.75rem;box-shadow:0 20px 50px rgba(0,0,0,.08);position:relative">
+          <div class="cf-card" style="border-radius:.625rem;padding:1.25rem 1.5rem;position:relative">
             <button class="btn-outline btn-xs" title="Edit" style="position:absolute;top:1.25rem;right:1.25rem" @click="editSection('registry')"><i class="fas fa-pencil"></i></button>
             <h2 style="font-size:1.05rem;font-weight:700;color:var(--text-strong);margin-bottom:.875rem"><i class="fas fa-id-card mr-2" style="color:var(--brand)"></i>ABDM Registration (HPR)</h2>
             <p v-if="hprId" style="font-size:.95rem;font-weight:700;color:var(--brand)"><i class="fas fa-circle-check"></i> {{ hprId }}</p>
@@ -214,14 +207,14 @@ const workDesignation = computed(() => myRecord.value ? getAnswer(myRecord.value
                practitioner's own FHIR profile. -->
           <div style="margin-top:2.5rem;padding-top:2rem;border-top:1px solid var(--border)">
             <span class="eyebrow">Linked Elsewhere</span>
-            <div class="cf-card" style="border-radius:1.25rem;padding:1.75rem;box-shadow:0 20px 50px rgba(0,0,0,.08);margin:1rem 0 1.5rem;position:relative">
+            <div class="cf-card" style="border-radius:.625rem;padding:1.25rem 1.5rem;margin:1rem 0 1.5rem;position:relative">
               <button class="btn-outline btn-xs" title="Manage documents" style="position:absolute;top:1.25rem;right:1.25rem" @click="goToExternalSection('documents-section')"><i class="fas fa-pencil"></i></button>
               <h2 style="font-size:1.05rem;font-weight:700;color:var(--text-strong);margin-bottom:.5rem"><i class="fas fa-folder-open mr-2" style="color:var(--brand)"></i>Professional Documents</h2>
               <p v-if="myDocCount" style="font-size:.85rem;color:var(--text)">{{ myDocCount }} document{{ myDocCount === 1 ? '' : 's' }} on file</p>
               <p v-else style="font-size:.85rem;color:var(--text)">No documents uploaded yet — degree certificates, council registration, ID and more.</p>
             </div>
 
-            <div class="cf-card" style="border-radius:1.25rem;padding:1.75rem;box-shadow:0 20px 50px rgba(0,0,0,.08);position:relative">
+            <div class="cf-card" style="border-radius:.625rem;padding:1.25rem 1.5rem;position:relative">
               <button class="btn-outline btn-xs" title="Associate with a clinic" style="position:absolute;top:1.25rem;right:1.25rem" @click="goToExternalSection('associate-section')"><i class="fas fa-link"></i></button>
               <h2 style="font-size:1.05rem;font-weight:700;color:var(--text-strong);margin-bottom:.5rem"><i class="fas fa-hospital mr-2" style="color:var(--brand)"></i>Clinic Association</h2>
               <div v-if="myAffiliations.length" class="flex flex-col gap-2">
@@ -238,8 +231,6 @@ const workDesignation = computed(() => myRecord.value ? getAnswer(myRecord.value
             </div>
           </div>
         </template>
-      </div>
-    </main>
   </div>
 
   <Cubo category="practitioner" page-context="Your professional profile — personal details, ABDM registration and clinic association." />

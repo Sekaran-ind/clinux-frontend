@@ -7,8 +7,16 @@ import PractitionerHome from '../pages/PractitionerHome.vue';
 import PatientHome from '../pages/PatientHome.vue';
 import Designer from '../pages/Designer.vue';
 import Dashboard from '../pages/Dashboard.vue';
+import Registries from '../pages/Registries.vue';
+import Operations from '../pages/Operations.vue';
+import Legal from '../pages/Legal.vue';
+import Consent from '../pages/Consent.vue';
+import Consents from '../pages/Consents.vue';
+import Records from '../pages/Records.vue';
+import { useConsentStore, consentRedirect } from '../stores/consent.js';
 import Cubo from '../components/Cubo.vue';
 import { useAuthStore } from '../stores/auth.js';
+import { useClinicViewStore } from '../stores/clinicView.js';
 import { resolveGuard } from './guardLogic.js';
 import { ensureDeferredCollectionsPreloaded } from '../data/collectionPreload.js';
 
@@ -79,6 +87,22 @@ const routes = [
   // preview) — given its own real destination once publishIfReady() made the forced publish
   // step it used to gate redundant (explicit instruction). Linked from ClinicHome's user menu.
   { path: '/dashboard', name: 'dashboard', component: Dashboard, meta: { requiresAuth: true } },
+  // ABDM registry journeys (HPR, HFR, Patient ABHA) on clinux-cubo's LangGraph journey runtime and
+  // the same clinuxflow-abdm-gateway APIs Cübo/cubo-diary use — see src/journeys/index.js.
+  { path: '/registries/:journey?', name: 'registries', component: Registries, meta: { requiresAuth: true } },
+  // Activity log / ABDM transactions / Access & roles (Swastik-style Operations) — clinuxflow-api's
+  // routes/operations.js, role-scoped server-side.
+  // Affiliations, terms and privacy (src/legal/legal.js, from clinux-cubo/cubo-diary) — public, and
+  // never behind the consent gate. hideAppNav: it brings its own header when signed out.
+  { path: '/legal', name: 'legal', component: Legal, meta: { hideAppNav: true } },
+  // The consent gate (clinux-cubo's): shown after sign-in until both consents are given for the
+  // current terms version. Outside the workspace shell (App.vue) — the workspace is closed until then.
+  { path: '/consent', name: 'consent', component: Consent, meta: { requiresAuth: true, hideAppNav: true } },
+  { path: '/account', redirect: '/account/consents' },
+  { path: '/account/consents', name: 'account-consents', component: Consents, meta: { requiresAuth: true } },
+  { path: '/account/records', name: 'account-records', component: Records, meta: { requiresAuth: true } },
+  { path: '/operations', redirect: '/operations/activity' },
+  { path: '/operations/:section(activity|abdm-transactions|access)', name: 'operations', component: Operations, meta: { requiresAuth: true } },
   // SPEC-22 (docs/SPEC-22-PERSISTED-WORKFLOW-SYSTEM-FLOWS-CUBO-STATE-MIRROR-DRAWER-CAPTURE.md)
   // §5.1's 3-pane Cübo shell — user's explicit correction: "ai-engine is the cubo in 3 pane
   // layout... open cubo as a separate page route". No wrapper page needed — Cubo.vue mounts
@@ -100,12 +124,26 @@ export const router = createRouter({
   routes,
 });
 
-router.beforeEach(async (to) => {
+router.beforeEach(async (to, from) => {
+  // See stores/clinicView.js — entering ClinicHome from elsewhere opens its public view unless
+  // the caller (AppShell's sidebar, Dashboard) asked for a specific ops view.
+  if (to.name === 'clinic-home' && from.name !== 'clinic-home') useClinicViewStore().applyArrival();
   // main.js's own header comment — Index.vue is the only route that needs neither
   // data/collectionPreload.js's deferred collections nor the guarantee they're already hydrated
   // before its component is created; every other route gets that guarantee here instead of
   // main.js blocking first paint on it for EVERY route, Index included.
   if (to.name !== 'index') await ensureDeferredCollectionsPreloaded();
   const auth = useAuthStore();
-  return resolveGuard(to.meta, auth.currentUser);
+  const guard = resolveGuard(to.meta, auth.currentUser);
+  if (guard !== true) return guard;
+  // Consent gate (stores/consent.js): a signed-in account goes to /consent until it has agreed to
+  // the current terms; the landing page, /legal and /consent itself are exempt.
+  if (auth.currentUser) {
+    const consent = useConsentStore();
+    if (consent.accountId !== auth.currentUser.id) await consent.load(auth.currentUser.id);
+    if (consentRedirect(to.name, { signedIn: true, allGranted: consent.allGranted })) {
+      return { name: 'consent', query: { next: to.fullPath } };
+    }
+  }
+  return true;
 });

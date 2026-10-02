@@ -24,7 +24,6 @@ import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import Cubo from '../components/Cubo.vue';
 import PatientBasicsHost from '../components/control/PatientBasicsHost.vue';
-import { useThemeStore } from '../stores/theme.js';
 import {
   formData, listDataRecords, recordSummary, activeQuestionnaire, activeVersionNumber, saveDataRecord,
 } from '../data/useSystemForms.js';
@@ -34,7 +33,6 @@ const PATIENT_FORM_ID = 'system-patient-profile-v1';
 
 const route = useRoute();
 const router = useRouter();
-const theme = useThemeStore();
 
 // Same "page-local dataVersion, bumped on every collection write" convention FrontDesk.vue's own
 // patient step already uses — formData is a local-first TanStack DB collection, not itself a Vue
@@ -128,35 +126,20 @@ async function savePatient() {
 </script>
 
 <template>
-  <div style="min-height:100vh;display:flex;flex-direction:column">
-    <nav class="site-nav">
-      <div class="nav-inner">
-        <div class="nav-logo">
-          <div style="padding:.4rem .65rem;border-radius:.5rem;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:1.5rem;font-family:'JetBrains Mono',monospace;box-shadow:0 10px 15px -3px rgba(0,0,0,.15);background:#00D4B2;color:#fff">P</div>
-          <div>
-            <p style="font-family:'Poppins',sans-serif;font-weight:700;font-size:1.25rem;color:var(--text-strong);line-height:1.2">Patients</p>
-            <p style="font-size:.7rem;color:var(--brand);font-weight:600;font-family:'Poppins',sans-serif">Directory &amp; records</p>
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;gap:.625rem">
-          <button v-if="onDataPage" class="btn-outline text-sm" @click="backToDirectory()"><i class="fas fa-arrow-left"></i> Directory</button>
-          <button class="icon-btn-round" @click="theme.toggle()"><i class="fas" :class="theme.isDark ? 'fa-sun' : 'fa-moon'"></i></button>
-          <RouterLink to="/" class="btn-outline text-sm"><i class="fas fa-arrow-left"></i> Home</RouterLink>
-        </div>
-      </div>
-    </nav>
-
-    <main style="flex:1;overflow-y:auto">
-      <div style="max-width:900px;margin:0 auto;padding:2.5rem 1.5rem 4rem">
-
+  <!-- Renders inside AppShell (requiresAuth route) — the shell's sidebar/top bar replace the
+       site-nav this page used to carry (theme toggle, Home link), so the page starts at its own
+       header. -->
+  <div class="page">
         <!-- ── Design Page: directory ── -->
         <template v-if="!onDataPage">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:1.5rem;flex-wrap:wrap">
+          <div class="page-header">
             <div>
-              <span class="eyebrow">Design Page</span>
-              <h1 style="font-size:1.75rem;font-weight:800;color:var(--text-strong)">Find or register a patient</h1>
+              <h1 class="page-title">Patients</h1>
+              <p class="page-subtitle">Find a patient on this device by name, mobile or ABHA, or register a new one. Selecting a record checks it against the ClinuxFlowPatient FHIR profile.</p>
             </div>
-            <button class="btn btn-brand" @click="editSection('new')"><i class="fas fa-user-plus"></i> New Patient</button>
+            <div class="page-actions">
+              <button class="ui-btn ui-btn-primary" @click="editSection('new')"><i class="fas fa-user-plus"></i> Register patient</button>
+            </div>
           </div>
 
           <input class="cf-input" v-model="search" placeholder="Search by name, mobile or ABHA number/address..." style="margin-bottom:1.25rem" />
@@ -170,13 +153,26 @@ async function savePatient() {
             >
               <div style="display:flex;align-items:center;justify-content:space-between">
                 <span style="font-weight:600;color:var(--text-strong)">{{ recordSummary(rec) }}</span>
-                <button class="btn-outline btn-xs" @click.stop="editSection(rec.id)"><i class="fas fa-pencil"></i> Edit</button>
+                <div style="display:flex;gap:.4rem">
+                  <!-- The workspace's Patient ABHA journey (src/journeys/patientAbhaJourney.js), for this patient. -->
+                  <RouterLink :to="{ path: '/registries/abha', query: { patient: rec.id } }" class="ui-btn" style="padding:.25rem .6rem;font-size:.72rem" @click.stop><i class="fas fa-id-card"></i> ABHA</RouterLink>
+                  <button class="ui-btn" style="padding:.25rem .6rem;font-size:.72rem" @click.stop="editSection(rec.id)"><i class="fas fa-pencil"></i> Edit</button>
+                </div>
               </div>
             </div>
-            <p v-if="localMatches.length === 0" style="font-size:.85rem;color:var(--text)">No matching patients on this device yet.</p>
+            <div v-if="localMatches.length === 0" class="panel">
+              <div class="empty-state">
+                <div class="empty-state-icon"><i class="fas fa-user-group"></i></div>
+                <div class="empty-state-title">{{ search ? 'No matching patients' : 'No patients on this device yet' }}</div>
+                <p class="empty-state-text">{{ search ? 'Try a shorter name, the mobile number, or the ABHA address.' : 'Patients registered here, or at Front Desk, show up in this list.' }}</p>
+                <div v-if="!search" class="empty-state-actions">
+                  <button class="ui-btn ui-btn-primary" @click="editSection('new')"><i class="fas fa-user-plus"></i> Register patient</button>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div v-if="selectedRecord" class="cf-card" style="border-radius:1.25rem;padding:1.5rem;margin-bottom:1.5rem">
+          <div v-if="selectedRecord" class="cf-card" style="border-radius:.625rem;padding:1.25rem;margin-bottom:1.5rem">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
               <h2 style="font-size:1rem;font-weight:700;color:var(--text-strong)">FHIR Conformance — {{ recordSummary(selectedRecord) }}</h2>
               <button class="btn-outline btn-xs" :disabled="conformanceLoading" @click="checkSelectedConformance()">
@@ -203,7 +199,7 @@ async function savePatient() {
             </template>
           </div>
 
-          <div v-if="cloudMatches.length" class="cf-card" style="border-radius:1.25rem;padding:1.5rem">
+          <div v-if="cloudMatches.length" class="cf-card" style="border-radius:.625rem;padding:1.25rem">
             <h2 style="font-size:1rem;font-weight:700;color:var(--text-strong);margin-bottom:.6rem">
               <i class="fas fa-cloud"></i> Also found on other devices
             </h2>
@@ -216,11 +212,14 @@ async function savePatient() {
 
         <!-- ── Data Page: capture/edit ── -->
         <template v-else>
-          <span class="eyebrow">Data Page</span>
-          <h1 style="font-size:1.75rem;font-weight:800;color:var(--text-strong);margin-bottom:1.25rem">
-            {{ activeRecordId === 'new' ? 'Register a new patient' : 'Edit patient' }}
-          </h1>
-          <div class="cf-card" style="border-radius:1.25rem;padding:1.5rem;margin-bottom:1.25rem">
+          <nav class="page-crumbs"><a href="#" @click.prevent="backToDirectory()">Patients</a><i class="fas fa-chevron-right" style="font-size:.55rem"></i><span>{{ activeRecordId === 'new' ? 'Register' : 'Edit' }}</span></nav>
+          <div class="page-header">
+            <h1 class="page-title">{{ activeRecordId === 'new' ? 'Register a new patient' : 'Edit patient' }}</h1>
+            <div class="page-actions">
+              <button class="ui-btn" @click="backToDirectory()"><i class="fas fa-arrow-left"></i> Back</button>
+            </div>
+          </div>
+          <div class="cf-card" style="border-radius:.625rem;padding:1.25rem;margin-bottom:1.25rem">
             <PatientBasicsHost ref="formHost" :record="editingRecord" />
           </div>
           <div style="display:flex;gap:.75rem">
@@ -231,8 +230,6 @@ async function savePatient() {
           </div>
         </template>
 
-      </div>
-    </main>
   </div>
 
   <Cubo category="patient-directory" page-context="Patient directory — find, register and check ABHA/conformance status for a patient." />

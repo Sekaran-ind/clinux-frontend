@@ -13,7 +13,6 @@
 import { reactive, ref, watch } from 'vue';
 import { getAnswer } from '../../data/useSystemForms.js';
 import AdaptiveSectionNav from '../AdaptiveSectionNav.vue';
-import PatientAbhaPanel from './PatientAbhaPanel.vue';
 
 const props = defineProps({
   record: { type: Object, default: null }, // { data: { item: [{linkId:'section_patient', item:[...]}] } } | null
@@ -53,17 +52,6 @@ function rebuild() {
 }
 watch(() => props.record, rebuild, { immediate: true });
 
-function onAbhaLinked(profile) {
-  if (profile.firstName) form.patient_first_name = profile.firstName;
-  if (profile.lastName) form.patient_last_name = profile.lastName;
-  if (!form.patient_first_name && profile.name) form.patient_first_name = profile.name.split(' ')[0];
-  if (!form.patient_last_name && profile.name) form.patient_last_name = profile.name.split(' ').slice(1).join(' ');
-  if (profile.gender) form.patient_gender = String(profile.gender).toLowerCase().startsWith('m') ? 'male' : String(profile.gender).toLowerCase().startsWith('f') ? 'female' : profile.gender;
-  if (profile.dob) form.patient_birthdate = profile.dob;
-  if (profile.mobile) form.patient_mobile = profile.mobile;
-  if (profile.abhaNumber) form.patient_abha_number = profile.abhaNumber;
-  if (profile.abhaAddress) form.patient_abha_address = profile.abhaAddress;
-}
 
 function errorFor(linkId) {
   const field = FIELD_BY_ID[linkId];
@@ -106,7 +94,13 @@ defineExpose({ extract });
       <AdaptiveSectionNav :sections="SECTIONS" mode="tabs" storage-key="patient-basics" v-model:active-id="activeSectionId">
         <template v-for="section in SECTIONS" :key="section.id" #[section.id]>
           <template v-if="section.id === 'abha'">
-            <PatientAbhaPanel @linked="onAbhaLinked" />
+            <!-- The Patient ABHA journey (src/journeys/specs/abha.journey.json) replaces PatientAbhaPanel.vue:
+                 find by mobile, verify an ABHA number, or create one with Aadhaar — and it records the
+                 ABHA on this patient itself. -->
+            <div class="cf-card rounded-2xl p-3" style="display:flex;align-items:center;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
+              <span class="text-sm" style="color:var(--cf-text)">{{ props.record?.id ? 'Find, verify or create this patient’s ABHA with ABDM.' : 'Save the patient first — or create the patient straight from their ABHA.' }}</span>
+              <RouterLink :to="props.record?.id ? { path: '/registries/abha', query: { patient: props.record.id } } : '/registries/abha'" class="ui-btn"><i class="fas fa-id-card"></i> Set up ABHA</RouterLink>
+            </div>
             <div class="cf-form-field-grid mt-3">
               <div v-for="linkId in section.fields" :key="linkId">
                 <label class="cf-label">{{ FIELD_BY_ID[linkId].label }}</label>

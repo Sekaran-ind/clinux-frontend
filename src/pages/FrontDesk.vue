@@ -416,8 +416,8 @@ function onSessionImported(importedEncounterId) {
       <div v-if="screen === 'sessions'">
         <ActiveSessionsLanding @navigate-stage="goToStage">
           <template #actions>
-            <button class="btn-outline whitespace-nowrap text-sm" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Import Session</button>
-            <button class="btn-teal whitespace-nowrap" @click="startNewSession()"><i class="fas fa-plus"></i> New Check-In</button>
+            <button class="ui-btn" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Import session</button>
+            <button class="ui-btn ui-btn-primary" @click="startNewSession()"><i class="fas fa-plus"></i> New check-in</button>
           </template>
         </ActiveSessionsLanding>
       </div>

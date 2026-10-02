@@ -65,9 +65,58 @@ Fonts/lforms-static — a stray CDN `<script src>` creeping back in is a regress
   the panel/menu element; if it doesn't, wrap both the trigger and the panel in one containing
   element and check against that instead (avoids the "same click that opens it also closes it"
   race).
-- Pages with their own full nav (`Index`, `ClinicHome`, `AiEngine`) set `meta: { hideAppNav: true
-  }` in `src/router/index.js`; every other page uses `App.vue`'s shared nav via the `pageBadge`
-  map keyed by route name.
+- **Signed-in app shell** (`src/components/shell/AppShell.vue`, Swastik ABDM Connector-style
+  console): whenever someone is signed in, every page except `Index` renders inside a grouped
+  left sidebar + 56px top bar (connection mode, Team Chat, theme menu, profile menu) —
+  ClinicHome's public clinic page included (it shows in the content area, its own site-nav/footer
+  hidden); signed-out visitors still get that page bare. Sign-in and registration land on
+  `/dashboard`. Registration asks only email + password (clinuxflow-api defaults the role). The
+  sidebar's items come from `shell/appNav.js` (role-aware, unit-tested).
+  `App.vue` always mounts one `AppShell` and only toggles its `chrome` prop, so `<RouterView>`
+  never remounts when chrome flips. ClinicHome's view (`public` / `front-desk` /
+  `consultation-desk` / `checkout`) lives in `stores/clinicView.js`; arriving at `/clinic-home`
+  from another route resets it to `public` unless the caller used `arriveAt(view)` first.
+  Pages inside the shell use the shared `.page` / `.page-header` / `.panel` / `.stat-card` /
+  `.empty-state` / `.ui-btn` classes from `style.css` instead of hand-rolled hero headers.
+- **Journeys are JSON, run on XState** (`src/journeys/engine.js`): each journey is
+  `specs/<id>.journey.json` (steps: ask / auto / final, `next` with small safe conditions like
+  `data.mode == 'register'`, optional `ledger: { label }`) plus named handlers in
+  `<id>Journey.js` (`actions` = gateway calls, `prompts` = prompt builders). `checkJourney()`
+  validates JSON against handlers; `ledgerOf()` builds the stepper from the JSON. XState is the
+  workspace's deterministic layer (and is meant for cubo-diary / clinux-cubo); LangGraph is gone
+  from this app. HPR/HFR handlers came from clinux-cubo; Patient ABHA uses the gateway's staff
+  `/abha/*` routes and writes onto the patient record (`patientRecord.js`). No role filtering.
+- **Forms render from the Questionnaire** (`src/forms/QuestionnaireForm.vue` + `questionnaireForm.js`):
+  fields, types, choices, required, enableWhen, repeating groups, cross-group `refTo` choices, and
+  layout (`ui-section` / `ui-section-ref` / `ui-input` extensions, SDC itemControl) all come from the
+  compiled Questionnaire (YAML in clinuxflow-api: `sections:`, `section:`, `widget:`). Don't write a
+  new Host component — add the layout to the YAML. Remaining Hosts (Patient basics, Provider details)
+  still need master-data lookups / uploads in the renderer before they can move.
+- **Provenance is local-first** (`src/provenance/`): every saved record (formData's
+  `setRecordSavedListener`) and registry outcome gets a FHIR Provenance (ClinuxFlowProvenance:
+  who = HPR ID or account, onBehalfOf = facility), kept in IndexedDB; published to
+  `POST /api/provenance` only on the paid plan — the free tier adds no server cost.
+- **Operations** (`pages/Operations.vue`, `/operations/activity|abdm-transactions|access`):
+  Swastik-style Activity log, ABDM transactions and Access & roles, read from clinuxflow-api's
+  `routes/operations.js` (role-scoped server-side: `activity:clinic` sees the whole clinic, others
+  only their own rows). The registry journeys feed the activity log through
+  `data/operations.js`'s `journalToAudit()` — the ported clinux-cubo journeys stay unedited. ABDM
+  transactions are written by clinuxflow-abdm-gateway into the shared `clinuxflow` D1; locally,
+  run the gateway with `npm run dev:shared-db` so it writes into clinuxflow-api's local database.
+- **Legal, consents, records** (from clinux-cubo / cubo-diary): `src/consent/terms.js` and
+  `consentResource.js` are copied UNCHANGED from clinux-cubo — edit there first, then re-copy.
+  `src/legal/legal.js` (affiliations/terms/privacy, reusing the consent text) feeds
+  `components/SiteFooter.vue` (full on Index/legal/consent, compact in AppShell) and the public
+  `/legal` page. The router guard sends a signed-in account to `/consent` until both consents are
+  given for the current `TERMS_VERSION` (`stores/consent.js`, FHIR Consents validated by
+  clinuxflow-fhir-api, stored per account in IndexedDB); withdrawing one closes the workspace.
+  Account → Consents / Records (`/account/*`) show them, plus the journeys' FHIR resources.
+- **Themes**: `stores/theme.js` holds `mode` (light/dark/system) and `accent` (teal, indigo,
+  ocean, saffron → `<html data-theme>`). Use `var(--color-primary)` for accent fills and
+  `var(--color-on-primary)` for text on them (not `--color-secondary`, which is unreadable on the
+  darker accents); `--color-primary-text` for accent-colored text.
+- Signed-out pages that bring their own full nav (`Index`, `ClinicHome`) set `meta: { hideAppNav:
+  true }` in `src/router/index.js`; any other signed-out page gets `App.vue`'s simple nav.
 - A few pages (`ClinicHome`, `AiEngine`) define their own self-contained, unprefixed CSS variable
   set (`--bg`/`--text`/`--border`/etc., distinct from the shared `--cf-*` tokens the rest of the
   app uses). Scoped `<style>` can't target `<html>` (it's not part of any component's own

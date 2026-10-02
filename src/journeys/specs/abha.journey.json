@@ -1,0 +1,34 @@
+{
+  "$comment": "Patient ABHA journey (ABDM M1): find, link or create a patient's ABHA and record it on that patient, through clinuxflow-abdm-gateway's staff /abha routes. Steps and transitions are here; gateway calls and prompts are the named handlers in patientAbhaJourney.js. Run by engine.js on XState.",
+  "id": "abha",
+  "title": "Patient ABHA",
+  "summary": "Find, link or create a patient’s Ayushman Bharat Health Account",
+  "icon": "fa-id-card",
+  "start": "begin",
+  "steps": {
+    "begin":       { "type": "auto", "run": "loadPatients", "next": [{ "if": "data.patientName", "to": "mode" }, { "to": "pickPatient" }] },
+    "pickPatient": { "type": "ask", "prompt": "pickPatient", "run": "choosePatient", "next": "mode", "ledger": { "label": "Patient" } },
+    "mode":        { "type": "ask", "prompt": "mode", "run": "chooseMode", "next": [
+                       { "if": "data.mode == 'find'", "to": "findMobile" },
+                       { "if": "data.mode == 'number'", "to": "numberLogin" },
+                       { "to": "aadhaar" } ] },
+
+    "findMobile":  { "type": "ask", "prompt": "findMobile", "run": "searchByMobile", "next": "pickMatch", "ledger": { "label": "Search by mobile" } },
+    "pickMatch":   { "type": "ask", "prompt": "pickMatch", "run": "requestMatchOtp", "next": "findOtp" },
+    "findOtp":     { "type": "ask", "prompt": "findOtp", "run": "verifyMatchOtp", "next": [{ "if": "data.resent", "to": "findOtp" }, { "to": "check" }], "ledger": { "label": "Verify OTP" } },
+
+    "numberLogin": { "type": "ask", "prompt": "numberLogin", "run": "requestNumberOtp", "next": "numberOtp", "ledger": { "label": "ABHA number" } },
+    "numberOtp":   { "type": "ask", "prompt": "numberOtp", "run": "verifyNumberOtp", "next": [{ "if": "data.resent", "to": "numberOtp" }, { "to": "profile" }], "ledger": { "label": "Verify OTP" } },
+    "profile":     { "type": "auto", "run": "loadProfile", "next": "check" },
+
+    "aadhaar":     { "type": "ask", "prompt": "aadhaar", "run": "sendAadhaarOtp", "next": "aadhaarOtp", "ledger": { "label": "Aadhaar consent" } },
+    "aadhaarOtp":  { "type": "ask", "prompt": "aadhaarOtp", "run": "createWithAadhaar", "next": [{ "if": "data.needsMobileOtp", "to": "mobileOtp" }, { "to": "suggest" }], "ledger": { "label": "Aadhaar OTP" } },
+    "mobileOtp":   { "type": "ask", "prompt": "mobileOtp", "run": "verifyEnrolMobile", "next": [{ "if": "data.resent", "to": "mobileOtp" }, { "to": "suggest" }], "ledger": { "label": "Verify mobile" } },
+    "suggest":     { "type": "auto", "run": "suggestAddresses", "next": "address" },
+    "address":     { "type": "ask", "prompt": "address", "run": "chooseAddress", "next": "check", "ledger": { "label": "ABHA address" } },
+
+    "check":       { "type": "auto", "run": "checkName", "next": "confirm" },
+    "confirm":     { "type": "ask", "prompt": "confirm", "run": "recordOnPatient", "next": "done", "ledger": { "label": "Record on patient" } },
+    "done":        { "type": "final", "run": "result" }
+  }
+}

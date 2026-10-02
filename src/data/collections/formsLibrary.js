@@ -12,6 +12,15 @@ export const formsLibrary = createLocalCollection('cf_forms_library_v2', {
 // Fetches clinuxflow-api's pre-compiled system-forms catalog and inserts any formId not
 // already present — same "seed once, never overwrite a locally-edited copy" behavior as
 // system-forms.js's seedSystemForms(). Returns true if anything was added.
+// Has the server's copy of a system form been compiled since the stored one? Compared on the
+// latest version's savedAt (stamped by clinuxflow-api's build-system-forms.js); a form the user
+// made themselves (not isSystem) is never touched.
+export function isNewerSystemForm(local, server) {
+  if (!local?.isSystem || !server?.isSystem) return false;
+  const latest = (e) => (e.versions || []).reduce((max, v) => (v.savedAt && v.savedAt > max ? v.savedAt : max), '');
+  return latest(server) > latest(local);
+}
+
 export async function seedSystemForms(apiBase) {
   const res = await apiFetch(`${apiBase}/api/workflow/system-forms`).then((r) => r.json());
   if (!res.success) {
@@ -23,6 +32,13 @@ export async function seedSystemForms(apiBase) {
   Object.entries(res.systemForms).forEach(([formId, entry]) => {
     if (!formsLibrary.has(formId)) {
       formsLibrary.insert({ formId, ...entry });
+      changed = true;
+      return;
+    }
+    // A system form the server has since recompiled (new layout hints, IG conformance fixes) is
+    // refreshed. Before this, a browser kept whatever copy it first seeded, forever.
+    if (isNewerSystemForm(formsLibrary.get(formId), entry)) {
+      formsLibrary.update(formId, (draft) => Object.assign(draft, entry));
       changed = true;
     }
   });
