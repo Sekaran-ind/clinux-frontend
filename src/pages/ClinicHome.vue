@@ -12,6 +12,8 @@ import { useAuthStore } from '../stores/auth.js';
 import { useEntryWorkflowStore } from '../stores/entryWorkflow.js';
 import { useClinicalStore } from '../stores/clinical.js';
 import { useThemeStore } from '../stores/theme.js';
+import { useClinicViewStore } from '../stores/clinicView.js';
+import { storeToRefs } from 'pinia';
 import { publicAppointments } from '../data/collections/publicAppointments.js';
 import FrontDesk from './FrontDesk.vue';
 import ConsultationDesk from './ConsultationDesk.vue';
@@ -53,7 +55,16 @@ const router = useRouter();
 // unmounts on switch just like today's actual page navigation did, confirmed with the user, so
 // there's never more than one of them (and one Cubo instance) alive at a time, avoiding any risk
 // from LForms' documented "one live form instance per page" assumption.
-const clinicView = ref('public'); // 'public' | 'front-desk' | 'consultation-desk' | 'checkout'
+// UPDATE (Swastik-style app shell) — the view now lives in stores/clinicView.js so AppShell's
+// sidebar can switch it too; still in-memory only, still no URL deep-linking. App.vue shows the
+// shell's sidebar/top bar for the three ops views and leaves the public view bare.
+const { view: clinicView } = storeToRefs(useClinicViewStore()); // 'public' | 'front-desk' | 'consultation-desk' | 'checkout'
+
+// Signed in = this page renders inside AppShell (App.vue), public view included: the workspace's
+// top bar replaces this page's own site-nav (theme, connection mode, Team Chat, profile menu), the
+// marketing footer goes, and the hero stops claiming the full viewport. Signed-out visitors get
+// the page exactly as before.
+const inWorkspace = computed(() => !!auth.currentUser);
 
 // Front Desk/Consultation Desk/Checkout kept requiresAuth:true on their own routes before this
 // merge — preserved as an explicit check now that there's no route boundary to enforce it
@@ -266,9 +277,9 @@ const shareProfileModalOpen = ref(false);
 // account (see clinux-mobile-sync-multiuser-video-roadmap memory note). sharedModeLive reflects
 // the ACTUAL current state (whether the shared server was reachable when this page loaded) —
 // passed down to ConnectionStatusControl.vue, which owns the preference/switch/sync-now logic
-// itself now (used identically here and in the ops-nav shared across Front Desk/Consultation
-// Desk/Checkout, see that nav's own comment for why this needed to move out of a profile-menu
-// nobody saw while actually using those three pages).
+// itself now (used identically here, on the public page's nav, and in AppShell's top bar, which
+// is what Front Desk/Consultation Desk/Checkout show it in — it had to move out of a
+// profile-menu nobody saw while actually using those three pages).
 const sharedModeLive = ref(false);
 ensureSharedModeDetected().then((active) => { sharedModeLive.value = active; });
 
@@ -350,7 +361,7 @@ function sendMessage() {
 <template>
   <div class="cf-toast" v-show="toast.show"><i class="fas fa-check-circle" style="color:var(--brand)"></i><span>{{ toast.msg }}</span></div>
 
-  <TeamChat :show="teamChatOpen" @close="teamChatOpen = false" />
+  <TeamChat v-if="clinicView === 'public' && !inWorkspace" :show="teamChatOpen" @close="teamChatOpen = false" />
   <SessionShareModal :open="shareProfileModalOpen" :record="onboarding.getProviderRecord()" :branding="onboarding.branding" kind="provider-profile" @close="shareProfileModalOpen = false" />
 
   <div class="modal-bg" v-show="apptModal" @click.self="apptModal = false">
@@ -392,8 +403,22 @@ function sendMessage() {
        avoiding) while a clinic-operations view is active below. The old top active-sessions-
        strip is gone — redundant with the richer "Live Now" section below the hero, which covers
        the same admin-only session list plus upcoming appointments. -->
-  <div v-show="clinicView === 'public'">
-  <nav class="site-nav">
+  <div v-show="clinicView === 'public'" :class="{ 'clinic-embedded': inWorkspace }" :style="inWorkspace && clinic.brandColor ? { '--brand': clinic.brandColor } : null">
+  <!-- In the workspace: a slim header in the workspace's own style instead of the site-nav. -->
+  <div v-if="inWorkspace" class="page page-wide" style="padding-bottom:0">
+    <div class="page-header" style="margin-bottom:0">
+      <div>
+        <h1 class="page-title">Clinic page</h1>
+        <p class="page-subtitle">What patients see when they open your clinic’s page. Edit any section with its pencil, or the whole profile from Facility profile.</p>
+      </div>
+      <div class="page-actions">
+        <RouterLink to="/onboarding" class="ui-btn"><i class="fas fa-pen"></i> Edit profile</RouterLink>
+        <button v-show="onboarding.providerRecordId" class="ui-btn" @click="shareProfileModalOpen = true"><i class="fas fa-share-nodes"></i> Share</button>
+        <button v-show="clinic.apptConfig?.onlineBooking !== false && !needsSetup" class="ui-btn ui-btn-primary" @click="apptModal = true"><i class="fas fa-calendar-plus"></i> Book appointment</button>
+      </div>
+    </div>
+  </div>
+  <nav v-else class="site-nav">
     <div class="nav-inner">
       <!-- Icon/text size, weight and treatment matched to Index.vue's own logo lockup
            (explicit instruction) — solid brand-color badge with shadow, font-mono, text-2xl-
@@ -458,6 +483,10 @@ function sendMessage() {
               <RouterLink to="/onboarding" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-pen" style="color:var(--brand)"></i>Edit Profile</RouterLink>
               <RouterLink to="/dashboard" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-chart-simple" style="color:var(--brand)"></i>Dashboard</RouterLink>
             </template>
+            <!-- The way back into the signed-in workspace (AppShell) from this public page — for
+                 every signed-in user, not just isAdmin: an account with nothing published yet
+                 isn't isAdmin (no clinic name to match), and would otherwise have no route back. -->
+            <RouterLink :to="showsHfrJourney ? '/dashboard' : '/practitioner-home'" class="user-menu-item" @click="userMenuOpen = false"><i class="fas fa-table-columns" style="color:var(--brand)"></i>Open Workspace</RouterLink>
             <button class="user-menu-item" style="color:#EF4444" @click="signOut(); userMenuOpen = false"><i class="fas fa-sign-out-alt"></i>Sign Out</button>
           </div>
         </div>
@@ -485,8 +514,10 @@ function sendMessage() {
           facility details are saved.
         </p>
         <div style="display:flex;flex-wrap:wrap;gap:.875rem;justify-content:center">
-          <RouterLink v-if="showsHfrJourney" to="/onboarding" class="btn btn-brand" style="font-size:1rem;padding:.875rem 2rem"><i class="fas fa-hospital"></i>Register Your Facility (HFR)</RouterLink>
-          <RouterLink v-if="showsHprJourney" to="/practitioner-home" class="btn btn-outline" style="font-size:.95rem;padding:.875rem 1.75rem"><i class="fas fa-user-md"></i>Register Yourself (HPR)</RouterLink>
+          <!-- In the workspace these open the registry journeys (/registries, no role filtering);
+               signed out there is no needsSetup state, so the old destinations below never show. -->
+          <RouterLink :to="inWorkspace ? '/registries/hfr' : '/onboarding'" class="btn btn-brand" style="font-size:1rem;padding:.875rem 2rem"><i class="fas fa-hospital"></i>Register Your Facility (HFR)</RouterLink>
+          <RouterLink :to="inWorkspace ? '/registries/hpr' : '/practitioner-home'" class="btn btn-outline" style="font-size:.95rem;padding:.875rem 1.75rem"><i class="fas fa-user-md"></i>Register Yourself (HPR)</RouterLink>
         </div>
       </div>
       <div v-else style="display:grid;grid-template-columns:1fr 1fr;gap:3rem;align-items:center" class="hero-grid">
@@ -811,7 +842,7 @@ function sendMessage() {
     </div>
   </section>
 
-  <footer style="background:var(--color-secondary);padding:2.5rem 0;margin-bottom:1.5rem">
+  <footer v-if="!inWorkspace" style="background:var(--color-secondary);padding:2.5rem 0;margin-bottom:1.5rem">
     <div class="container" style="display:flex;flex-direction:column;align-items:center;gap:1rem;text-align:center">
       <div style="display:flex;align-items:center;gap:.625rem">
         <div style="width:28px;height:28px;border-radius:.4rem;display:flex;align-items:center;justify-content:center;background:rgba(0,212,178,.15)"><span style="color:#00D4B2;font-weight:800;font-size:.65rem;font-family:'Poppins',sans-serif">CÜ</span></div>
@@ -838,71 +869,27 @@ function sendMessage() {
 
   <!-- ── Clinic operations (Front Desk / Consultation Desk / Checkout) ──
        Mounted/unmounted on switch (v-if), not kept alive as background tabs — confirmed with
-       the user. Mirrors App.vue's own min-h-screen flex-col + sticky-nav shell, since each of
-       these 3 components' own root assumes exactly that (a full-height flex ancestor), same as
-       when they were reached via their own routes under App.vue's <RouterView/>. -->
-  <div v-show="clinicView !== 'public'" style="min-height:100vh;display:flex;flex-direction:column">
-    <!-- Branded header (clinic logo/name, matching .site-nav's own .nav-logo treatment) — was
-         previously just the bare Clinic Home/Front Desk/Consultation Desk/Checkout nav buttons
-         with no clinic identity shown at all, unlike every other page. -->
-    <nav class="cf-nav ops-nav" style="position:sticky;top:0;z-index:40">
-      <div style="max-width:1600px;margin:0 auto;padding:0 1.5rem;height:56px;display:flex;align-items:center;justify-content:space-between;gap:1rem">
-        <div style="display:flex;align-items:center;gap:.75rem;min-width:0">
-          <div v-if="clinic.logoUrl" style="height:28px;width:auto;flex-shrink:0"><img :src="clinic.logoUrl" style="height:28px;width:auto;border-radius:.3rem" /></div>
-          <div v-else style="width:28px;height:28px;border-radius:.5rem;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:.75rem;font-family:'Poppins',sans-serif;flex-shrink:0" :style="`background:${clinic.brandColor || '#00D4B2'}22;color:${clinic.brandColor || '#00D4B2'}`">{{ (clinic.name || 'C').charAt(0).toUpperCase() }}</div>
-          <span style="font-family:'Poppins',sans-serif;font-weight:700;font-size:.85rem;color:var(--cf-text-strong);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ clinic.name || 'Your Clinic' }}</span>
-          <span style="width:1px;height:20px;background:var(--cf-border);flex-shrink:0"></span>
-          <button class="btn-ghost" style="white-space:nowrap" @click="clinicView = 'public'"><i class="fas fa-arrow-left" style="margin-right:.35rem"></i>Clinic Home</button>
-        </div>
-        <div style="display:flex;align-items:center;gap:.5rem;flex-shrink:0">
-          <button class="btn-outline" :class="clinicView === 'front-desk' ? 'btn-teal' : ''" @click="openClinicView('front-desk')"><i class="fas fa-house" style="margin-right:.35rem"></i>Front Desk</button>
-          <button class="btn-outline" :class="clinicView === 'consultation-desk' ? 'btn-teal' : ''" @click="openClinicView('consultation-desk')"><i class="fas fa-stethoscope" style="margin-right:.35rem"></i>Consultation Desk</button>
-          <button v-if="clinical.activeEncounterId" class="btn-outline" :class="clinicView === 'checkout' ? 'btn-teal' : ''" @click="openClinicView('checkout')"><i class="fas fa-receipt" style="margin-right:.35rem"></i>Checkout</button>
-          <RouterLink to="/patient-home" class="btn-outline" style="white-space:nowrap"><i class="fas fa-user-injured" style="margin-right:.35rem"></i>Patients</RouterLink>
-          <span style="width:1px;height:20px;background:var(--cf-border);flex-shrink:0"></span>
-          <ConnectionStatusControl :shared-mode-live="sharedModeLive" />
-          <button class="icon-btn-round" @click="teamChatOpen = true" title="Team Chat"><i class="fas fa-comment-dots"></i></button>
-        </div>
-      </div>
-    </nav>
-    <!-- flex-direction:column (not row) — matches App.vue's own min-h-screen flex-col shell
-         these 3 components' templates were originally rendered inside. Found during live
-         verification: ConsultationDesk.vue's template has multiple flow-participating top-level
-         siblings when its v-else branch is active (top bar + two-pane content + bottom bar, its
-         toast/drawer/modal siblings are all position:fixed so they don't count) — a plain
-         display:flex row squeezed all three into one horizontal strip instead of stacking them.
-         FrontDesk.vue/Checkout.vue only ever have ONE such sibling, so the same bug was invisible
-         there (a single flex item renders the same regardless of flex-direction).
+       the user. UPDATE (Swastik-style app shell): these three render inside AppShell now
+       (App.vue turns its chrome on whenever clinicView isn't 'public'), so the ops-nav and
+       ops-footer this block used to carry are gone — the shell's sidebar is the stage switcher
+       (Front Desk / Consultation Desk / Checkout / Patients), its top bar carries the
+       connection-mode control and Team Chat.
 
-         max-width + margin:0 auto (not full-bleed edge-to-edge) — matches Index.vue/the public
-         ClinicHome content's own centered-container convention, which these 3 views previously
-         had none of (their two-pane content spanned the entire viewport width with zero side
-         margin on wide screens, unlike every other page). Wider than the public page's own
-         max-width (1150-1300px) since these host a working two-pane interface (Cübo + form
-         content), not marketing copy.
-
-         padding:0 1.5rem alongside the max-width — without it, max-width:1600px alone gives
-         zero gutter on every screen narrower than 1600px (i.e. almost all real laptops/monitors:
-         1280/1366/1440/1536), reproducing the exact "stretched edge-to-edge" complaint this was
-         meant to fix. .container on the public page pairs max-width with this same unconditional
-         padding for the same reason — box-sizing:border-box (Tailwind preflight) keeps width:100%
-         from overflowing once padding is added. -->
-    <div v-if="clinicView === 'front-desk'" style="flex:1;display:flex;flex-direction:column;overflow:hidden;max-width:1600px;margin:0 auto;width:100%;padding:0 1.5rem;box-sizing:border-box">
+       flex-direction:column (not row) — ConsultationDesk.vue's template has multiple
+       flow-participating top-level siblings when its v-else branch is active (top bar + two-pane
+       content + bottom bar); a row would squeeze them into one horizontal strip. max-width +
+       auto margins + an unconditional side gutter so the two-pane content doesn't stretch edge
+       to edge on wide screens. The height is the viewport minus the shell's 56px top bar. -->
+  <div v-show="clinicView !== 'public'" style="height:calc(100vh - 56px);display:flex;flex-direction:column">
+    <div v-if="clinicView === 'front-desk'" class="ops-view">
       <FrontDesk @navigate="clinicView = $event" />
     </div>
-    <div v-if="clinicView === 'consultation-desk'" style="flex:1;display:flex;flex-direction:column;overflow:hidden;max-width:1600px;margin:0 auto;width:100%;padding:0 1.5rem;box-sizing:border-box">
+    <div v-if="clinicView === 'consultation-desk'" class="ops-view">
       <ConsultationDesk @navigate="clinicView = $event" />
     </div>
-    <div v-if="clinicView === 'checkout'" style="flex:1;display:flex;flex-direction:column;overflow:hidden;max-width:1600px;margin:0 auto;width:100%;padding:0 1.5rem;box-sizing:border-box">
+    <div v-if="clinicView === 'checkout'" class="ops-view">
       <Checkout @navigate="clinicView = $event" />
     </div>
-    <!-- Minimal branded footer — matches the public page having a footer at all, kept to one
-         thin strip (not the full marketing footer) since these are dense working screens where
-         vertical space actually matters. -->
-    <footer class="ops-footer">
-      <span>Powered by <RouterLink to="/">ClinixFlow</RouterLink> · Secure, Standards-Based Healthcare Platform</span>
-      <span>{{ `© ${new Date().getFullYear()} ${clinic.name || 'Your Clinic'}` }}</span>
-    </footer>
   </div>
 </template>
 
@@ -983,10 +970,9 @@ a { text-decoration:none; color:inherit; }
 .user-menu-header { padding:.7rem 1rem;border-bottom:1px solid var(--border); }
 .user-menu-item { display:flex;align-items:center;gap:.6rem;width:100%;text-align:left;padding:.6rem 1rem;font-size:.8rem;font-weight:600;color:var(--text-strong);background:none;border:none;cursor:pointer;text-decoration:none;font-family:'Inter',sans-serif; }
 .user-menu-item:hover { background:var(--bg-alt); }
-/* Minimal footer for the ops views (Front Desk/Consultation/Checkout) — one thin strip, not
-   the full multi-row public-page footer, since vertical space is scarce on these dense screens. */
-.ops-footer { flex-shrink:0;padding:.6rem 1.5rem;border-top:1px solid var(--cf-border);display:flex;align-items:center;justify-content:space-between;gap:1rem;font-size:.7rem;color:var(--cf-text);flex-wrap:wrap; }
-.ops-footer a { color:var(--color-primary);font-weight:600; }
+.clinic-embedded .hero { min-height: auto; padding: 2rem 0 3rem; }
+.clinic-embedded .section { padding: 3rem 0; }
+.ops-view { flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;max-width:1600px;margin:0 auto;width:100%;padding:0 1.5rem;box-sizing:border-box; }
 .modal-bg { position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(5px);z-index:60;display:flex;align-items:center;justify-content:center;padding:1rem; }
 .modal-panel { background:var(--bg);border:1px solid var(--border);border-radius:1.25rem;padding:2rem;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 30px 60px rgba(0,0,0,.3); }
 .grad-text { background:linear-gradient(135deg,#00D4B2 0%,#0A7A6E 50%,#00D4B2 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text; }

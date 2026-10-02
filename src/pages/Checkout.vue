@@ -256,7 +256,7 @@ function closeEncounter() {
         <div v-if="screen === 'sessions'">
           <ActiveSessionsLanding @navigate-stage="goToStage">
             <template #actions>
-              <button class="btn-outline whitespace-nowrap text-sm" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Import Session</button>
+              <button class="ui-btn" @click="importModalOpen = true"><i class="fas fa-qrcode"></i> Import session</button>
             </template>
           </ActiveSessionsLanding>
         </div>

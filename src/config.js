@@ -16,6 +16,11 @@ export const API_BASE = SHARED_SERVER_PAGE ? '' : (import.meta.env.VITE_API_BASE
 // network error from a second device until that's built too.
 export const ABDM_GATEWAY_BASE = import.meta.env.VITE_ABDM_GATEWAY_BASE || 'http://localhost:8788';
 
+// clinuxflow-fhir-api — FHIR conformance ($validate, profiles, value sets). The registry journeys
+// (src/journeys/, ported from clinux-cubo) validate the FHIR they produce against it; unreachable
+// just leaves that validation "pending", never blocks a journey.
+export const FHIR_API_BASE = import.meta.env.VITE_FHIR_API_BASE || 'http://localhost:8789';
+
 // Shared secret both backends require as X-Service-Key (see their own src/index.js auth
 // middleware) — must match the SERVICE_KEY each Worker has set. Not a real confidentiality
 // boundary (this bundle is public, so the value is extractable by anyone who inspects it) —

@@ -32,7 +32,6 @@ import { useRoute, useRouter } from 'vue-router';
 import ProviderPersonalDetailsHost from '../components/control/ProviderPersonalDetailsHost.vue';
 import ProviderQualificationsHost from '../components/control/ProviderQualificationsHost.vue';
 import ProviderWorkExperienceHost from '../components/control/ProviderWorkExperienceHost.vue';
-import ProviderHprPanel from '../components/control/ProviderHprPanel.vue';
 import ProviderDocumentsHost from '../components/control/ProviderDocumentsHost.vue';
 import JoinTokenRedeemForm from '../components/auth/JoinTokenRedeemForm.vue';
 import AdaptiveSectionNav from '../components/AdaptiveSectionNav.vue';
@@ -59,11 +58,6 @@ function showToast(msg) {
 const personalHost = ref(null);
 const qualificationsHost = ref(null);
 const workHost = ref(null);
-
-const hasRegistered = computed(() => {
-  onboarding.dataVersion;
-  return getGroupInstances(onboarding.getProviderRecord(), 'section_staff').length > 0;
-});
 
 // Each of the 3 hosts patches only its OWN fields directly against the store (see their own
 // header comments) — this just supplies the record id they patch into and bumps dataVersion
@@ -98,14 +92,18 @@ function onJoinSuccess() {
 
   <main style="flex:1;overflow-y:auto">
     <div style="max-width:960px;margin:0 auto;padding:2rem 1.5rem 4rem">
-      <span class="section-eyebrow" style="display:block;margin-bottom:.75rem">Your Professional Profile</span>
-      <h1 style="font-size:2rem;font-weight:800;color:var(--cf-text-strong);line-height:1.15;letter-spacing:-1px;margin-bottom:.875rem">
-        {{ auth.currentUser?.adminName ? `${auth.currentUser.adminName}, build` : "Let's build" }} your own profile.
-      </h1>
-      <p style="font-size:.95rem;color:var(--cf-text);line-height:1.7;margin-bottom:2rem">
-        This is yours — not tied to any one clinic. Fill in your details, register with ABDM's professional
-        registry if you'd like, and associate with a clinic whenever you have a join link from one.
-      </p>
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Professional profile</h1>
+          <p class="page-subtitle">
+            This is yours, not tied to any one clinic. Fill in your details, register with ABDM's Healthcare
+            Professionals Registry (HPR) if you'd like, and join a clinic whenever one sends you a join link.
+          </p>
+        </div>
+        <div class="page-actions">
+          <RouterLink to="/practitioner-home" class="ui-btn"><i class="fas fa-eye"></i> View profile</RouterLink>
+        </div>
+      </div>
 
       <AdaptiveSectionNav :sections="navSections" mode="sidebar" storage-key="practitioner-data-view" v-model:active-id="activeSectionId">
         <template #personal>
@@ -130,12 +128,11 @@ function onJoinSuccess() {
         </template>
 
         <template #registry>
-          <ProviderHprPanel
-            v-if="hasRegistered"
-            :record="onboarding.getProviderRecord()" :staff-index="0"
-            @registered="onboarding.dataVersion++"
-          />
-          <p v-else class="text-sm" style="color:var(--cf-text)">Save your Personal Details first — ABDM registration needs your name on file.</p>
+          <!-- The HPR journey in Registries (src/journeys/specs/hpr.journey.json) replaces ProviderHprPanel.vue. -->
+          <div class="cf-card rounded-2xl p-4" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+            <p class="text-sm" style="color:var(--cf-text);margin:0">Link your existing HPR ID, or register a new one with Aadhaar (verified on NHA's own page), as a guided journey.</p>
+            <RouterLink to="/registries/hpr" class="ui-btn ui-btn-primary"><i class="fas fa-user-doctor"></i> Open HPR ID</RouterLink>
+          </div>
         </template>
       </AdaptiveSectionNav>
 

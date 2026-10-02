@@ -4,18 +4,11 @@
 // SystemForms/LhcFormHost drawer pattern Front Desk uses.
 import { computed, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import FacilityBasicsHost from '../components/control/FacilityBasicsHost.vue';
-import FacilityHfrPanel from '../components/control/FacilityHfrPanel.vue';
+import QuestionnaireForm from '../forms/QuestionnaireForm.vue';
 import FacilityStatusCard from '../components/FacilityStatusCard.vue';
 import ProviderBasicsHost from '../components/control/ProviderBasicsHost.vue';
-import ProviderHprPanel from '../components/control/ProviderHprPanel.vue';
-import AffiliateOrganizationHost from '../components/control/AffiliateOrganizationHost.vue';
 import JoinTokenRedeemForm from '../components/auth/JoinTokenRedeemForm.vue';
 import JoinLinkPanel from '../components/control/JoinLinkPanel.vue';
-import ServicesHost from '../components/control/ServicesHost.vue';
-import LocationsHost from '../components/control/LocationsHost.vue';
-import HoursHost from '../components/control/HoursHost.vue';
-import ConsentsHost from '../components/control/ConsentsHost.vue';
 import SessionImportModal from '../components/SessionImportModal.vue';
 import AdaptiveSectionNav from '../components/AdaptiveSectionNav.vue';
 import { useOnboardingStore } from '../stores/onboarding.js';
@@ -50,6 +43,11 @@ import { API_BASE } from '../config.js';
 // not this prop) genuinely persisted correctly the whole time. Same multi-group-block reasoning as
 // section_hospital/section_staff above — this card's own capture spans 4 real blocks, not 1.
 const HAND_AUTHORED_GROUP_LINK_IDS = new Set(['section_hospital', 'section_staff', 'section_affiliate_organization', 'section_abdm_hfr']);
+// Groups drawn by the generic QuestionnaireForm: it picks its own group out of the record, and a
+// reference field (e.g. a service's branch) needs the OTHER groups too — so these always get the
+// full record. (Slicing section_services_matrix is why the old ServicesHost's branch list was
+// always empty: its section_location instances had been sliced away.)
+const RENDERER_GROUP_LINK_IDS = new Set(['section_hospital', 'section_hours', 'section_location', 'section_consent', 'section_affiliate_organization', 'section_services_matrix']);
 
 const onboarding = useOnboardingStore();
 const auth = useAuthStore();
@@ -87,7 +85,6 @@ function showToast(msg) {
 // before; nesting two independent AdaptiveSectionNav instances (this page's own `onboarding-hub`
 // storageKey, each Host's own separate one) is exactly what the component was already built to
 // support, not a new capability.
-const hprStaffIndex = ref(0); // which Care Team member the HPR Registration panel below targets
 const customFormHost = ref(null); // whichever section's Host component is currently mounted — only one ever is, same guarantee the old v-else-if chain gave
 
 // Every card now points at one groupLinkId inside the single, shared Provider-composition
@@ -259,6 +256,13 @@ const activeSectionId = ref(
 );
 function cardById(groupLinkId) { return journeyCards.value.find((c) => c.groupLinkId === groupLinkId) || null; }
 const activeCard = computed(() => cardById(activeSectionId.value));
+// The compiled Provider Questionnaire, for the generic QuestionnaireForm renderer (Hospital,
+// Hours, ... — the groups no longer drawn by hand-written Host components).
+const providerQuestionnaire = computed(() => {
+  onboarding.dataVersion;
+  return activeQuestionnaire(onboarding.PROVIDER_FORM_ID);
+});
+
 const activeRecord = computed(() => {
   onboarding.dataVersion; // register the reactive dependency
   if (!activeCard.value) return null;
@@ -266,7 +270,8 @@ const activeRecord = computed(() => {
   if (!q) return null;
   const fullRecord = onboarding.getProviderRecord() || onboarding.buildSeedFromRegistration();
   if (!fullRecord) return null;
-  return HAND_AUTHORED_GROUP_LINK_IDS.has(activeCard.value.groupLinkId) ? fullRecord : sliceRecordGroup(fullRecord, activeCard.value.groupLinkId);
+  const id = activeCard.value.groupLinkId;
+  return HAND_AUTHORED_GROUP_LINK_IDS.has(id) || RENDERER_GROUP_LINK_IDS.has(id) ? fullRecord : sliceRecordGroup(fullRecord, id);
 });
 
 // The page-level AdaptiveSectionNav's own `sections` — one per real entity card (excludes the
@@ -428,33 +433,21 @@ function goToClinicHome() {
 
     <!-- HUB -->
     <div class="screen-panel">
-      <div style="margin-bottom:2rem">
-        <span class="section-eyebrow" style="display:block;margin-bottom:.75rem">{{ onboarding.registeredUser ? 'Welcome back' : 'Welcome to ClinixFlow' }}</span>
-        <div class="teal-line" style="margin-bottom:1.25rem"></div>
-        <h1 v-if="!onboarding.registeredUser" style="font-size:2.25rem;font-weight:800;color:var(--cf-text-strong);line-height:1.15;letter-spacing:-1px;margin-bottom:.875rem">
-          Set up your clinic's<br><span style="color:var(--color-primary)">digital presence</span><br>in minutes.
-        </h1>
-        <h1 v-else style="font-size:2.25rem;font-weight:800;color:var(--cf-text-strong);line-height:1.15;letter-spacing:-1px;margin-bottom:.875rem">
-          {{ onboarding.registeredUser?.adminName }}, let's finish setting up<br><span style="color:var(--color-primary)">{{ onboarding.registeredUser?.clinicName }}</span>.
-        </h1>
-        <p style="font-size:.95rem;color:var(--cf-text);line-height:1.7;margin-bottom:1.5rem;max-width:52rem">
-          Pick a section below to add that piece of your clinic's profile — each one saves and goes live on your Clinic Home page immediately, no separate publish step.
-        </p>
-        <div style="display:flex;gap:.75rem;flex-wrap:wrap">
-          <button class="btn-teal" @click="goToClinicHome()" style="display:flex;align-items:center;gap:.5rem"><i class="fas fa-arrow-right"></i>Back to Clinic Home</button>
-          <!-- Was its own card in the old grid ('Open Designer', an action entry with no
-               groupLinkId) — now a plain nav link alongside Back to Clinic Home, not a section:
-               it navigates away rather than rendering content inline, so it never belonged in
-               navSections below (see navSections' own header comment). -->
-          <RouterLink to="/designer" class="btn-outline" style="display:flex;align-items:center;gap:.5rem"><i class="fas fa-layer-group"></i>Open Designer</RouterLink>
+      <!-- Swastik-style page header (was a large marketing hero). "Open Designer" is in the app
+           shell's sidebar now (Forms library), so only the page's own actions stay here: view the
+           live clinic page, and import a profile from another device (most useful before any
+           local onboarding exists; the Share side lives in the public page's profile menu). -->
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Facility profile</h1>
+          <p class="page-subtitle">
+            {{ onboarding.registeredUser?.clinicName ? onboarding.registeredUser.clinicName + ': each' : 'Each' }} section saves on its own and goes live on your clinic page right away. There's no separate publish step.
+            The ABDM Registration (HFR) section registers the facility with the Health Facility Registry.
+          </p>
         </div>
-        <!-- Already part of this clinic on another device? Import brings over the whole
-             profile (Hospital/Staff/Services/Hours/Consents + branding) instead of re-typing
-             it — most useful right here, before any local onboarding exists at all. (The
-             Share side of this now lives in ClinicHome's admin profile menu, next to Team —
-             that's the discoverable "my account/clinic" surface; this hub is Import-only.) -->
-        <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.625rem">
-          <button class="btn-outline text-sm" @click="importProfileModalOpen = true"><i class="fas fa-qrcode"></i> Import Clinic Profile</button>
+        <div class="page-actions">
+          <button class="ui-btn" @click="importProfileModalOpen = true"><i class="fas fa-qrcode"></i> Import clinic profile</button>
+          <button class="ui-btn ui-btn-primary" @click="goToClinicHome()"><i class="fas fa-arrow-up-right-from-square"></i> View clinic page</button>
         </div>
       </div>
 
@@ -467,12 +460,12 @@ function goToClinicHome() {
       <FacilityStatusCard
         v-if="activeSectionId === 'section_hospital' || activeSectionId === 'section_abdm_hfr'"
         :stage="onboarding.facilitySetupStage"
-        @continue-hfr="activeSectionId = 'section_abdm_hfr'"
+        @continue-hfr="router.push('/registries/hfr')"
       />
       <AdaptiveSectionNav :sections="navSections" mode="sidebar" storage-key="onboarding-hub" v-model:active-id="activeSectionId">
         <template #section_hospital>
           <div class="cf-card rounded-2xl p-4">
-            <FacilityBasicsHost ref="customFormHost" :record="activeRecord" />
+            <QuestionnaireForm v-if="providerQuestionnaire" ref="customFormHost" :questionnaire="providerQuestionnaire" group-link-id="section_hospital" :record="activeRecord" />
             <div class="flex justify-end mt-3">
               <button class="btn-teal" @click="saveActiveSection()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-save"></i><span>Save</span></button>
             </div>
@@ -529,12 +522,20 @@ function goToClinicHome() {
               submissions to the registry, not drafts — each one unlocks the next once it succeeds.
             </p>
           </div>
-          <FacilityHfrPanel :record="activeRecord" @submitted="onboarding.dataVersion++" />
+          <!-- HFR registration is the guided Registries journey now (src/journeys/specs/hfr.journey.json),
+               the same one Cübo runs — FacilityHfrPanel.vue and its hand-coded ledger are retired. -->
+          <div class="cf-card rounded-2xl p-4 mt-3" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+            <div>
+              <p class="cf-label" style="margin:0">Register this facility with HFR</p>
+              <p class="text-sm" style="color:var(--cf-text);margin:.25rem 0 0">A guided journey: the facility manager signs in with their HPR ID, then Cübo collects the details step by step and submits them to HFR.</p>
+            </div>
+            <RouterLink to="/registries/hfr" class="ui-btn ui-btn-primary"><i class="fas fa-hospital"></i> Open HFR registration</RouterLink>
+          </div>
         </template>
 
         <template #section_location>
           <div class="cf-card rounded-2xl p-4">
-            <LocationsHost ref="customFormHost" :record="activeRecord" />
+            <QuestionnaireForm v-if="providerQuestionnaire" ref="customFormHost" :questionnaire="providerQuestionnaire" group-link-id="section_location" :record="activeRecord" />
             <div class="flex justify-end mt-3">
               <button class="btn-teal" @click="saveActiveSection()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-plus"></i><span>Add</span></button>
             </div>
@@ -577,18 +578,20 @@ function goToClinicHome() {
             </div>
           </div>
 
-          <div v-if="groupInstances('section_staff').length > 0" class="cf-card rounded-2xl p-4 mt-3">
-            <p class="cf-label mb-2">ABDM Provider Registration (HPR)</p>
-            <select class="cf-input mb-2" v-model.number="hprStaffIndex">
-              <option v-for="(inst, i) in groupInstances('section_staff')" :key="i" :value="i">{{ [getAnswer({ data: inst }, 'staff_first_name'), getAnswer({ data: inst }, 'staff_last_name')].filter(Boolean).join(' ') || `Staff #${i + 1}` }}</option>
-            </select>
-            <ProviderHprPanel v-if="hprStaffIndex !== null" :record="onboarding.getProviderRecord()" :staff-index="hprStaffIndex" @registered="onboarding.dataVersion++" />
+          <!-- HPR registration is personal (the professional's own Aadhaar and mobile), so it runs as the
+               Registries journey (src/journeys/specs/hpr.journey.json) — ProviderHprPanel.vue is retired. -->
+          <div v-if="groupInstances('section_staff').length > 0" class="cf-card rounded-2xl p-4 mt-3" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+            <div>
+              <p class="cf-label" style="margin:0">ABDM Provider Registration (HPR)</p>
+              <p class="text-sm" style="color:var(--cf-text);margin:.25rem 0 0">Each professional links or registers their own HPR ID from Registries — it needs their Aadhaar (verified on NHA's page) and mobile.</p>
+            </div>
+            <RouterLink to="/registries/hpr" class="ui-btn"><i class="fas fa-user-doctor"></i> Open HPR ID</RouterLink>
           </div>
         </template>
 
         <template #section_services_matrix>
           <div class="cf-card rounded-2xl p-4">
-            <ServicesHost ref="customFormHost" :record="activeRecord" />
+            <QuestionnaireForm v-if="providerQuestionnaire" ref="customFormHost" :questionnaire="providerQuestionnaire" group-link-id="section_services_matrix" :record="activeRecord" />
             <div class="flex justify-end mt-3">
               <button class="btn-teal" @click="saveActiveSection()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-plus"></i><span>Add</span></button>
             </div>
@@ -597,7 +600,7 @@ function goToClinicHome() {
 
         <template #section_hours>
           <div class="cf-card rounded-2xl p-4">
-            <HoursHost ref="customFormHost" :record="activeRecord" />
+            <QuestionnaireForm v-if="providerQuestionnaire" ref="customFormHost" :questionnaire="providerQuestionnaire" group-link-id="section_hours" :record="activeRecord" />
             <div class="flex justify-end mt-3">
               <button class="btn-teal" @click="saveActiveSection()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-plus"></i><span>Add</span></button>
             </div>
@@ -606,7 +609,7 @@ function goToClinicHome() {
 
         <template #section_consent>
           <div class="cf-card rounded-2xl p-4">
-            <ConsentsHost ref="customFormHost" :record="activeRecord" />
+            <QuestionnaireForm v-if="providerQuestionnaire" ref="customFormHost" :questionnaire="providerQuestionnaire" group-link-id="section_consent" :record="activeRecord" />
             <div class="flex justify-end mt-3">
               <button class="btn-teal" @click="saveActiveSection()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-plus"></i><span>Add</span></button>
             </div>
@@ -615,7 +618,7 @@ function goToClinicHome() {
 
         <template #section_affiliate_organization>
           <div class="cf-card rounded-2xl p-4">
-            <AffiliateOrganizationHost ref="customFormHost" :record="activeRecord" />
+            <QuestionnaireForm v-if="providerQuestionnaire" ref="customFormHost" :questionnaire="providerQuestionnaire" group-link-id="section_affiliate_organization" :record="activeRecord" />
             <div class="flex justify-end mt-3">
               <button class="btn-teal" @click="saveActiveSection()" style="display:flex;align-items:center;gap:.4rem"><i class="fas fa-plus"></i><span>Add</span></button>
             </div>

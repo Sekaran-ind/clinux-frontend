@@ -20,6 +20,8 @@ import { ensureDeferredCollectionsPreloaded } from './data/collectionPreload.js'
 import { API_BASE } from './config.js';
 import { useAuthStore } from './stores/auth.js';
 import { warmUp as warmUpFormSlotEngine } from './nlp/formSlotEngine.js';
+import { setRecordSavedListener } from './data/collections/formData.js';
+import { onRecordSaved } from './provenance/recorder.js';
 
 // TanStack DB collections load their persisted data asynchronously (even the localStorage-backed
 // ones — see collection.preload()'s own doc comment: "useful for preloading collections"), not
@@ -45,6 +47,9 @@ await Promise.all([users, chatThreads].map((c) => c.preload()));
 
 const app = createApp(App);
 app.use(createPinia());
+// Digital provenance for every saved record — built and kept on this device, published to
+// clinuxflow-api on the paid plan only (src/provenance/).
+setRecordSavedListener(onRecordSaved);
 app.use(router);
 // TanStack Query — used by ActiveSessionsLanding.vue's infinite-scroll session timeline
 // (useInfiniteQuery). The "backend" it pages through is a local TanStack DB collection, not a

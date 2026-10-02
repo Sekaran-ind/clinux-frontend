@@ -1,0 +1,30 @@
+{
+  "$comment": "HPR (Healthcare Professional Registry) journey: link an existing HPR ID, or register a new one through Aadhaar (HPR registration doc v2.0). Steps and transitions are here; the gateway calls and the prompts that need code are the named handlers in hprJourney.js. Run by engine.js on XState.",
+  "id": "hpr",
+  "title": "HPR ID",
+  "summary": "Link or register your Healthcare Professional Registry ID",
+  "icon": "fa-user-doctor",
+  "start": "begin",
+  "steps": {
+    "begin":         { "type": "auto",  "run": "loadLinked", "next": "mode" },
+    "mode":          { "type": "ask",   "prompt": "mode", "run": "chooseMode", "next": [{ "if": "data.mode == 'register'", "to": "aadhaar" }, { "to": "login" }] },
+
+    "login":         { "type": "ask",   "prompt": "login", "run": "passwordLogin", "next": "profile", "ledger": { "label": "Sign in to HPR" } },
+    "profile":       { "type": "auto",  "run": "fetchProfile", "onError": "continue", "next": "linked" },
+    "linked":        { "type": "final", "run": "saveLinked" },
+
+    "aadhaar":       { "type": "ask",   "prompt": "aadhaar", "run": "startAadhaarLink", "next": "aadhaarLink", "ledger": { "label": "Aadhaar consent" } },
+    "aadhaarLink":   { "type": "ask",   "prompt": "aadhaarLink", "run": "checkAadhaarLink", "next": [{ "if": "data.renewed", "to": "aadhaarLink" }, { "to": "checkAccount" }], "ledger": { "label": "Verify on NHA's page" } },
+    "checkAccount":  { "type": "auto",  "run": "checkAccount", "next": [{ "if": "data.hpidExists", "to": "exists" }, { "to": "mobile" }] },
+    "exists":        { "type": "final", "run": "existsResult" },
+    "mobile":        { "type": "ask",   "prompt": "mobile", "run": "checkMobile", "next": [{ "if": "data.mobileMatched", "to": "loadMasters" }, { "to": "sendMobileOtp" }], "ledger": { "label": "Mobile" } },
+    "sendMobileOtp": { "type": "auto",  "run": "sendMobileOtp", "next": "mobileOtp" },
+    "mobileOtp":     { "type": "ask",   "prompt": "mobileOtp", "run": "verifyMobileOtp", "next": [{ "if": "data.mobileResent", "to": "mobileOtp" }, { "to": "loadMasters" }] },
+    "loadMasters":   { "type": "auto",  "run": "loadMasters", "next": "identity" },
+    "identity":      { "type": "ask",   "prompt": "identity", "run": "chooseIdentity", "next": "jurisdiction", "ledger": { "label": "HPR ID and category" } },
+    "jurisdiction":  { "type": "ask",   "prompt": "jurisdiction", "run": "chooseJurisdiction", "next": "loadDistricts", "ledger": { "label": "System of medicine and state" } },
+    "loadDistricts": { "type": "auto",  "run": "loadDistricts", "next": "finish" },
+    "finish":        { "type": "ask",   "prompt": "finish", "run": "createHprId", "next": "registered", "ledger": { "label": "District, role and password" } },
+    "registered":    { "type": "final", "run": "saveRegistered" }
+  }
+}

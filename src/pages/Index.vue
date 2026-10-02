@@ -9,13 +9,13 @@ import { useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth.js';
 import { useEntryWorkflowStore } from '../stores/entryWorkflow.js';
 import { useThemeStore } from '../stores/theme.js';
+import SiteFooter from '../components/SiteFooter.vue';
 import RegisterForm from '../components/auth/RegisterForm.vue';
 import LoginForm from '../components/auth/LoginForm.vue';
 import JoinTokenRedeemForm from '../components/auth/JoinTokenRedeemForm.vue';
 import Cubo from '../components/Cubo.vue';
 import { useCuboStore } from '../stores/cubo.js';
 import { useRoute } from 'vue-router';
-import { hprRoleLabel } from '../data/control/hprRoles.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -103,24 +103,23 @@ function showToast(msg) {
 // `success` events with what used to be registerClinic()/loginClinic()'s own tail end (close the
 // modal, toast, navigate). Same components render inline in Cübo's General thread (see
 // Cubo.vue) — no duplicated form markup between the two hosts any more.
-function onRegisterSuccess({ role }) {
+// The workspace (AppShell's Dashboard) is the landing page after sign-in and registration, for
+// every account — it has the setup checklist, the registries and the clinic page in its sidebar.
+// (Previously registration routed by role: /practitioner-home or /clinic-home.)
+const WORKSPACE_HOME = '/dashboard';
+
+function onRegisterSuccess() {
   showRegister.value = false;
-  // Deliberately NOT "Welcome, {clinicName}" -- clinicName is just a placeholder until the new
-  // Hospital/HFR journey replaces it with the real hospital_name (see SPEC-11). Label comes from
-  // hprRoles.js — the same HPR-master wording RegisterForm.vue's own role picker just showed,
-  // not a second local copy of it.
-  showToast(`Welcome${role ? ', ' + hprRoleLabel(role) : ''}! Let's get you set up.`);
-  // A pure health_professional has no facility of their own — routing them into /clinic-home was
-  // a real defect (an unlinked practitioner would land on whatever clinic profile happened to be
-  // on the device, with nothing of their own to see). Their own home is /practitioner-home until
-  // they've associated with a clinic via Share Link (see StaffOnboarding.vue's "associate"
-  // section) — clinic-home stays the destination only for roles that actually run a facility.
-  router.push(role === 'health_professional' ? '/practitioner-home' : '/clinic-home');
+  // Deliberately NOT "Welcome, {clinicName}" -- clinicName is just a placeholder until the
+  // Hospital/HFR journey replaces it with the real hospital_name (see SPEC-11).
+  showToast('Welcome! Let’s get you set up.');
+  router.push(WORKSPACE_HOME);
 }
 
 function onLoginSuccess() {
   showLogin.value = false;
   showToast(`Welcome back, ${auth.currentUser.clinicName}!`);
+  router.push(WORKSPACE_HOME);
 }
 
 function logout() {
@@ -151,29 +150,11 @@ function goToEngine() {
 // independent practitioner to /clinic-home (this button, not just the post-register redirect).
 function goToClinic() {
   if (!auth.currentUser) { showLogin.value = true; return; }
-  if (auth.currentUser.role === 'health_professional') { router.push('/practitioner-home'); return; }
-  const hasProfile = !!localStorage.getItem('cf_clinic_profile');
-  router.push(hasProfile ? '/clinic-home' : '/onboarding');
+  router.push(WORKSPACE_HOME);
 }
 
-// Structural nav vs. Next Best Action (see clinux memory notes on the design principle),
-// applied at Index/entry level: "Talk to Cübo" (below) is the general-purpose, always-available
-// entry point — it can register, log in, or help with anything, not tied to any one journey's
-// progress. This is the other half — the state-specific recommendation, reusing goToClinic()'s
-// own hasProfile signal so the label and the click destination can never drift apart. Read off
-// auth.currentUser (reactive) rather than re-checking localStorage on every render; profile
-// completion in practice only changes via a navigation/reload of this page anyway, same as
-// goToClinic() itself already assumes.
-const heroNextAction = computed(() => {
-  if (!auth.currentUser) return null;
-  if (auth.currentUser.role === 'health_professional') {
-    return { label: 'Go to My Profile', icon: 'fas fa-arrow-right' };
-  }
-  const hasProfile = !!localStorage.getItem('cf_clinic_profile');
-  return hasProfile
-    ? { label: auth.currentUser.clinicName, icon: 'fas fa-arrow-right' }
-    : { label: 'Finish Setting Up Your Clinic', icon: 'fas fa-list-check' };
-});
+// The signed-in hero button: always the workspace now (goToClinic() above), so one label.
+const heroNextAction = computed(() => (auth.currentUser ? { label: 'Open your workspace', icon: 'fas fa-table-columns' } : null));
 
 async function sendContact(e) {
   const payloadData = { type: 'email', name: contactForm.name, clinic: contactForm.clinic, email: contactForm.email, message: contactForm.message };
@@ -586,17 +567,8 @@ onUnmounted(stopAutoplay);
     </div>
   </section>
 
-  <footer style="padding:3rem 0">
-    <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-4">
-      <div class="flex items-center gap-2">
-        <div class="bg-(--color-primary) text-(--color-secondary) w-7 h-7 rounded-xs flex items-center justify-center"><i class="text-xs" style="color:var(--color-secondary)">Cü</i></div>
-        <span class="cf-label" style="font-family:'Poppins',sans-serif">Clinüx<span style="color:var(--color-primary)">Flow</span></span>
-        <span class="cf-label">Powered by YAXB</span>
-      </div>
-      <p class="cf-label">© 2026 YAXB Technologies Pvt. Ltd. All rights reserved.</p>
-      <div class="flex gap-4 text-sm"><a href="#" class="hover:text-white transition-colors">Privacy</a><a href="#" class="hover:text-white transition-colors">Terms</a></div>
-    </div>
-  </footer>
+  <!-- Affiliations, terms and privacy (src/legal/legal.js) — replaces the old footer's dead "#" links. -->
+  <SiteFooter />
 
   <!-- SPEC-20: General category thread hosts Register/Login/Forgot Password/Change Password —
        Index.vue didn't mount Cübo at all before this. Floating FAB badge — "Try Guided Setup"
