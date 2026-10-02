@@ -5,7 +5,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createRunner } from './runtime.js';
 import { HPR_RECORD, hprJourney } from './hprJourney.js';
-import { FACILITY_NAME_PATTERN, HFR_RECORD, buildBasicInformation, hfrJourney, hfrName } from './hfrJourney.js';
+import { FACILITY_NAME_PATTERN, HFR_RECORD, buildBasicInformation, hfrJourney, hfrName, hfrPhoto, hfrTime } from './hfrJourney.js';
+import { HFR_FACILITIES, facilityResourceKey } from './hfrFacilities.js';
 import { vault } from './vault.js';
 import { GatewayError, toOptions } from './gateway.js';
 import { PROFILE } from './fhir.js';
@@ -66,6 +67,22 @@ function linkRoutes(state = { authenticated: true }, details = {}) {
 }
 
 describe('HPR journey', () => {
+    it('a linked HPR ID is read-only: view it, or sign in to that same ID for the session', async () => {
+        const { gateway } = fakeGateway({ 'POST /hpr/auth/password-login': { success: true, token: 't' }, 'POST /hpr/professional/fetch': { success: true, name: 'Asha' } });
+        const records = new Map([[HPR_RECORD, { hprId: 'asha@hpr.abdm', name: 'Asha', linkedAt: '2026-10-01T10:00:00Z', via: 'sign-in' }]]);
+        let run = createRunner(hprJourney, deps(gateway, records));
+        const mode = (await run.start()).prompt;
+        expect(mode.choices.map((c) => c.value)).toEqual(['view', 'link']); // no "register a new one"
+        const view = await run.answer({ choice: 'view' });
+        expect(view.result).toMatchObject({ ok: true, readonly: true, title: 'HPR ID asha@hpr.abdm' });
+        run = createRunner(hprJourney, deps(gateway, records));
+        await run.start();
+        const login = (await run.answer({ choice: 'link' })).prompt;
+        expect(login.fields[0]).toMatchObject({ name: 'hprId', value: 'asha@hpr.abdm', readonly: true });
+        expect((await run.answer({ hprId: 'other@hpr.abdm', password: 'p' })).prompt.error).toMatch(/linked to asha@hpr.abdm/);
+        expect((await run.answer({ hprId: 'asha@hpr.abdm', password: 'p' })).result).toMatchObject({ ok: true, readonly: true });
+    });
+
     it('links an existing HPR ID: signs in, keeps the token in memory only, saves the link', async () => {
         const { gateway, calls } = fakeGateway({
             'POST /hpr/auth/password-login': { success: true, token: 'hpr-token', expiresIn: 600 },
@@ -212,10 +229,19 @@ const hfrRoutes = (overrides = {}) => ({
     'GET /hfr/master/facility-sub-types': { success: true, data: { type: 'FACILITY-SUB-TYPE', data: [{ code: '30', value: 'No Applicable Subtype' }] } },
     'POST /hfr/facility/search': { success: true, facilities: [] },
     'POST /hfr/facility/basic-information': { success: true, trackingId: 'TRK-1' },
+    'GET /hfr/master/specialities': ({ path }) => ({ success: true, data: path.includes('=M') ? [{ code: 'M-S1', value: 'General Medicine' }, { code: 'M-S2', value: 'Paediatrics' }] : [{ code: 'D-S9', value: 'Panchakarma' }] }),
+    'POST /hfr/facility/additional-information': { success: true, trackingId: 'TRK-1', status: 'Saved' },
+    'POST /hfr/facility/detailed-information': { success: true, trackingId: 'TRK-1', status: 'Saved' },
     'POST /hfr/facility/submit': { success: true, facilityId: 'IN2910000001', status: 'Pending' },
     ...overrides,
 });
 
+// Tiny "images": the PNG / JPEG signatures are what hfrPhoto checks.
+const PNG = btoa('\x89PNG\r\n\x1a\n' + 'board'.repeat(8));
+const JPEG = btoa('\xff\xd8\xff\xe0' + 'building'.repeat(8));
+// The facility with this tracking id in the journey's facility list.
+const facilityAt = (d, trackingId) => (d._records.get(HFR_FACILITIES) || []).find((f) => f.trackingId === trackingId);
+const HOURS = { workingDays: ['Mon', 'Tue', 'Sat'], allDay: false, opensAt: '09:00', closesAt: '18:30', boardPhoto: { name: 'board.png', value: PNG }, buildingPhoto: { name: 'building.jpg', value: JPEG } };
 const LOCATION = { ownershipSubType2: 'PP01', facilitySubType: '30', subdistrict: '5555', region: 'U', addressLine1: '1 MG Road', city: 'Bengaluru', pincode: '560001', geo: { lat: 12.97, lng: 77.59 }, phone: '9876543210', email: '' };
 
 describe('HFR journey', () => {
@@ -229,19 +255,42 @@ describe('HFR journey', () => {
         expect((await run.answer({ facilityName: "Asha's Clinic", ownership: 'P', systemsOfMedicine: [], state: '29' })).prompt.error).toMatch(/system of medicine/);
         await run.answer({ facilityName: "Asha's Clinic", ownership: 'P', systemsOfMedicine: ['M', 'D'], state: '29' });
         expect(calls.find((c) => c.path.startsWith('/hfr/master/facility-types')).path).toContain('systemOfMedicineCode=M');
-        const location = (await run.answer({ ownershipSubType: 'P', facilityType: '5', specialityType: 'SINGLE', district: '572' })).prompt;
+        const location = (await run.answer({ ownershipSubType: 'P', facilityType: '5', specialityType: 'SINGLE', district: '572', typesOfService: ['OPD', 'IPD'] })).prompt;
         expect(location.fields[0]).toMatchObject({ name: 'ownershipSubType2', options: [{ value: 'PP01', label: 'Sole Proprietorship' }] });
-        const review = (await run.answer(LOCATION)).prompt;
+        expect((await run.answer(LOCATION)).prompt.step).toBe('hours');
+        expect((await run.answer({ ...HOURS, workingDays: [] })).prompt.error).toMatch(/working day/);
+        expect((await run.answer({ ...HOURS, buildingPhoto: { name: 'x.pdf', value: btoa('%PDF-1.7 not an image') } })).prompt.error).toMatch(/PNG or JPEG/);
+        const review = (await run.answer(HOURS)).prompt;
         expect(review.step).toBe('review');
         expect(review.text).toMatch(/No facility/);
         expect(review.detail).toBe('HFR takes only letters, numbers and spaces, so the name is sent as "Ashas Clinic".');
         expect(calls.find((c) => c.path === '/hfr/facility/search').body.facilityName).toBe('Ashas Clinic');
-        expect((await run.answer({ choice: 'create' })).prompt.step).toBe('submit');
-        expect(d._records.get(HFR_RECORD)).toMatchObject({ trackingId: 'TRK-1' });
+        const additional = (await run.answer({ choice: 'create' })).prompt;
+        expect(additional.step).toBe('additional');
+        expect(facilityAt(d, 'TRK-1')).toMatchObject({ trackingId: 'TRK-1', stage: 'basic', systemsOfMedicine: ['M', 'D'], typesOfService: ['OPD', 'IPD'], address: '1 MG Road, Bengaluru, 560001' });
+        const detailed = (await run.answer({ hasPharmacy: 'N', hasDiagnosticLab: 'YIN', hasImagingCenter: 'N', hasBloodBank: 'N', hasDialysisCenter: 'N', hasCathLab: 'N', nin: ' 1234 ' })).prompt;
+        expect(detailed.step).toBe('detailed');
+        expect(facilityAt(d, 'TRK-1').stage).toBe('additional');
+        expect(detailed.fields.find((f) => f.name === 'spec_M').options).toEqual([{ value: 'M-S1', label: 'General Medicine' }, { value: 'M-S2', label: 'Paediatrics' }]);
+        expect(detailed.fields.some((f) => f.name === 'countIPDBedsWithOxygen')).toBe(true); // IPD offered
+        expect(detailed.fields.some((f) => f.name === 'countDayCareBedsWithOxygen')).toBe(false); // daycare not
+        expect((await run.answer({ spec_M: ['M-S1'], spec_D: [], countIPDBedsWithOxygen: '120' })).prompt.error).toMatch(/0 to 99/);
+        expect((await run.answer({ spec_M: ['M-S1'], spec_D: [], countIPDBedsWithoutOxygen: '10', countIPDBedsWithOxygen: '5', countICUBedsWithVentilators: '2', countHDUBedsWithVentilators: '1', countDentalChairs: '0' })).prompt.step).toBe('submit');
+        expect(facilityAt(d, 'TRK-1').stage).toBe('detailed');
+        const add = calls.find((c) => c.path === '/hfr/facility/additional-information').body;
+        expect(add).toMatchObject({ trackingId: 'TRK-1', linkedProgramIds: { nin: '1234', abpmjayId: '' }, generalInformation: { hasDiagnosticLab: 'YIN', hasPharmacy: 'N', servicesByImagingCenter: [] } });
+        const det = calls.find((c) => c.path === '/hfr/facility/detailed-information').body;
+        expect(det.specialities).toEqual([
+            { systemOfMedicineCode: 'M', isSpecializationAvalaible: 'Y', specialities: ['S1'] },
+            { systemOfMedicineCode: 'D', isSpecializationAvalaible: 'N', specialities: [] },
+        ]);
+        expect(det.medicalInfrastructure).toMatchObject({ countIPDBedsWithoutOxygen: 10, totalNumberOfBeds: 16, totalNumberOfVentilators: 3, countDayCareBedsWithOxygen: 0 });
+        expect(det.pharmacyDetails).toBeUndefined();
         const end = await run.answer({ choice: 'submit' });
         expect(end.result).toMatchObject({ ok: true, title: 'Submitted to HFR' });
-        expect(d._records.get(HFR_RECORD)).toMatchObject({ facilityId: 'IN2910000001', trackingId: 'TRK-1' });
-        const org = d._records.get('fhir:facility').resource;
+        expect(facilityAt(d, 'TRK-1')).toMatchObject({ facilityId: 'IN2910000001', trackingId: 'TRK-1' });
+        expect(end.result).toMatchObject({ readonly: true, again: 'Register another facility' });
+        const org = d._records.get(facilityResourceKey('TRK-1')).resource;
         expect(org).toMatchObject({ resourceType: 'Organization', name: 'Ashas Clinic', meta: { profile: [PROFILE.facility] }, address: [{ line: ['1 MG Road'], postalCode: '560001', country: 'India' }], type: [{ coding: [{ code: 'prov' }] }] });
         expect(org.identifier.map((i) => [i.type.coding[0].code, i.system, i.value])).toEqual([
             ['PRN', 'https://clinux.yaxb.ai/fhir/sid/clinic', 'clinic-1'],
@@ -251,14 +300,23 @@ describe('HFR journey', () => {
         expect(orgExt).toEqual(expect.arrayContaining([['hfr-facility-type', '5'], ['hfr-facility-subtype', '30'], ['hfr-system-of-medicine', 'M'], ['hfr-system-of-medicine', 'D'], ['hfr-geolocation-latitude', 12.97], ['hfr-tracking-id', 'TRK-1']]));
         expect(end.result.facts.at(-1)).toEqual(['FHIR', 'Organization valid against ClinuxFlowFacility']);
         expect(d._journal.map((e) => [e.title, e.location?.lat])).toEqual([
-            ['HFR draft for Ashas Clinic', 12.97],
+            ['HFR draft created for Ashas Clinic', 12.97],
             ['Ashas Clinic submitted to HFR', 12.97],
         ]);
         expect(review.map.markers[0]).toMatchObject({ id: 'yours', lat: 12.97, lng: 77.59 });
 
         const basic = calls.find((c) => c.path === '/hfr/facility/basic-information');
         expect(basic.headers).toEqual({ 'X-HPRID-Auth-Token': 'mgr-token' });
-        expect(basic.body.facilityInformation).toMatchObject({ systemOfMedicineCode: 'M,D', ownershipCode: 'P', ownershipSubTypeCode: 'P', ownershipSubTypeCode2: 'PP01', facilityTypeCode: '5', facilitySubType: '30' });
+        expect(basic.body.facilityInformation).toMatchObject({ systemOfMedicineCode: 'M,D', typeOfServiceCode: 'OPD,IPD', ownershipCode: 'P', ownershipSubTypeCode: 'P', ownershipSubTypeCode2: 'PP01', facilityTypeCode: '5', facilitySubType: '30' });
+        // HIS-1070 / HIS-4050 (live 2026-10-02): timings, and both photographs, are required.
+        expect(basic.body.facilityInformation.timingsOfFacility).toEqual([
+            { workingDays: 'Mon', openingHours: '9:00 AM - 6:30 PM' },
+            { workingDays: 'Tue', openingHours: '9:00 AM - 6:30 PM' },
+            { workingDays: 'Sat', openingHours: '9:00 AM - 6:30 PM' },
+        ]);
+        expect(basic.body.facilityInformation.facilityUploads).toEqual({ facilityBoardPhoto: { name: 'board.png', value: PNG }, facilityBuildingPhoto: { name: 'building.jpg', value: JPEG } });
+        // The photos go to HFR only — not into what the journey keeps on this device.
+        expect(JSON.stringify(d._records.get(HFR_FACILITIES))).not.toContain(PNG);
         expect(calls.find((c) => c.path.startsWith('/hfr/facility/search')).body.resultsPerPage).toBeGreaterThanOrEqual(10);
         expect(basic.body.facilityInformation.facilityAddressDetails).toMatchObject({ stateLGDCode: '29', districtLGDCode: '572', subDistrictLGDCode: '5555', pincode: '560001' });
         expect(calls.find((c) => c.path === '/hfr/facility/submit')).toMatchObject({ body: { trackingId: 'TRK-1' }, headers: { 'X-HPRID-Auth-Token': 'mgr-token' } });
@@ -267,13 +325,113 @@ describe('HFR journey', () => {
     it('reuses this session’s HPR sign-in and offers a saved draft for submission', async () => {
         vault.setHpr(account.id, { token: 'from-hpr-journey', hprId: 'mgr@hpr.abdm' });
         const { gateway, calls } = fakeGateway(hfrRoutes());
-        const records = new Map([[HFR_RECORD, { facilityName: "Asha's Clinic", trackingId: 'TRK-9' }]]);
+        const records = new Map([[HFR_RECORD, { facilityName: "Asha's Clinic", trackingId: 'TRK-9', stage: 'detailed' }]]);
         const run = createRunner(hfrJourney, deps(gateway, records));
-        expect((await run.start()).prompt.step).toBe('resume');
-        expect((await run.answer({ choice: 'submit' })).prompt.step).toBe('submit');
+        // The old single-facility record is migrated into the facility list.
+        expect((await run.start()).prompt.step).toBe('facilities');
+        expect((await run.answer({ choice: 'continue:TRK-9' })).prompt.step).toBe('submit');
         expect((await run.answer({ choice: 'submit' })).result.ok).toBe(true);
         expect(calls.map((c) => c.path)).toEqual(['/hfr/facility/submit']);
         expect(calls[0]).toMatchObject({ body: { trackingId: 'TRK-9' }, headers: { 'X-HPRID-Auth-Token': 'from-hpr-journey' } });
+    });
+
+    it('going back to an earlier step re-runs from there and updates the same draft', async () => {
+        const { gateway, calls } = fakeGateway(hfrRoutes());
+        const d = deps(gateway);
+        const run = createRunner(hfrJourney, d);
+        await run.start();
+        await run.answer({ hprId: 'mgr@hpr.abdm', password: 'p' });
+        await run.answer({ facilityName: 'Ashas Clinic', ownership: 'P', systemsOfMedicine: ['M'], state: '29' });
+        await run.answer({ ownershipSubType: 'P', facilityType: '5', specialityType: 'SINGLE', district: '572', typesOfService: ['OPD'] });
+        await run.answer(LOCATION);
+        await run.answer(HOURS);
+        const additional = await run.answer({ choice: 'create' });
+        expect(additional.prompt.step).toBe('additional');
+        expect(calls.filter((c) => c.path === '/hfr/facility/basic-information')[0].body.trackingId).toBe('');
+        // Not revisitable: the sign-in. Revisitable: Location.
+        expect(additional.ledger.find((st) => st.id === 'managerLogin').revisit).toBeUndefined();
+        expect(additional.ledger.find((st) => st.id === 'location')).toMatchObject({ revisit: true, state: 'done' });
+        await expect(run.back('managerLogin')).rejects.toThrow(/can’t be changed/);
+        const location = await run.back('location');
+        expect(location.prompt.step).toBe('location');
+        expect(location.ledger.find((st) => st.id === 'location').state).toBe('active');
+        expect(location.ledger.find((st) => st.id === 'hours').state).toBe('pending');
+        expect((await run.answer({ ...LOCATION, addressLine1: '2 MG Road' })).prompt.step).toBe('hours');
+        const review = (await run.answer(HOURS)).prompt;
+        expect(review.choices[0]).toMatchObject({ value: 'create', label: 'Update the HFR draft' });
+        expect((await run.answer({ choice: 'create' })).prompt.step).toBe('additional');
+        const basics = calls.filter((c) => c.path === '/hfr/facility/basic-information');
+        expect(basics).toHaveLength(2);
+        expect(basics[1].body.trackingId).toBe('TRK-1'); // the same draft, updated — not a second facility
+        expect(basics[1].body.facilityInformation.facilityAddressDetails.addressLine1).toBe('2 MG Road');
+        expect(d._journal.map((e) => e.title)).toEqual(['HFR draft created for Ashas Clinic', 'HFR draft updated for Ashas Clinic']);
+    });
+
+    it('lists every facility: submitted ones are view-only, drafts continue, and another can be registered', async () => {
+        vault.setHpr(account.id, { token: 'from-hpr-journey', hprId: 'mgr@hpr.abdm' });
+        const { gateway, calls } = fakeGateway(hfrRoutes());
+        const records = new Map([[HFR_FACILITIES, [
+            { facilityName: 'Main Clinic', trackingId: '11', facilityId: 'IN331', status: 'Created', stage: 'detailed', submittedAt: '2026-10-01T10:00:00Z', address: '1 MG Road' },
+            { facilityName: 'Branch Clinic', trackingId: '12', stage: 'additional', createdAt: '2026-10-02T10:00:00Z' },
+        ]]]);
+        const d = deps(gateway, records);
+        let run = createRunner(hfrJourney, d);
+        const list = (await run.start()).prompt;
+        expect(list.choices.map((c) => c.value)).toEqual(['continue:12', 'view:11', 'new']);
+        const view = await run.answer({ choice: 'view:11' });
+        expect(view.result).toMatchObject({ ok: true, readonly: true, title: 'Main Clinic' });
+        expect(view.result.facts).toEqual(expect.arrayContaining([['Facility id', 'IN331'], ['Address', '1 MG Road']]));
+        expect(calls).toEqual([]); // viewing sends nothing
+        // A new registration doesn't touch the others.
+        run = createRunner(hfrJourney, d);
+        await run.start();
+        expect((await run.answer({ choice: 'new' })).prompt.step).toBe('facility');
+    });
+
+    it('a draft resumes at the first section HFR does not have yet', async () => {
+        const { gateway, calls } = fakeGateway(hfrRoutes());
+        // Saved after Basic Information only, by an earlier visit (no HPR session now).
+        const records = new Map([[HFR_RECORD, { facilityName: 'Ashas Clinic', trackingId: 'TRK-7', stage: 'basic', systemsOfMedicine: ['M'], typesOfService: ['OPD'] }]]);
+        const d = deps(gateway, records);
+        const run = createRunner(hfrJourney, d);
+        const list = (await run.start()).prompt;
+        expect(list.step).toBe('facilities');
+        expect(list.choices[0]).toMatchObject({ value: 'continue:TRK-7' });
+        expect(list.choices[0].detail).toMatch(/programmes and services next/);
+        expect((await run.answer({ choice: 'continue:TRK-7' })).prompt.step).toBe('additional');
+        const detailed = (await run.answer({ hasPharmacy: 'YALL', hasDiagnosticLab: 'N', hasImagingCenter: 'N', hasBloodBank: 'N', hasDialysisCenter: 'N', hasCathLab: 'N' })).prompt;
+        // OPD only: no bed counts at all (HFR refuses Medical Infrastructure for OPD, live 2026-10-02).
+        expect(detailed.fields.map((f) => f.name)).toEqual(['spec_M', 'drugLicenseNumber', 'pharmacistRegistrationNumber', 'pharmacyGstinNumber', 'janAushadhiKendraId']);
+        // No HPR session: sign in, then straight to submit (not back to a new facility).
+        expect((await run.answer({ spec_M: [], drugLicenseNumber: 'DL-1', pharmacistRegistrationNumber: 'PR-1' })).prompt.step).toBe('managerLogin');
+        expect((await run.answer({ hprId: 'mgr@hpr.abdm', password: 'p' })).prompt.step).toBe('submit');
+        const det = calls.find((c) => c.path === '/hfr/facility/detailed-information').body;
+        expect(det).toMatchObject({ trackingId: 'TRK-7', pharmacyDetails: { drugLicenseNumber: 'DL-1', isJanAushadhiKendra: 'N' } });
+        expect(det.medicalInfrastructure).toBeUndefined();
+        expect(calls.some((c) => c.path === '/hfr/facility/basic-information')).toBe(false);
+    });
+
+    it('a draft saved before its systems of medicine were kept asks for them', async () => {
+        const { gateway, calls } = fakeGateway(hfrRoutes());
+        const records = new Map([[HFR_RECORD, { facilityName: 'Ashas Clinic', trackingId: '98065' }]]);
+        const run = createRunner(hfrJourney, deps(gateway, records));
+        await run.start();
+        await run.answer({ choice: 'continue:98065' });
+        const detailed = (await run.answer({ hasPharmacy: 'N', hasDiagnosticLab: 'N', hasImagingCenter: 'N', hasBloodBank: 'N', hasDialysisCenter: 'N', hasCathLab: 'N' })).prompt;
+        expect(detailed.fields[0]).toMatchObject({ name: 'systemsOfMedicine', type: 'multiselect', required: true });
+        expect(detailed.fields[1]).toMatchObject({ name: 'typesOfService', type: 'multiselect', value: ['OPD'] });
+        expect((await run.answer({ systemsOfMedicine: ['M'], typesOfService: ['OPD'] })).prompt.step).toBe('managerLogin');
+        expect(calls.find((c) => c.path === '/hfr/facility/detailed-information').body.medicalInfrastructure).toBeUndefined();
+    });
+
+    it('HFR refusing a section in its 200 answer is shown and asked again', async () => {
+        const { gateway } = fakeGateway(hfrRoutes({ 'POST /hfr/facility/additional-information': { success: true, trackingId: null, errorStatus: [{ message: 'Invalid NIN' }] } }));
+        const records = new Map([[HFR_RECORD, { facilityName: 'X', trackingId: '1', stage: 'basic', systemsOfMedicine: ['M'] }]]);
+        const run = createRunner(hfrJourney, deps(gateway, records));
+        await run.start();
+        await run.answer({ choice: 'continue:1' });
+        const again = (await run.answer({ hasPharmacy: 'N', hasDiagnosticLab: 'N', hasImagingCenter: 'N', hasBloodBank: 'N', hasDialysisCenter: 'N', hasCathLab: 'N', nin: 'x' })).prompt;
+        expect(again).toMatchObject({ step: 'additional', error: 'Invalid NIN' });
     });
 
     it('stopping at the duplicate check sends nothing to HFR', async () => {
@@ -282,8 +440,9 @@ describe('HFR journey', () => {
         await run.start();
         await run.answer({ hprId: 'm', password: 'p' });
         await run.answer({ facilityName: "Asha's Clinic", ownership: 'P', systemsOfMedicine: ['M'], state: '29' });
-        await run.answer({ ownershipSubType: 'P', facilityType: '5', specialityType: 'SINGLE', district: '572' });
-        const review = (await run.answer(LOCATION)).prompt;
+        await run.answer({ ownershipSubType: 'P', facilityType: '5', specialityType: 'SINGLE', district: '572', typesOfService: ['OPD', 'IPD'] });
+        await run.answer(LOCATION);
+        const review = (await run.answer(HOURS)).prompt;
         expect(review.list).toEqual([{ name: "Asha's Clinic", detail: 'IN29X' }]);
         expect((await run.answer({ choice: 'stop' })).result.title).toBe('Nothing was sent to HFR');
         expect(calls.some((c) => c.path === '/hfr/facility/basic-information')).toBe(false);
@@ -304,9 +463,41 @@ describe('HFR journey', () => {
         await run.start();
         await run.answer({ hprId: 'm', password: 'p' });
         await run.answer({ facilityName: 'Ashas Clinic', ownership: 'P', systemsOfMedicine: ['M'], state: '29' });
-        await run.answer({ ownershipSubType: 'P', facilityType: '5', specialityType: 'SINGLE', district: '572' });
+        await run.answer({ ownershipSubType: 'P', facilityType: '5', specialityType: 'SINGLE', district: '572', typesOfService: ['OPD', 'IPD'] });
         const again = (await run.answer(LOCATION)).prompt;
         expect(again).toMatchObject({ step: 'location', error: 'Please enter valid facility Name.' });
+    });
+
+    it('prefills the manager sign-in from the HPR ID on the Cübo profile, and marks it a sign-in step', async () => {
+        const { gateway } = fakeGateway(hfrRoutes());
+        const records = new Map([['abdm:hpr', { hprId: 'asha@hpr.abdm' }]]);
+        const first = await createRunner(hfrJourney, deps(gateway, records)).start();
+        expect(first.prompt.fields[0]).toMatchObject({ name: 'hprId', value: 'asha@hpr.abdm' });
+        expect(first.prompt.detail).toMatch(/Cübo profile has HPR ID asha@hpr.abdm/);
+        expect(first.ledger.find((st) => st.id === 'managerLogin')).toMatchObject({ signIn: 'hpr', state: 'active' });
+    });
+
+    it('asks for the type of service unless the facility type is exempt', async () => {
+        const { gateway } = fakeGateway(hfrRoutes({ 'GET /hfr/master/facility-types': { success: true, data: [{ code: '5', value: 'Clinic' }, { code: '9', value: 'Pharmacy' }] } }));
+        const run = createRunner(hfrJourney, deps(gateway));
+        await run.start();
+        await run.answer({ hprId: 'm', password: 'p' });
+        await run.answer({ facilityName: 'Ashas Clinic', ownership: 'P', systemsOfMedicine: ['M'], state: '29' });
+        const classify = { ownershipSubType: 'P', specialityType: 'SINGLE', district: '572', typesOfService: [] };
+        expect((await run.answer({ ...classify, facilityType: '5' })).prompt.error).toMatch(/type of service/);
+        expect((await run.answer({ ...classify, facilityType: '9' })).prompt.step).toBe('location');
+    });
+
+    it('24×7 and the time format HFR takes', async () => {
+        expect(hfrTime('09:05')).toBe('9:05 AM');
+        expect(hfrTime('00:00')).toBe('12:00 AM');
+        expect(hfrTime('12:30')).toBe('12:30 PM');
+        expect(hfrTime('23:59')).toBe('11:59 PM');
+        expect(hfrTime('')).toBeNull();
+        const info = buildBasicInformation({ systemsOfMedicine: ['M'], workingDays: ['Sun'], openingHours: '24*7' }).facilityInformation;
+        expect(info.timingsOfFacility).toEqual([{ workingDays: 'Sun', openingHours: '24*7' }]);
+        expect(() => hfrPhoto(null, 'board photo')).toThrow(/Add the board photo/);
+        expect(() => hfrPhoto({ name: 'big.png', value: PNG + 'A'.repeat(7 * 1024 * 1024) }, 'board photo')).toThrow(/5 MB/);
     });
 
     it('buildBasicInformation defaults what the journey does not ask', () => {

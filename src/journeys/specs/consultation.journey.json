@@ -1,0 +1,26 @@
+{
+  "$comment": "Consultation, as a journey (was pages/ConsultationDesk.vue): the SOAP notes (with an AI draft from what's dictated into this Cübo thread, paid plan, and a prescription PDF), documents attached to the visit, and the hand-off to Checkout. A visit routed to someone else isn't opened; a closed visit opens read-only. Handlers: clinic/consultationJourney.js.",
+  "id": "consultation",
+  "title": "Consultation",
+  "summary": "Notes, prescription and documents for a visit",
+  "icon": "fa-stethoscope",
+  "category": "encounter",
+  "related": [{ "label": "Patients", "to": "/patient-home", "icon": "fa-user-injured", "note": "The clinic's patient records" }],
+  "start": "begin",
+  "steps": {
+    "begin":        { "type": "auto", "run": "begin", "next": [
+                        { "if": "data.missing", "to": "missing" },
+                        { "if": "!data.hasEncounter", "to": "missing" },
+                        { "if": "data.closed", "to": "closed" },
+                        { "if": "data.notYours", "to": "notYours" },
+                        { "to": "notes" } ] },
+    "notes":        { "type": "ask", "revisit": true, "prompt": "notes", "run": "saveNotes", "next": [{ "if": "data.stay", "to": "notes" }, { "to": "documents" }], "ledger": { "label": "Consultation notes" } },
+    "documents":    { "type": "ask", "revisit": true, "prompt": "documents", "run": "chooseDocument", "next": [{ "if": "data.addFormId", "to": "documentForm" }, { "to": "handoff" }], "ledger": { "label": "Documents" } },
+    "documentForm": { "type": "ask", "prompt": "documentForm", "run": "saveDocument", "next": "documents" },
+    "handoff":      { "type": "ask", "prompt": "handoff", "run": "handOff", "next": "done", "ledger": { "label": "Hand-off" } },
+    "done":         { "type": "final", "run": "result" },
+    "closed":       { "type": "final", "run": "closedView" },
+    "notYours":     { "type": "final", "run": "notYoursResult" },
+    "missing":      { "type": "final", "run": "missingResult" }
+  }
+}

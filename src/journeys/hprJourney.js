@@ -96,18 +96,30 @@ export const hprJourney = {
     roles: ['health_professional', 'hospital_admin', 'admin_and_health_professional'],
 
     prompts: {
-        mode: (s) => ({
-            text: s.data.linked ? `Your account is linked to HPR ID ${s.data.linked.hprId}. What would you like to do?` : 'Do you already have an HPR ID?',
-            choices: [
-                { value: 'link', label: s.data.linked ? 'Sign in to HPR again' : 'Yes, link my HPR ID', detail: 'Sign in with your HPR ID and password' },
-                { value: 'register', label: 'Register a new HPR ID', detail: 'Verify with Aadhaar, then enter your professional details' },
-            ],
-        }),
+        // Once an HPR ID is linked or registered, it's read-only here: view it, or sign in to it for
+        // this session (what HFR registration needs) — not link or register a different one.
+        mode: (s) => (s.data.linked
+            ? {
+                text: `Your account is linked to HPR ID ${s.data.linked.hprId}.`,
+                detail: 'A linked HPR ID is read-only here.',
+                choices: [
+                    { value: 'view', label: 'View my HPR ID' },
+                    { value: 'link', label: 'Sign in to HPR for this session', detail: 'Needed to register a facility with HFR' },
+                ],
+            }
+            : {
+                text: 'Do you already have an HPR ID?',
+                choices: [
+                    { value: 'link', label: 'Yes, link my HPR ID', detail: 'Sign in with your HPR ID and password' },
+                    { value: 'register', label: 'Register a new HPR ID', detail: 'Verify with Aadhaar, then enter your professional details' },
+                ],
+            }),
         login: (s) => ({
             text: 'Sign in to the Healthcare Professional Registry.',
             detail: 'Your password goes to ABDM through the ClinuxFlow gateway and is not stored.',
             fields: [
-                { name: 'hprId', label: 'HPR ID', placeholder: 'name@hpr.abdm', value: s.data.linked?.hprId || '', required: true },
+                // The linked HPR ID can't be swapped for another here (read-only once linked).
+                { name: 'hprId', label: 'HPR ID', placeholder: 'name@hpr.abdm', value: s.data.linked?.hprId || '', readonly: !!s.data.linked, required: true },
                 { name: 'password', label: 'HPR password', type: 'password', secret: true, required: true },
             ],
             submitLabel: 'Sign in',
@@ -191,9 +203,33 @@ export const hprJourney = {
         // begin
         loadLinked: async (s, d) => ({ data: { linked: (await d.records.get(HPR_RECORD)) || null, email: d.account?.email } }),
         // mode
-        chooseMode: async (a) => ({ data: { mode: a.choice } }),
+        chooseMode: async (a, s) => {
+                if (a.choice === 'register' && s.data.linked) throw new Error('This account already has an HPR ID.');
+                return { data: { mode: a.choice } };
+            },
+        // viewLinked: the linked HPR ID, read-only.
+        viewLinked: async (s, d) => {
+                const l = s.data.linked;
+                const session = d.vault.hpr(d.account.id);
+                return {
+                    result: {
+                        ok: true,
+                        readonly: true,
+                        title: `HPR ID ${l.hprId}`,
+                        text: 'Linked to your account. It can’t be changed here.',
+                        facts: [
+                            ['HPR ID', l.hprId],
+                            ...(l.hprIdNumber ? [['HPR number', l.hprIdNumber]] : []),
+                            ...(l.name ? [['Name', l.name]] : []),
+                            ['Linked', `${new Date(l.linkedAt || l.createdAt || Date.now()).toLocaleString()} (${l.via === 'registration' ? 'registered here' : 'signed in'})`],
+                            ['HPR session', session ? 'Signed in for this session' : 'Not signed in'],
+                        ],
+                    },
+                };
+            },
         // login
         passwordLogin: async (a, s, d) => {
+                if (s.data.linked && a.hprId.trim() !== s.data.linked.hprId) throw new Error(`This account is linked to ${s.data.linked.hprId}; sign in with that HPR ID.`);
                 const res = await post(d.gateway, '/hpr/auth/password-login', { hprId: a.hprId.trim(), password: a.password });
                 d.vault.setHpr(d.account.id, { token: res.token, hprId: a.hprId.trim(), expiresIn: res.expiresIn });
                 return { data: { hprId: a.hprId.trim() } };
@@ -220,6 +256,7 @@ export const hprJourney = {
                 return {
                     result: {
                         ok: true,
+                        readonly: true,
                         title: 'HPR ID linked',
                         text: 'You are signed in to HPR for this session, so facility registration can use it.',
                         facts: [['HPR ID', record.hprId], ...(record.name ? [['Name', record.name]] : []), fhir],
@@ -378,6 +415,7 @@ export const hprJourney = {
                 return {
                     result: {
                         ok: true,
+                        readonly: true,
                         title: 'HPR ID created',
                         text: 'Your HPR ID is registered. Complete your professional profile (qualifications, work details) in ClinuxFlow to finish HPR verification.',
                         facts: [['HPR ID', c.hprId], ...(c.hprIdNumber ? [['HPR number', c.hprIdNumber]] : []), ['Name', c.name], fhir],

@@ -1,0 +1,31 @@
+{
+  "$comment": "Front Desk check-in, as a journey (was pages/FrontDesk.vue's wizard): find or register the patient, then the visit's encounter details and vitals (sections of the one Encounter composition record), optional routing to a specialist, optional additional forms, and the hand-off to Consultation. One run per visit (the Cübo thread is keyed by the encounter id). A closed visit opens read-only. Handlers: clinic/frontDeskJourney.js.",
+  "id": "front-desk",
+  "title": "Front Desk check-in",
+  "summary": "Patient, encounter, vitals and routing for a visit",
+  "icon": "fa-clipboard-user",
+  "category": "encounter",
+  "related": [{ "label": "Patients", "to": "/patient-home", "icon": "fa-user-injured", "note": "The clinic's patient records" }],
+  "start": "begin",
+  "steps": {
+    "begin":          { "type": "auto", "run": "begin", "next": [
+                          { "if": "data.missing", "to": "missing" },
+                          { "if": "data.closed", "to": "closed" },
+                          { "if": "data.lockedBy", "to": "locked" },
+                          { "if": "data.hasEncounter", "to": "encounter" },
+                          { "to": "patient" } ] },
+    "patient":        { "type": "ask", "revisit": true, "prompt": "patient", "run": "choosePatient", "next": [{ "if": "data.newPatient", "to": "newPatient" }, { "to": "encounter" }], "ledger": { "label": "Patient" } },
+    "newPatient":     { "type": "ask", "prompt": "newPatient", "run": "savePatient", "next": "encounter" },
+    "encounter":      { "type": "ask", "revisit": true, "prompt": "encounter", "run": "saveEncounter", "next": "vitals", "ledger": { "label": "Encounter" } },
+    "vitals":         { "type": "ask", "revisit": true, "prompt": "vitals", "run": "saveVitals", "next": "loadRouting", "ledger": { "label": "Vitals" } },
+    "loadRouting":    { "type": "auto", "run": "loadRouting", "next": "routing" },
+    "routing":        { "type": "ask", "revisit": true, "prompt": "routing", "run": "route", "next": "additional", "ledger": { "label": "Routing" } },
+    "additional":     { "type": "ask", "revisit": true, "prompt": "additional", "run": "chooseAdditional", "next": [{ "if": "data.addFormId", "to": "additionalForm" }, { "to": "handoff" }], "ledger": { "label": "Additional forms" } },
+    "additionalForm": { "type": "ask", "prompt": "additionalForm", "run": "saveAdditional", "next": "additional" },
+    "handoff":        { "type": "ask", "prompt": "handoff", "run": "handOff", "next": "done", "ledger": { "label": "Hand-off" } },
+    "done":           { "type": "final", "run": "result" },
+    "closed":         { "type": "final", "run": "closedView" },
+    "locked":         { "type": "final", "run": "lockedResult" },
+    "missing":        { "type": "final", "run": "missingResult" }
+  }
+}

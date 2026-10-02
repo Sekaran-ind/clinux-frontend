@@ -4,10 +4,12 @@
   "title": "Patient ABHA",
   "summary": "Find, link or create a patient’s Ayushman Bharat Health Account",
   "icon": "fa-id-card",
+  "related": [{ "label": "Patients", "to": "/patient-home", "icon": "fa-user-injured", "note": "The clinic’s patient records, where ABHA is recorded" }],
   "start": "begin",
   "steps": {
-    "begin":       { "type": "auto", "run": "loadPatients", "next": [{ "if": "data.patientName", "to": "mode" }, { "to": "pickPatient" }] },
-    "pickPatient": { "type": "ask", "prompt": "pickPatient", "run": "choosePatient", "next": "mode", "ledger": { "label": "Patient" } },
+    "begin":       { "type": "auto", "run": "loadPatients", "next": [{ "if": "data.patientName && data.hasAbha", "to": "viewAbha" }, { "if": "data.patientName", "to": "mode" }, { "to": "pickPatient" }] },
+    "pickPatient": { "type": "ask", "revisit": true, "prompt": "pickPatient", "run": "choosePatient", "next": [{ "if": "data.hasAbha", "to": "viewAbha" }, { "to": "mode" }], "ledger": { "label": "Patient" } },
+    "viewAbha":    { "type": "final", "run": "viewAbha" },
     "mode":        { "type": "ask", "prompt": "mode", "run": "chooseMode", "next": [
                        { "if": "data.mode == 'find'", "to": "findMobile" },
                        { "if": "data.mode == 'number'", "to": "numberLogin" },

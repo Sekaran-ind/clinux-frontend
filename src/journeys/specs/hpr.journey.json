@@ -4,12 +4,14 @@
   "title": "HPR ID",
   "summary": "Link or register your Healthcare Professional Registry ID",
   "icon": "fa-user-doctor",
+  "related": [{ "label": "Professional profile", "to": "/staff-onboarding", "icon": "fa-address-card", "note": "Your own professional details in ClinuxFlow" }],
   "start": "begin",
   "steps": {
     "begin":         { "type": "auto",  "run": "loadLinked", "next": "mode" },
-    "mode":          { "type": "ask",   "prompt": "mode", "run": "chooseMode", "next": [{ "if": "data.mode == 'register'", "to": "aadhaar" }, { "to": "login" }] },
+    "mode":          { "type": "ask",   "prompt": "mode", "run": "chooseMode", "next": [{ "if": "data.mode == 'view'", "to": "viewLinked" }, { "if": "data.mode == 'register'", "to": "aadhaar" }, { "to": "login" }] },
+    "viewLinked":    { "type": "final", "run": "viewLinked" },
 
-    "login":         { "type": "ask",   "prompt": "login", "run": "passwordLogin", "next": "profile", "ledger": { "label": "Sign in to HPR" } },
+    "login":         { "type": "ask", "signIn": "hpr",   "prompt": "login", "run": "passwordLogin", "next": "profile", "ledger": { "label": "Sign in to HPR" } },
     "profile":       { "type": "auto",  "run": "fetchProfile", "onError": "continue", "next": "linked" },
     "linked":        { "type": "final", "run": "saveLinked" },
 
@@ -21,8 +23,8 @@
     "sendMobileOtp": { "type": "auto",  "run": "sendMobileOtp", "next": "mobileOtp" },
     "mobileOtp":     { "type": "ask",   "prompt": "mobileOtp", "run": "verifyMobileOtp", "next": [{ "if": "data.mobileResent", "to": "mobileOtp" }, { "to": "loadMasters" }] },
     "loadMasters":   { "type": "auto",  "run": "loadMasters", "next": "identity" },
-    "identity":      { "type": "ask",   "prompt": "identity", "run": "chooseIdentity", "next": "jurisdiction", "ledger": { "label": "HPR ID and category" } },
-    "jurisdiction":  { "type": "ask",   "prompt": "jurisdiction", "run": "chooseJurisdiction", "next": "loadDistricts", "ledger": { "label": "System of medicine and state" } },
+    "identity":      { "type": "ask", "revisit": true,   "prompt": "identity", "run": "chooseIdentity", "next": "jurisdiction", "ledger": { "label": "HPR ID and category" } },
+    "jurisdiction":  { "type": "ask", "revisit": true,   "prompt": "jurisdiction", "run": "chooseJurisdiction", "next": "loadDistricts", "ledger": { "label": "System of medicine and state" } },
     "loadDistricts": { "type": "auto",  "run": "loadDistricts", "next": "finish" },
     "finish":        { "type": "ask",   "prompt": "finish", "run": "createHprId", "next": "registered", "ledger": { "label": "District, role and password" } },
     "registered":    { "type": "final", "run": "saveRegistered" }

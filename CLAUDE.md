@@ -86,6 +86,40 @@ Fonts/lforms-static — a stray CDN `<script src>` creeping back in is a regress
   workspace's deterministic layer (and is meant for cubo-diary / clinux-cubo); LangGraph is gone
   from this app. HPR/HFR handlers came from clinux-cubo; Patient ABHA uses the gateway's staff
   `/abha/*` routes and writes onto the patient record (`patientRecord.js`). No role filtering.
+  Runs live in `journeys/sessions.js` (Pinia, outside any page) and write their conversation into
+  the journey's Cübo thread (`journey-<id>`, category `registry`); the current step renders in
+  `ui/JourneyPanel.vue` as that thread's content pane, inside Cübo itself (`/registries/:journey`
+  only hosts Cübo). Single-pane Cübo puts chat and content side by side when the card is ≥880px
+  wide, otherwise behind a header Chat / Form switch (both stay mounted); Threads is a sliding
+  drawer. In 3-pane mode the content column is ~half the width for a journey and drag-resizable
+  (`cubo_content_width` in localStorage), and Next Action lists the journeys and the open one's
+  ledger. Form logic (defaults, validation, masking, chat answers) is
+  `ui/promptForm.js`. A `geo` field with `near: { fields, context }` gets "Find the address on the
+  map" (`geocode.js`, Nominatim by default, `VITE_GEOCODE_URL` to override). A journey's progress is the
+  header's progress button (vertical steps + Stop / Start again), not an inline stepper. An ask
+  step marked `"signIn": "hpr"` in the JSON is tied to Cübo's profile (`journeys/profile.js`:
+  `persons` with registry identities — linked HPR ID + live HPR session from `vault.js`, which
+  notifies subscribers); the profile panel's "People" section shows / signs in / signs out. An ask step
+  marked `"revisit": true` can be gone back to (`runner.back(step)` → XState `GOTO`; progress menu's
+  done steps and the form's Back button), prefilled from the run's per-step answers — only mark
+  steps safe to repeat (never OTP/one-time transactions). HFR re-sends Basic Information with the
+  draft's `trackingId`, so a revisit updates the same draft. Deleting a journey's Cübo thread ends
+  its run (`cubo.onThreadDeleted`). Journey runs live in a Pinia store created once per page, so
+  after editing journey code, reload the page (HMR keeps the old definition running).
+- **Completed records are read-only.** A journey result with `readonly: true` hides Start again
+  (only its `again` action, e.g. "Register another facility"); `sections` render a record view.
+  HFR keeps a LIST of independent facilities (`journeys/hfrFacilities.js`, migrated from the old
+  single `abdm:hfr`; one FHIR Organization per facility, `fhir:facility:<trackingId>`) — submitted
+  ones are view-only. A linked HPR ID and a recorded ABHA open read-only too. Journey JSON
+  `"related": [{ label, to }]` shows cross-links in the journey header (HFR ↔ Facility profile).
+- **Clinic operations are journeys** (`src/journeys/clinic/`, `pages/ClinicOps.vue`, `/clinic` and
+  `/clinic/:journey?encounter=<id>`): Front Desk, Consultation and Checkout run in Cübo, one thread
+  per visit (`journey-<id>--<encounterId>`). Form steps (`prompt.form = { formId, group, record }`)
+  render one section of the Encounter composition through LhcFormHost; `visit.js`'s `saveSection` /
+  `encounterRecord.js`'s `mergeSection` merge it back without erasing the stage flags. App data and
+  coordination go through `clinicDeps.js` (fake it in tests). A visit closed at Checkout opens
+  read-only in every clinic journey. The old FrontDesk/ConsultationDesk/Checkout pages still exist
+  (ClinicHome) but the sidebar now points at the journeys.
 - **Forms render from the Questionnaire** (`src/forms/QuestionnaireForm.vue` + `questionnaireForm.js`):
   fields, types, choices, required, enableWhen, repeating groups, cross-group `refTo` choices, and
   layout (`ui-section` / `ui-section-ref` / `ui-input` extensions, SDC itemControl) all come from the

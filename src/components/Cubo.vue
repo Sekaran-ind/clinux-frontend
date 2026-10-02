@@ -26,6 +26,10 @@ import { ONBOARDING_JOURNEYS, visibleOnboardingJourneys } from '../workflow/onbo
 import CuboProfilePanel from './cubo/CuboProfilePanel.vue';
 import CuboContactConversation from './cubo/CuboContactConversation.vue';
 import { listPendingJoinRequests } from '../data/control/joinTokenAdapter.js';
+import { JOURNEYS } from '../journeys/index.js';
+import { useJourneySessionsStore, journeyIdOfThread } from '../journeys/sessions.js';
+import JourneyPanel from '../journeys/ui/JourneyPanel.vue';
+import JourneyMessage from '../journeys/ui/JourneyMessage.vue';
 
 const props = defineProps({
   category: { type: String, default: 'general' },
@@ -38,6 +42,9 @@ const props = defineProps({
   // and is reset back to 'FAB' on unmount so navigating away doesn't leave THREE_PANE mode active
   // for Cübo's OTHER instances elsewhere (the floating FAB badge, inline hosts on other pages).
   forceLayout: { type: String, default: null },
+  // Opens straight onto this thread (it must already exist) — /registries/:journey passes its
+  // journey's thread, so opening Cübo there shows that journey's log.
+  threadId: { type: String, default: null },
 });
 
 const emit = defineEmits(['cubo-api-submit']);
@@ -47,6 +54,7 @@ const cubo = useCuboStore();
 const auth = useAuthStore();
 const entryWorkflow = useEntryWorkflowStore();
 const slotFillHighlights = useSlotFillHighlightsStore();
+const journeySessions = useJourneySessionsStore();
 const { data: threads } = useLiveQuery((q) => q.from({ t: chatThreads }));
 
 // Runs synchronously during setup (not inside onMounted) so this instance never flashes as FAB
@@ -224,7 +232,9 @@ let unsubscribeRoleKnown = null;
 // category gets its own persistent thread. The plain default case (general, no encounter) now
 // seeds the entry menu for a signed-out visitor — previously did nothing at all.
 onMounted(() => {
-  if (props.encounterId) {
+  if (props.threadId) {
+    cubo.switchThread(props.threadId);
+  } else if (props.encounterId) {
     cubo.createNewThread('encounter', `Encounter: ${props.encounterTitle || props.encounterId}`, `enc-${props.encounterId}`, props.encounterId);
   } else if (props.category && props.category !== 'general') {
     const meta = cubo.categoryMeta(props.category);
@@ -284,12 +294,39 @@ watch(() => props.encounterId, (newId, oldId) => {
   }
 });
 
+watch(() => props.threadId, (id) => { if (id) cubo.switchThread(id); });
+
 const chatHistoryEl = ref(null);
 function scrollChatToBottom() {
   setTimeout(() => {
     if (chatHistoryEl.value) chatHistoryEl.value.scrollTop = chatHistoryEl.value.scrollHeight;
   }, 50);
 }
+// Messages also arrive from outside this component (a journey writing its log into its thread),
+// and opening a thread should land on its latest message — follow both.
+watch(() => [cubo.activeThreadId, activeThread.value?.messages?.length], scrollChatToBottom, { immediate: true });
+
+// ── Registry journeys (journeys/sessions.js). A journey's thread is `journey-<id>`; its form is
+// the Content tab (THREE_PANE) or the host page's form pane (/registries/:journey), and the
+// Next Action tab lists the journeys from their JSON with where each run is up to.
+const activeJourneyThreadId = computed(() => (journeyIdOfThread(activeThread.value?.id) ? activeThread.value.id : null));
+function journeyStatus(journey) {
+  const s = journeySessions.sessions[`journey-${journey.id}`];
+  if (!s) return journey.summary;
+  if (s.busy) return 'Working…';
+  if (s.result) return s.result.title;
+  const now = s.ledger.find((st) => st.state === 'active');
+  return now ? `Now: ${now.label}` : 'In progress';
+}
+function openJourney(journey) {
+  if (!auth.currentUser) return;
+  activeContact.value = null;
+  journeySessions.open(journey.id, { account: auth.currentUser });
+  rightPaneTab.value = 'content';
+  threePaneMobileView.value = 'content';
+}
+// What's next in the open journey, straight from its JSON ledger (engine.js ledgerOf).
+const activeJourneyLedger = computed(() => journeySessions.sessions[activeJourneyThreadId.value]?.ledger || []);
 
 // --- Pacer: rate-limit sending so a rapid double-click/double-Enter can't fire two overlapping
 // requests. leading:true fires the first call immediately; trailing:false deliberately drops (as
@@ -378,6 +415,14 @@ async function sendPrompt() {
 }
 
 async function dispatchPrompt(prompt) {
+  // A registry journey's thread: the message answers the journey (a choice, or a one-field step)
+  // or Cübo says what the step needs — it never goes to the generic command path below.
+  if (activeJourneyThreadId.value) {
+    cubo.promptText = '';
+    slashOpen.value = false;
+    journeySessions.chat(activeJourneyThreadId.value, prompt);
+    return;
+  }
   cubo.addCuboMessage('user', prompt);
   cubo.promptText = '';
   slashOpen.value = false;
@@ -496,6 +541,67 @@ const rightPaneTab = ref('next-best-action');
 // breakpoint. Defaults to 'chat' — the primary interaction surface.
 const threePaneMobileView = ref('chat'); // 'threads' | 'chat' | 'content'
 
+// ── A thread's content pane. Today that's a registry journey's form (JourneyPanel); the thread
+// decides, so any Cübo instance — floating, docked, hosted in a page — shows it.
+const threadHasContent = computed(() => !!activeJourneyThreadId.value);
+// Single-pane layouts: chat and content side by side when the card is wide enough, otherwise one
+// at a time behind the header's Chat / Form switch (both stay mounted).
+const SPLIT_MIN_WIDTH = 880;
+const cardEl = ref(null);
+const cardWidth = ref(0);
+const cardResize = new ResizeObserver(([entry]) => { cardWidth.value = entry.contentRect.width; });
+watch(cardEl, (el, old) => {
+  if (old) cardResize.unobserve(old);
+  if (el) cardResize.observe(el);
+});
+onBeforeUnmount(() => cardResize.disconnect());
+const splitView = computed(() => !isThreePane.value && threadHasContent.value && cardWidth.value >= SPLIT_MIN_WIDTH);
+const singleView = ref('chat'); // 'chat' | 'content'
+// Opening a thread with content lands on its content (the step to act on); the chat is a tap away.
+watch(activeJourneyThreadId, (id) => {
+  singleView.value = id ? 'content' : 'chat';
+  if (id) rightPaneTab.value = 'content';
+}, { immediate: true });
+// A step waiting in the hidden form gets a dot on the switch.
+const contentWaiting = computed(() => {
+  const s = journeySessions.sessions[activeJourneyThreadId.value];
+  return singleView.value === 'chat' && !!s?.prompt && !s.busy;
+});
+
+// ── THREE_PANE's content column width: wide by default when it holds a journey's form (half the
+// workspace), narrow otherwise; dragging the divider sets it, remembered on this device.
+const CONTENT_W_KEY = 'cubo_content_width';
+const MIN_CONTENT_W = 360;
+const MIN_CHAT_W = 320;
+function readContentWidth() {
+  try { return Number(localStorage.getItem(CONTENT_W_KEY)) || null; } catch { return null; }
+}
+const contentWidth = ref(readContentWidth());
+const contentPaneWidth = computed(() => (contentWidth.value ? `${contentWidth.value}px` : threadHasContent.value ? 'clamp(420px, 50%, 880px)' : '420px'));
+function startResize(e) {
+  const shell = e.currentTarget.parentElement;
+  const threadsW = shell.querySelector('.cubo-3pane-threads-col')?.offsetWidth || 0;
+  const onMove = (ev) => {
+    const rect = shell.getBoundingClientRect();
+    const max = rect.width - threadsW - MIN_CHAT_W;
+    contentWidth.value = Math.round(Math.min(Math.max(rect.right - ev.clientX, MIN_CONTENT_W), max));
+  };
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    document.body.style.cursor = '';
+    try { localStorage.setItem(CONTENT_W_KEY, String(contentWidth.value)); } catch { /* per-device convenience only */ }
+  };
+  e.preventDefault();
+  document.body.style.cursor = 'col-resize';
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
+function resetContentWidth() {
+  contentWidth.value = null;
+  try { localStorage.removeItem(CONTENT_W_KEY); } catch { /* ignore */ }
+}
+
 // Left pane's 4-section accordion state — Contacts/Threads default open (the two real sections),
 // Contact Groups/Notebooks default closed (placeholders, see the template's own comment).
 const leftPaneOpenSections = reactive({ contacts: true, contactGroups: false, threads: true, notebooks: false });
@@ -559,8 +665,9 @@ const wrapperOuterClass = computed(() => {
   return 'cubo-wrapper cubo-expanded-panel';
 });
 const wrapperCardClass = computed(() => {
-  if (isDock.value) return 'cubo-side-pane transform transition-transform duration-300 flex flex-col h-full bg-white dark:bg-slate-950 border-l border-gray-200 dark:border-slate-800 w-full max-w-md';
-  if (isThreePane.value) return 'cubo-3pane-chat-col flex-1 min-w-0 min-h-0 flex flex-col h-full border-x border-gray-200 dark:border-slate-800';
+  // Docked with a content pane (a journey's form): wide enough for chat and form side by side.
+  if (isDock.value) return `cubo-side-pane transform transition-transform duration-300 flex flex-col h-full bg-white dark:bg-slate-950 border-l border-gray-200 dark:border-slate-800 w-full max-w-md${threadHasContent.value ? ' has-content' : ''}`;
+  if (isThreePane.value) return 'cubo-3pane-chat-col flex-1 min-w-0 min-h-0 flex flex-col h-full border-l border-gray-200 dark:border-slate-800';
   return 'w-full bg-blue-50/95 dark:bg-slate-900/95 rounded-xl border border-blue-100 dark:border-slate-800 shadow-2xl backdrop-blur-md overflow-hidden flex flex-col h-[500px]';
 });
 </script>
@@ -669,6 +776,7 @@ const wrapperCardClass = computed(() => {
     </div>
 
     <div
+      ref="cardEl"
       :class="wrapperCardClass"
     >
       <!-- A selected contact (THREE_PANE's left-pane Contacts section) takes over this whole
@@ -678,50 +786,48 @@ const wrapperCardClass = computed(() => {
            unchanged Header+Body — only wrapped, not touched. -->
       <CuboContactConversation v-if="activeContact" :contact="activeContact" @decided="loadContacts()" />
       <template v-else>
-      <!-- Header -->
-      <div :class="isRoomy
-        ? 'flex items-center justify-between p-4 border-b border-gray-200 dark:border-slate-800 bg-gray-50/30 dark:bg-slate-900/20'
-        : 'flex items-center justify-between p-3 border-b border-gray-100 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50'">
-        <div class="flex items-center gap-2 min-w-0">
-          <h3 class="font-bold text-sm text-blue-900 dark:text-blue-300 flex items-center gap-1.5 min-w-0">
-            <i class="fas fa-shield-alt text-[var(--color-primary)]"></i>
-            <span class="truncate">{{ isRoomy ? 'Cübo Workspace' : 'Cübo AI Command Center' }}</span>
-          </h3>
-          <span class="text-[10px] text-gray-400 font-medium whitespace-nowrap">· {{ cubo.resolveActivePersona().label }}</span>
+      <!-- Header — compact so the thread's name and the controls fit a narrow card: the threads
+           drawer toggle, the active thread, a Chat / Form switch when the thread has a content pane
+           that can't sit beside the chat, then icon-only actions. -->
+      <div class="cubo-head" :class="{ roomy: isRoomy }">
+        <button v-if="!isThreePane" class="cubo-head-btn" :class="{ on: cubo.viewingThreads }" title="Threads" aria-label="Threads" :aria-expanded="cubo.viewingThreads" data-testid="cubo-threads-toggle" @click="cubo.toggleThreadView()"><i class="fas fa-bars-staggered"></i></button>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-1.5 min-w-0 font-bold text-sm text-blue-900 dark:text-blue-300">
+            <i class="fas text-[var(--color-primary)]" :class="isThreePane ? 'fa-shield-alt' : cubo.categoryMeta(activeThread?.category).icon"></i>
+            <span class="truncate">{{ isThreePane ? 'Cübo Workspace' : (activeThread?.title || 'Cübo') }}</span>
+          </div>
+          <div class="text-[10px] text-gray-400 font-medium truncate">{{ isThreePane ? '' : 'Cübo · ' }}{{ cubo.resolveActivePersona().label }}</div>
         </div>
-        <div class="flex items-center gap-2.5 text-gray-400 text-xs">
-          <!-- THREE_PANE has a real, permanent Threads column on the left already — this toggle
-               (which swaps the WHOLE body between chat/threads/profile) would be redundant there. -->
-          <button v-if="!isThreePane" @click="cubo.toggleThreadView()" class="hover:text-blue-500 transition px-1.5 py-0.5 rounded bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300 font-medium flex items-center gap-1">
-            <i class="fas" :class="cubo.viewingThreads ? 'fa-comments' : 'fa-list'"></i>
-            <span>{{ cubo.viewingThreads ? (isDock ? 'Open Chat' : 'Back to Chat') : (isDock ? 'Thread Directory' : 'Threads') }}</span>
+        <div v-if="!isThreePane && threadHasContent && !splitView" class="cubo-seg" role="tablist" aria-label="Show">
+          <button role="tab" :aria-selected="singleView === 'chat'" :class="{ on: singleView === 'chat' }" data-testid="cubo-show-chat" @click="singleView = 'chat'"><i class="fas fa-comments"></i><span>Chat</span></button>
+          <button role="tab" :aria-selected="singleView === 'content'" :class="{ on: singleView === 'content' }" data-testid="cubo-show-content" @click="singleView = 'content'">
+            <i class="fas fa-pen-to-square"></i><span>Form</span><span v-if="contentWaiting" class="cubo-seg-dot" aria-label="A step is waiting"></span>
           </button>
-          <!-- THREE_PANE has its own right-pane "Profile" tab instead (see CuboProfilePanel) —
-               same reasoning as hiding the Threads toggle above. -->
-          <button v-if="!isThreePane" @click="cubo.toggleProfileView()" class="hover:text-blue-500 transition px-1.5 py-0.5 rounded bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300 font-medium flex items-center gap-1 relative" title="User Profile — pick a speciality/role">
-            <i class="fas" :class="cubo.viewingProfile ? 'fa-comments' : 'fa-user-doctor'"></i>
-            <span>{{ cubo.viewingProfile ? (isDock ? 'Open Chat' : 'Back to Chat') : 'Profile' }}</span>
-            <span v-show="cubo.virtualRoom && !cubo.viewingProfile" class="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-500"></span>
+        </div>
+        <div v-if="!isThreePane" class="flex items-center gap-0.5 shrink-0">
+          <!-- THREE_PANE has its own right-pane "Profile" tab instead (see CuboProfilePanel). -->
+          <button class="cubo-head-btn relative" :class="{ on: cubo.viewingProfile }" title="Profile — pick a speciality/role" aria-label="Profile" @click="cubo.toggleProfileView()">
+            <i class="fas fa-user-doctor"></i>
+            <span v-show="cubo.virtualRoom && !cubo.viewingProfile" class="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
           </button>
-          <!-- Layout switcher — FAB/EXPANDED/MODAL_DOCK can all switch INTO 3-pane mode ("3 pane
-               mode is also another option for the user to switch", explicit instruction); THREE_PANE
-               itself has nowhere to "maximize" to (already full-page) or float back to (it's reached
-               by navigating here, not by minimizing something) — those two buttons just don't apply. -->
-          <button v-if="!isThreePane" @click="switchToThreePane()" class="hover:text-blue-500 transition" title="Open Full Workspace (3-pane)"><i class="fas fa-table-columns"></i></button>
-          <button v-if="!isDock && !isThreePane" @click="cubo.currentLayout = 'MODAL_DOCK'" class="hover:text-blue-500 transition" title="Maximize Workspace"><i class="fas fa-columns"></i></button>
-          <button v-else-if="!isThreePane" @click="cubo.currentLayout = 'EXPANDED'" class="hover:text-blue-500 transition" title="Minimize to Float Window"><i class="fas fa-window-restore text-blue-600"></i></button>
-          <button v-if="!isThreePane" @click="cubo.currentLayout = 'FAB'" class="hover:text-red-500 transition" :title="isDock ? 'Minimize to Badge' : 'Minimize'"><i class="fas fa-times"></i></button>
+          <!-- Layout switcher — any single-pane layout can switch INTO 3-pane mode (its own route). -->
+          <button class="cubo-head-btn" title="Open Full Workspace (3-pane)" aria-label="Open Full Workspace (3-pane)" @click="switchToThreePane()"><i class="fas fa-table-columns"></i></button>
+          <button v-if="!isDock" class="cubo-head-btn" title="Maximize Workspace" aria-label="Maximize" @click="cubo.currentLayout = 'MODAL_DOCK'"><i class="fas fa-up-right-and-down-left-from-center"></i></button>
+          <button v-else class="cubo-head-btn" title="Minimize to Float Window" aria-label="Restore" @click="cubo.currentLayout = 'EXPANDED'"><i class="fas fa-down-left-and-up-right-to-center"></i></button>
+          <button class="cubo-head-btn hover:!text-red-500" :title="isDock ? 'Minimize to Badge' : 'Minimize'" aria-label="Minimize" @click="cubo.currentLayout = 'FAB'"><i class="fas fa-times"></i></button>
         </div>
       </div>
 
       <!-- Body: Threads / Profile / Chat -->
       <div class="flex-1 min-h-0 flex overflow-hidden relative">
-        <!-- Thread directory overlay — FAB/EXPANDED/MODAL_DOCK only; THREE_PANE has its own
-             permanent left-pane version above instead (never toggled, never overlaid). -->
-        <div v-show="!isThreePane && cubo.viewingThreads" class="absolute inset-0 bg-white dark:bg-slate-950 flex flex-col overflow-y-auto custom-scrollbar p-3 space-y-2">
+        <!-- Threads — a drawer that slides over the chat (FAB/EXPANDED/MODAL_DOCK only; THREE_PANE
+             has its own permanent left pane). The chat stays where it was underneath. -->
+        <template v-if="!isThreePane">
+          <div class="cubo-drawer-backdrop" :class="{ open: cubo.viewingThreads }" @click="cubo.viewingThreads = false"></div>
+          <aside class="cubo-drawer custom-scrollbar" :class="{ open: cubo.viewingThreads }" aria-label="Threads" :aria-hidden="!cubo.viewingThreads" data-testid="cubo-threads-drawer" @keydown.esc="cubo.viewingThreads = false">
           <div class="flex items-center justify-between pb-1 border-b border-gray-100 dark:border-slate-800">
-            <span class="text-xs font-bold text-gray-400 uppercase tracking-wider">{{ isDock ? 'Workspace Threads Matrix' : 'Active Workspace Threads' }}</span>
-            <button @click="cubo.createNewThread('general')" class="text-[11px] bg-[var(--color-primary)]/10 text-[var(--color-primary)] px-2 py-0.5 rounded font-semibold hover:bg-[var(--color-primary)]/20 transition">+ General Thread</button>
+            <span class="text-xs font-bold text-gray-400 uppercase tracking-wider">Threads</span>
+            <button @click="cubo.createNewThread('general')" class="text-[11px] bg-[var(--color-primary)]/10 text-[var(--color-primary)] px-2 py-0.5 rounded font-semibold hover:bg-[var(--color-primary)]/20 transition">+ New</button>
           </div>
 
           <div v-for="thread in threads" :key="thread.id"
@@ -743,7 +849,8 @@ const wrapperCardClass = computed(() => {
               </button>
             </div>
           </div>
-        </div>
+        </aside>
+        </template>
 
         <!-- Profile / virtual room picker — FAB/EXPANDED/MODAL_DOCK only; THREE_PANE's right-pane
              "Profile" tab renders the same CuboProfilePanel content instead (never both). -->
@@ -752,7 +859,7 @@ const wrapperCardClass = computed(() => {
         </div>
 
         <!-- Chat -->
-        <div v-show="!cubo.viewingThreads && !cubo.viewingProfile" class="flex-1 min-h-0 flex flex-col justify-between overflow-hidden bg-white dark:bg-slate-950">
+        <div v-show="!cubo.viewingProfile && (isThreePane || !threadHasContent || splitView || singleView === 'chat')" class="min-h-0 flex flex-col justify-between overflow-hidden bg-white dark:bg-slate-950" :class="splitView ? 'cubo-split-chat' : 'flex-1'">
           <!-- SPEC-22 §5.7 — the entry-menu nav strip that used to live here moved to the right
                pane's "Next Action" tab (see entryWorkflow.primaryActionIds/secondaryActionIds). Real correction: "the
                Register, Log-In, Forgot Password, Change Passwords appeared as chat message not in
@@ -768,7 +875,7 @@ const wrapperCardClass = computed(() => {
               <span>{{ activeThread?.category !== 'general' ? '🔒 Retention Checked (FIFO Limit: 25)' : '⚡ Temporary Session Stream' }}</span>
             </div>
 
-            <div v-for="msg in timelineMessages" :key="msg.id" class="flex flex-col" :class="msg.isAudit ? 'items-center' : (msg.role === 'user' ? 'items-end' : 'items-start')">
+            <div v-for="msg in timelineMessages" :key="msg.id" class="flex flex-col" :class="msg.isAudit || msg.component === 'journey-divider' ? 'items-center' : (msg.role === 'user' ? 'items-end' : 'items-start')">
               <!-- Audit trail row — "all state transitions and actions taken by user will be
                    created as timestamped audit log" (explicit instruction). Real, already-existing
                    data (workflowRuntime.js's own auditLog, entryWorkflow.js's own comment flagged
@@ -781,10 +888,17 @@ const wrapperCardClass = computed(() => {
                 <span class="text-gray-300 dark:text-slate-600">· {{ cubo.formatMsgTime(msg.timestamp) }}</span>
               </div>
 
+              <!-- A new run of a registry journey in the same thread. -->
+              <div v-else-if="msg.component === 'journey-divider'" class="flex items-center gap-2 w-full text-[10px] text-gray-400 dark:text-slate-500 py-1" data-testid="journey-divider">
+                <span class="flex-1 border-t border-gray-200 dark:border-slate-800"></span>
+                <span><i class="fas fa-rotate-right text-[9px] mr-1"></i>{{ msg.text }} · {{ cubo.formatMsgTime(msg.timestamp) }}</span>
+                <span class="flex-1 border-t border-gray-200 dark:border-slate-800"></span>
+              </div>
+
               <template v-else>
                 <div v-if="msg.text" class="max-w-[85%] rounded-xl p-3 text-xs shadow-sm border leading-relaxed group relative"
                      :class="msg.role === 'user' ? 'bg-blue-600 text-white border-transparent rounded-br-none' : 'bg-gray-50 dark:bg-slate-900 text-gray-800 dark:text-slate-200 border-gray-100 dark:border-slate-800 rounded-bl-none'">
-                  <span>{{ msg.text }}</span>
+                  <span class="whitespace-pre-wrap">{{ msg.text }}</span>
 
                   <div v-if="msg.role === 'assistant'" class="flex items-center gap-2 mt-2 pt-1.5 border-t border-gray-200/40 dark:border-slate-700/40 text-gray-400">
                     <button @click="copyMsg(msg.text)" class="hover:text-blue-500 transition p-0.5" title="Copy response text">
@@ -810,6 +924,9 @@ const wrapperCardClass = computed(() => {
                     <i class="fas fa-arrow-right"></i>{{ link.label }}
                   </button>
                 </div>
+
+                <!-- A registry journey's question extras / run result (journeys/sessions.js). -->
+                <JourneyMessage v-if="msg.component === 'journey-step' || msg.component === 'journey-result'" :kind="msg.component" :data="msg.componentProps || {}" />
 
                 <span class="text-[9px] text-gray-400 dark:text-slate-500 mt-0.5 px-0.5">{{ cubo.formatMsgTime(msg.timestamp) }}</span>
               </template>
@@ -840,7 +957,7 @@ const wrapperCardClass = computed(() => {
             <textarea v-model="cubo.promptText"
                       @keydown="onTextareaKeydown"
                       class="w-full p-2.5 resize-none rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-white mb-2"
-                      :rows="isRoomy ? 3 : 2" :placeholder="isRoomy ? 'Enter instructions here... (/ for field shortcuts)' : 'Ask Cübo command center...'"></textarea>
+                      :rows="isRoomy ? 3 : 2" :placeholder="activeJourneyThreadId ? 'Answer here when it’s a choice — or use the form' : isRoomy ? 'Enter instructions here... (/ for field shortcuts)' : 'Ask Cübo command center...'"></textarea>
             <div class="flex w-full items-center justify-between">
               <div class="flex items-center gap-2">
                 <button @click="cubo.toggleVoiceInput()" class="cubo-mic-btn w-8 h-8 rounded-lg hover:bg-gray-200 dark:hover:bg-slate-800 flex items-center justify-center transition" :class="cubo.isListening ? 'text-red-500 animate-pulse' : 'text-gray-500 dark:text-gray-400'" :title="cubo.isListening ? 'Listening… click to stop' : 'Voice input'"><i class="fas fa-microphone text-xs"></i></button>
@@ -850,6 +967,13 @@ const wrapperCardClass = computed(() => {
               <button @click="sendPrompt()" :disabled="isThrottled" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-semibold transition shadow-sm">{{ isRoomy ? 'Send Command' : 'Send' }}</button>
             </div>
           </div>
+        </div>
+
+        <!-- The thread's content pane in single-pane layouts: a registry journey's form. Beside the
+             chat when the card is wide enough (splitView), otherwise behind the Chat / Form switch —
+             kept mounted either way, so switching never loses a half-filled form. -->
+        <div v-if="!isThreePane && threadHasContent" v-show="!cubo.viewingProfile && (splitView || singleView === 'content')" class="cubo-content-pane flex-1 min-w-0 overflow-y-auto custom-scrollbar" data-testid="cubo-content-pane">
+          <JourneyPanel :key="activeJourneyThreadId" :thread-id="activeJourneyThreadId" />
         </div>
       </div>
       </template>
@@ -861,7 +985,9 @@ const wrapperCardClass = computed(() => {
          discover later.. all of these features will be in a seperate Tab" (explicit instruction).
          'content' is "shows pages as necessary": for now, the selected entry-journey form; the
          general mechanism (whatever a thread/action needs shown) generalizes from here later. ═══ -->
-    <div v-if="isThreePane" class="cubo-3pane-content-col w-full md:w-[420px] shrink-0 flex flex-col overflow-hidden bg-gray-50/30 dark:bg-slate-900/10">
+    <!-- Drag to resize the content column (double-click resets). Desktop only. -->
+    <div v-if="isThreePane" class="cubo-3pane-resizer hidden md:block" role="separator" aria-orientation="vertical" aria-label="Resize the content pane" title="Drag to resize · double-click to reset" @pointerdown="startResize" @dblclick="resetContentWidth"></div>
+    <div v-if="isThreePane" class="cubo-3pane-content-col w-full md:w-(--cubo-content-w) shrink-0 flex flex-col overflow-hidden bg-gray-50/30 dark:bg-slate-900/10" :style="{ '--cubo-content-w': contentPaneWidth }">
       <div class="flex border-b border-gray-200 dark:border-slate-800 shrink-0">
         <button v-for="tab in RIGHT_PANE_TABS" :key="tab.id" @click="rightPaneTab = tab.id"
                 class="flex-1 flex items-center justify-center gap-1.5 px-2 py-2.5 text-xs font-semibold transition border-b-2"
@@ -873,7 +999,10 @@ const wrapperCardClass = computed(() => {
       </div>
 
       <div class="flex-1 overflow-y-auto p-6">
-        <template v-if="rightPaneTab === 'content'">
+        <!-- The open registry journey's form — the Content tab is driven by the journey's JSON
+             (its current prompt and ledger), same panel as /registries/:journey's form pane. -->
+        <JourneyPanel v-if="rightPaneTab === 'content' && activeJourneyThreadId" :key="activeJourneyThreadId" :thread-id="activeJourneyThreadId" />
+        <template v-else-if="rightPaneTab === 'content'">
           <!-- Real onboarding-UI rebuild: Hospital/Staff/Patient setup no longer renders here —
                those are plain page-route journeys now (see journeyLinks/activateJourney below),
                real navigation to /onboarding etc., not panel content. Only the small, genuinely
@@ -902,6 +1031,28 @@ const wrapperCardClass = computed(() => {
                used to be); entryWorkflow.secondaryActionIds (register/login/forgot_password/
                change_password/logout) is the universal auth menu, still plan-derived state. -->
           <p v-if="!auth.currentUser" class="text-sm text-gray-600 dark:text-slate-300 mb-2">{{ ENTRY_INTRO_TEXT }}</p>
+
+          <!-- The open journey's next steps, from its JSON ledger. -->
+          <div v-if="activeJourneyLedger.length" class="mb-6 pb-4 border-b border-gray-100 dark:border-slate-800" data-testid="journey-next-steps">
+            <p class="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">This journey</p>
+            <ol class="space-y-1">
+              <li v-for="st in activeJourneyLedger" :key="st.id" class="flex items-center gap-2 text-xs"
+                  :class="st.state === 'active' ? 'font-semibold text-gray-800 dark:text-slate-100' : st.state === 'done' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400'">
+                <i class="fas text-[10px] w-3" :class="st.state === 'done' ? 'fa-check' : st.state === 'active' ? 'fa-arrow-right' : 'fa-circle'"></i>{{ st.label }}
+              </li>
+            </ol>
+            <button class="cubo-entry-menu-btn w-full mt-3" @click="rightPaneTab = 'content'"><i class="fas fa-pen-to-square"></i>Continue in Content</button>
+          </div>
+
+          <!-- Registry journeys (ABDM HPR / HFR / ABHA), listed from their journey JSON. -->
+          <div v-if="auth.currentUser" class="space-y-1.5 mb-6" data-testid="journey-actions">
+            <p class="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">Registries</p>
+            <button v-for="j in JOURNEYS" :key="j.id" @click="openJourney(j)" class="cubo-entry-menu-btn w-full text-left"
+                    :class="activeJourneyThreadId === `journey-${j.id}` ? 'cubo-entry-menu-btn-active' : ''">
+              <i class="fas" :class="j.icon"></i>
+              <span class="flex flex-col min-w-0"><span>{{ j.title }}</span><span class="text-[10px] font-normal opacity-70 truncate">{{ journeyStatus(j) }}</span></span>
+            </button>
+          </div>
 
           <div v-if="journeyLinks.length" class="space-y-1.5">
             <p class="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">Suggested for you</p>
