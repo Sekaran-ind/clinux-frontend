@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { checkJourney, createXStateRunner as createRunner } from '../engine.js';
 import { frontDeskJourney } from './frontDeskJourney.js';
 import { consultationJourney } from './consultationJourney.js';
-import { checkoutJourney } from './checkoutJourney.js';
+import { abdmPrompt, checkoutJourney } from './checkoutJourney.js';
 import { answer, isClosed } from './encounterRecord.js';
 
 const ENC = 'system-encounter-composition-v1';
@@ -19,7 +19,7 @@ const Q = {
 const section = (linkId, fields) => ({ item: [{ linkId, item: Object.entries(fields).map(([k, v]) => ({ linkId: k, answer: [{ valueString: v }] })) }] });
 
 /** A fake clinic: records in a Map, every coordination call recorded. */
-function fakeClinic({ records = new Map(), lock = { success: true }, assigned = null, paid = false } = {}) {
+function fakeClinic({ records = new Map(), lock = { success: true }, assigned = null, paid = false, abdm = { facility: null } } = {}) {
   const calls = [];
   const clinic = {
     ENCOUNTER_FORM_ID: ENC,
@@ -56,6 +56,10 @@ function fakeClinic({ records = new Map(), lock = { success: true }, assigned = 
     paid: () => paid,
     transcript: () => 'Fever for three days. Paracetamol.',
     soapDraft: async () => ({ soap_assessment: 'Viral fever', soap_plan: 'Paracetamol 500 mg' }),
+    abdmStatus: async (id, chosen) => { calls.push(['abdmStatus', id, chosen]); return typeof abdm === 'function' ? abdm(chosen) : abdm; },
+    shareVisit: async (id, patient, facility) => { calls.push(['share', id, patient.id, facility.facilityId]); return { careContext: { linkStatus: 'awaiting_token' } }; },
+    sendBill: async (id) => { calls.push(['bill', id]); return { amount: 500, offeredToWaitingOrder: false }; },
+    textPatient: async (facility, mobile) => calls.push(['sms', mobile]),
   };
   return { clinic, calls, records };
 }
@@ -143,6 +147,9 @@ describe('clinic journeys', () => {
     const rec = (await run.answer({ qr: section('section_billing', { billing_total: '500' }) })).prompt;
     expect(rec.step).toBe('record');
     expect((await run.answer({ choice: 'download' })).prompt.detail).toMatch(/Downloaded/);
+    const abdm = (await run.answer({ choice: 'continue' })).prompt;
+    expect(abdm.step).toBe('abdm');
+    expect(abdm.detail).toMatch(/Register your facility/);
     expect((await run.answer({ choice: 'continue' })).prompt.step).toBe('close');
     const closed = await run.answer({ choice: 'close' });
     expect(closed.result).toMatchObject({ ok: true, readonly: true });
@@ -157,4 +164,50 @@ describe('clinic journeys', () => {
       expect(c.calls.filter(([k]) => k !== 'lock')).toEqual([]);
     }
   });
+
+  it('Checkout shares the visit to the patient’s ABHA and sends the bill to their ABHA app', async () => {
+    const records = new Map([['e1', { id: 'e1', data: section('section_encounter', { encounter_patient_ref: 'Asha Rao' }) }]]);
+    const facility = { facilityId: 'IN3310002300', facilityName: 'Asha Clinic', scanPayEnabled: true };
+    const patient = { id: 'p1', name: 'Asha Rao', abhaAddress: 'asha@sbx', mobile: '9876543210' };
+    let state = { facility, patient, unpaid: 500, careContext: null, bill: null };
+    const { clinic, calls } = fakeClinic({ records, abdm: () => state });
+    const run = createRunner(checkoutJourney, deps(clinic));
+    await run.start({ encounterId: 'e1' });
+    await run.answer({ qr: section('section_prescription', { rx_medication: 'Paracetamol' }) });
+    await run.answer({ qr: section('section_billing', { billing_total: '500' }) });
+    const step = (await run.answer({ choice: 'continue' })).prompt;
+    expect(step.choices.map((c) => c.value)).toEqual(['share', 'bill', 'continue']);
+
+    state = { ...state, careContext: { linkStatus: 'awaiting_token' } };
+    const after = (await run.answer({ choice: 'share' })).prompt;
+    expect(calls).toContainEqual(['share', 'e1', 'p1', 'IN3310002300']);
+    expect(after.step).toBe('abdm');
+    expect(after.detail).toMatch(/Linking/);
+    expect(after.choices.map((c) => c.value)).toEqual(['check', 'bill', 'continue']);
+
+    state = { ...state, careContext: { linkStatus: 'linked' }, bill: { amount: 500, status: 'open' } };
+    const billed = (await run.answer({ choice: 'bill' })).prompt;
+    expect(calls).toContainEqual(['bill', 'e1']);
+    expect(billed.detail).toMatch(/Linked to their ABHA.*₹500 waiting in their ABHA app/);
+    expect(billed.choices.map((c) => c.value)).toEqual(['share', 'continue']);
+    expect((await run.answer({ choice: 'continue' })).prompt.step).toBe('close');
+  });
+
+  it('Checkout asks which patient an older visit belongs to, and offers an SMS when there is no ABHA', async () => {
+    const records = new Map([['e1', { id: 'e1', data: section('section_encounter', { encounter_patient_ref: 'Asha Rao' }) }]]);
+    const facility = { facilityId: 'IN3310002300', facilityName: 'Asha Clinic' };
+    const { clinic, calls } = fakeClinic({ records, abdm: (chosen) => (chosen ? { facility, patient: { id: chosen, name: 'Asha', mobile: '9876543210' }, careContext: { linkStatus: 'unlinked' }, unpaid: 0 } : { facility, patient: null, needPatient: true }) });
+    const run = createRunner(checkoutJourney, deps(clinic));
+    await run.start({ encounterId: 'e1' });
+    await run.answer({ qr: section('section_prescription', {}) });
+    await run.answer({ qr: section('section_billing', {}) });
+    expect((await run.answer({ choice: 'continue' })).prompt.step).toBe('abdmPatient');
+    const step = (await run.answer({ patientId: 'p1' })).prompt;
+    expect(calls).toContainEqual(['abdmStatus', 'e1', 'p1']);
+    expect(step.choices.map((c) => c.value)).toEqual(['share', 'sms', 'continue']);
+    await run.answer({ choice: 'sms' });
+    expect(calls).toContainEqual(['sms', '9876543210']);
+    expect(abdmPrompt({ abdm: { error: 'offline' } }).warning).toMatch(/offline/);
+  });
 });
+

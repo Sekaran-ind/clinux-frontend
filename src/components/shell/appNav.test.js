@@ -43,7 +43,7 @@ describe('buildNavGroups', () => {
   it('shows every registry journey to every role', () => {
     for (const role of ['hospital_admin', 'health_professional', 'admin_and_health_professional', undefined]) {
       const registries = buildNavGroups({ role }).find((g) => g.label === 'Registries').items.map((i) => i.key);
-      expect(registries).toEqual(['registries', 'registry-hpr', 'registry-hfr', 'registry-abha', 'registry-scan-share', 'registry-roster']);
+      expect(registries).toEqual(['registries', 'registry-hpr', 'registry-hfr', 'registry-abha', 'registry-scan-share', 'registry-abdm', 'registry-scan-pay', 'registry-roster']);
     }
   });
 

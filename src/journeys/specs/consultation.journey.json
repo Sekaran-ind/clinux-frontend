@@ -5,7 +5,7 @@
   "summary": "Notes, prescription and documents for a visit",
   "icon": "fa-stethoscope",
   "category": "encounter",
-  "related": [{ "label": "Patients", "to": "/patient-home", "icon": "fa-user-injured", "note": "The clinic's patient records" }],
+  "related": [{ "label": "Patients", "to": "/patient-home", "icon": "fa-user-injured", "note": "The clinic's patient records" }, { "label": "Records from ABDM", "to": "/registries/abdm?tab=request", "icon": "fa-file-import", "note": "Ask the patient, through their ABHA app, for records held at other facilities (ABDM M3)" }],
   "start": "begin",
   "steps": {
     "begin":        { "type": "auto", "run": "begin", "next": [
