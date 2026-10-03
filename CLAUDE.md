@@ -137,6 +137,16 @@ Fonts/lforms-static — a stray CDN `<script src>` creeping back in is a regress
   `data/operations.js`'s `journalToAudit()` — the ported clinux-cubo journeys stay unedited. ABDM
   transactions are written by clinuxflow-abdm-gateway into the shared `clinuxflow` D1; locally,
   run the gateway with `npm run dev:shared-db` so it writes into clinuxflow-api's local database.
+- **ABDM M1 + doctor roster** (Registries in the sidebar): the Patient ABHA journey covers NHA's M1
+  table — Aadhaar OTP, face authentication (ABHA app scans a QR; no fingerprint device), driving
+  licence, ABHA address, card download, profile update, verification by OTP / patient's ABHA QR
+  (`ui/QrScanField.vue`, field type `qrscan`) / Scan & Share — and decides new vs returning by ABHA
+  number or address (`findReturning`). `pages/ScanShare.vue` (`/registries/scan-share`) shows the
+  counter QR and today's queue from the gateway's `/abha/scan-share/*`; "Register" opens the journey
+  with `?share=<id>`. `pages/DoctorRoster.vue` (`/registries/roster`) is clinuxflow-api's
+  `/api/roster`; practitioners are added only with the gateway's signed HPR attestation
+  (`POST /hpr/search`). Both pages share `data/roster.js`'s `knownFacilities()`. Don't name page
+  classes `.drawer-backdrop` / `.seg` — global rules in style.css hide/shrink them.
 - **Legal, consents, records** (from clinux-cubo / cubo-diary): `src/consent/terms.js` and
   `consentResource.js` are copied UNCHANGED from clinux-cubo — edit there first, then re-copy.
   `src/legal/legal.js` (affiliations/terms/privacy, reusing the consent text) feeds

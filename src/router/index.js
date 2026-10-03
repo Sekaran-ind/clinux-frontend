@@ -90,6 +90,9 @@ const routes = [
   { path: '/dashboard', name: 'dashboard', component: Dashboard, meta: { requiresAuth: true } },
   // ABDM registry journeys (HPR, HFR, Patient ABHA) on clinux-cubo's LangGraph journey runtime and
   // the same clinuxflow-abdm-gateway APIs Cübo/cubo-diary use — see src/journeys/index.js.
+  // Static paths win over /registries/:journey: the ABDM M1 Scan & Share counter and the HPR doctor roster.
+  { path: '/registries/scan-share', name: 'scan-share', component: () => import('../pages/ScanShare.vue'), meta: { requiresAuth: true } },
+  { path: '/registries/roster', name: 'doctor-roster', component: () => import('../pages/DoctorRoster.vue'), meta: { requiresAuth: true } },
   { path: '/registries/:journey?', name: 'registries', component: Registries, meta: { requiresAuth: true } },
   // Clinic operations as journeys (Front Desk / Consultation / Checkout), built like Registries —
   // see pages/ClinicOps.vue and src/journeys/clinic/.
