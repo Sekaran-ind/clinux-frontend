@@ -5,72 +5,439 @@
   "summary": "Create or verify a patient’s ABHA, and tell new patients from returning ones",
   "icon": "fa-id-card",
   "related": [
-    { "label": "Patients", "to": "/patient-home", "icon": "fa-user-injured", "note": "The clinic’s patient records, where ABHA is recorded" },
-    { "label": "Scan & Share", "to": "/registries/scan-share", "icon": "fa-qrcode", "note": "The facility QR patients scan with the ABHA app, and today’s queue" }
+    {
+      "label": "Patients",
+      "to": "/patient-home",
+      "icon": "fa-user-injured",
+      "note": "The clinic’s patient records, where ABHA is recorded"
+    },
+    {
+      "label": "Scan & Share",
+      "to": "/registries/scan-share",
+      "icon": "fa-qrcode",
+      "note": "The facility QR patients scan with the ABHA app, and today’s queue"
+    }
   ],
   "start": "begin",
   "steps": {
-    "begin":       { "type": "auto", "run": "loadPatients", "next": [
-                       { "if": "data.shareId", "to": "claimShare" },
-                       { "if": "data.patientName && data.hasAbha", "to": "viewAbha" },
-                       { "to": "mode" } ] },
-    "viewAbha":    { "type": "final", "run": "viewAbha" },
-    "claimShare":  { "type": "auto", "run": "claimShare", "next": "match" },
-
-    "mode":        { "type": "ask", "revisit": true, "prompt": "mode", "run": "chooseMode", "ledger": { "label": "How" }, "next": [
-                       { "if": "data.mode == 'find'", "to": "findMobile" },
-                       { "if": "data.mode == 'number'", "to": "numberLogin" },
-                       { "if": "data.mode == 'address'", "to": "addressLogin" },
-                       { "if": "data.mode == 'qr'", "to": "scanQr" },
-                       { "if": "data.mode == 'face'", "to": "faceStart" },
-                       { "if": "data.mode == 'dl'", "to": "dlMobile" },
-                       { "to": "aadhaar" } ] },
-
-    "findMobile":  { "type": "ask", "prompt": "findMobile", "run": "searchByMobile", "next": "pickMatch", "ledger": { "label": "Search by mobile" } },
-    "pickMatch":   { "type": "ask", "prompt": "pickMatch", "run": "requestMatchOtp", "next": "findOtp" },
-    "findOtp":     { "type": "ask", "prompt": "findOtp", "run": "verifyMatchOtp", "next": [{ "if": "data.resent", "to": "findOtp" }, { "to": "profile" }], "ledger": { "label": "Verify OTP" } },
-
-    "scanQr":      { "type": "ask", "prompt": "scanQr", "run": "readQr", "next": [{ "if": "data.qrHasNumber", "to": "numberLogin" }, { "to": "addressLogin" }], "ledger": { "label": "Scan ABHA QR" } },
-
-    "numberLogin": { "type": "ask", "prompt": "numberLogin", "run": "requestNumberOtp", "next": "numberOtp", "ledger": { "label": "ABHA number" } },
-    "numberOtp":   { "type": "ask", "prompt": "numberOtp", "run": "verifyNumberOtp", "next": [{ "if": "data.resent", "to": "numberOtp" }, { "to": "profile" }], "ledger": { "label": "Verify OTP" } },
-
-    "addressLogin": { "type": "ask", "prompt": "addressLogin", "run": "requestAddressOtp", "next": "addressOtp", "ledger": { "label": "ABHA address" } },
-    "addressOtp":  { "type": "ask", "prompt": "addressOtp", "run": "verifyAddressOtp", "next": [{ "if": "data.resent", "to": "addressOtp" }, { "to": "profile" }], "ledger": { "label": "Verify OTP" } },
-
-    "profile":     { "type": "auto", "run": "loadProfile", "next": "match" },
-
-    "aadhaar":     { "type": "ask", "prompt": "aadhaar", "run": "sendAadhaarOtp", "next": "aadhaarOtp", "ledger": { "label": "Aadhaar consent" } },
-    "aadhaarOtp":  { "type": "ask", "prompt": "aadhaarOtp", "run": "createWithAadhaar", "next": [{ "if": "data.needsMobileOtp", "to": "mobileOtp" }, { "to": "suggest" }], "ledger": { "label": "Aadhaar OTP" } },
-
-    "faceStart":   { "type": "ask", "prompt": "faceStart", "run": "startFace", "next": "faceWait", "ledger": { "label": "Face authentication" } },
-    "faceWait":    { "type": "ask", "prompt": "faceWait", "run": "checkFace", "next": [{ "if": "data.faceDone", "to": "faceAadhaar" }, { "to": "faceWait" }], "ledger": { "label": "Face capture in ABHA app" } },
-    "faceAadhaar": { "type": "ask", "prompt": "faceAadhaar", "run": "createWithFace", "next": [{ "if": "data.needsMobileOtp", "to": "mobileOtp" }, { "to": "suggest" }], "ledger": { "label": "Create ABHA" } },
-
-    "mobileOtp":   { "type": "ask", "prompt": "mobileOtp", "run": "verifyEnrolMobile", "next": [{ "if": "data.resent", "to": "mobileOtp" }, { "to": "suggest" }], "ledger": { "label": "Verify mobile" } },
-    "suggest":     { "type": "auto", "run": "suggestAddresses", "next": "address" },
-    "address":     { "type": "ask", "prompt": "address", "run": "chooseAddress", "next": "match", "ledger": { "label": "ABHA address" } },
-
-    "dlMobile":    { "type": "ask", "prompt": "dlMobile", "run": "sendDlOtp", "next": "dlOtp", "ledger": { "label": "Mobile" } },
-    "dlOtp":       { "type": "ask", "prompt": "dlOtp", "run": "verifyDlOtp", "next": [{ "if": "data.resent", "to": "dlOtp" }, { "to": "dlDocument" }], "ledger": { "label": "Verify OTP" } },
-    "dlDocument":  { "type": "ask", "prompt": "dlDocument", "run": "submitDl", "next": "match", "ledger": { "label": "Driving licence" } },
-
-    "match":       { "type": "auto", "run": "matchPatient", "next": "confirm" },
-    "confirm":     { "type": "ask", "prompt": "confirm", "run": "recordOnPatient", "ledger": { "label": "New or returning" }, "next": [
-                       { "if": "data.choosePatient", "to": "pickPatient" },
-                       { "if": "data.saved", "to": "card" },
-                       { "to": "done" } ] },
-    "pickPatient": { "type": "ask", "prompt": "pickPatient", "run": "recordOnChosen", "next": "card", "ledger": { "label": "Patient" } },
-
-    "card":        { "type": "auto", "run": "fetchCard", "onError": "continue", "next": [{ "if": "data.canUpdate", "to": "after" }, { "to": "done" }] },
-    "after":       { "type": "ask", "prompt": "after", "run": "chooseAfter", "ledger": { "label": "ABHA card & profile" }, "next": [
-                       { "if": "data.after == 'mobile'", "to": "updMobile" },
-                       { "if": "data.after == 'email'", "to": "updEmail" },
-                       { "to": "done" } ] },
-    "updMobile":   { "type": "ask", "prompt": "updMobile", "run": "sendUpdateMobileOtp", "next": "updMobileOtp" },
-    "updMobileOtp": { "type": "ask", "prompt": "updMobileOtp", "run": "verifyUpdateMobile", "next": [{ "if": "data.resent", "to": "updMobileOtp" }, { "to": "after" }] },
-    "updEmail":    { "type": "ask", "prompt": "updEmail", "run": "sendEmailLink", "next": "after" },
-
-    "done":        { "type": "final", "run": "result" }
+    "begin": {
+      "type": "auto",
+      "run": "loadPatients",
+      "next": [
+        {
+          "if": "data.shareId",
+          "to": "claimShare"
+        },
+        {
+          "if": "data.patientName && data.hasAbha",
+          "to": "abhaOnFile"
+        },
+        {
+          "to": "mode"
+        }
+      ]
+    },
+    "abhaOnFile": {
+      "type": "ask",
+      "prompt": "abhaOnFile",
+      "run": "chooseOnFile",
+      "next": [
+        {
+          "if": "data.refresh",
+          "to": "mode"
+        },
+        {
+          "to": "viewAbha"
+        }
+      ]
+    },
+    "viewAbha": {
+      "type": "final",
+      "run": "viewAbha"
+    },
+    "claimShare": {
+      "type": "auto",
+      "run": "claimShare",
+      "next": "match"
+    },
+    "mode": {
+      "type": "ask",
+      "revisit": true,
+      "prompt": "mode",
+      "run": "chooseMode",
+      "ledger": {
+        "label": "How"
+      },
+      "next": [
+        {
+          "if": "data.mode == 'find'",
+          "to": "findMobile"
+        },
+        {
+          "if": "data.mode == 'number'",
+          "to": "numberLogin"
+        },
+        {
+          "if": "data.mode == 'address'",
+          "to": "addressLogin"
+        },
+        {
+          "if": "data.mode == 'qr'",
+          "to": "scanQr"
+        },
+        {
+          "if": "data.mode == 'face'",
+          "to": "faceStart"
+        },
+        {
+          "if": "data.mode == 'dl'",
+          "to": "dlMobile"
+        },
+        {
+          "to": "aadhaar"
+        }
+      ]
+    },
+    "findMobile": {
+      "type": "ask",
+      "prompt": "findMobile",
+      "run": "searchByMobile",
+      "next": "pickMatch",
+      "ledger": {
+        "label": "Search by mobile"
+      }
+    },
+    "pickMatch": {
+      "type": "ask",
+      "prompt": "pickMatch",
+      "run": "requestMatchOtp",
+      "next": "findOtp"
+    },
+    "findOtp": {
+      "type": "ask",
+      "prompt": "findOtp",
+      "run": "verifyMatchOtp",
+      "next": [
+        {
+          "if": "data.resent",
+          "to": "findOtp"
+        },
+        {
+          "to": "profile"
+        }
+      ],
+      "ledger": {
+        "label": "Verify OTP"
+      }
+    },
+    "scanQr": {
+      "type": "ask",
+      "prompt": "scanQr",
+      "run": "readQr",
+      "next": [
+        {
+          "if": "data.qrHasNumber",
+          "to": "numberLogin"
+        },
+        {
+          "to": "addressLogin"
+        }
+      ],
+      "ledger": {
+        "label": "Scan ABHA QR"
+      }
+    },
+    "numberLogin": {
+      "type": "ask",
+      "prompt": "numberLogin",
+      "run": "requestNumberOtp",
+      "next": "numberOtp",
+      "ledger": {
+        "label": "ABHA number"
+      }
+    },
+    "numberOtp": {
+      "type": "ask",
+      "prompt": "numberOtp",
+      "run": "verifyNumberOtp",
+      "next": [
+        {
+          "if": "data.resent",
+          "to": "numberOtp"
+        },
+        {
+          "to": "profile"
+        }
+      ],
+      "ledger": {
+        "label": "Verify OTP"
+      }
+    },
+    "addressLogin": {
+      "type": "ask",
+      "prompt": "addressLogin",
+      "run": "requestAddressOtp",
+      "next": "addressOtp",
+      "ledger": {
+        "label": "ABHA address"
+      }
+    },
+    "addressOtp": {
+      "type": "ask",
+      "prompt": "addressOtp",
+      "run": "verifyAddressOtp",
+      "next": [
+        {
+          "if": "data.resent",
+          "to": "addressOtp"
+        },
+        {
+          "to": "profile"
+        }
+      ],
+      "ledger": {
+        "label": "Verify OTP"
+      }
+    },
+    "profile": {
+      "type": "auto",
+      "run": "loadProfile",
+      "next": "match"
+    },
+    "aadhaar": {
+      "type": "ask",
+      "prompt": "aadhaar",
+      "run": "sendAadhaarOtp",
+      "next": "aadhaarOtp",
+      "ledger": {
+        "label": "Aadhaar consent"
+      }
+    },
+    "aadhaarOtp": {
+      "type": "ask",
+      "prompt": "aadhaarOtp",
+      "run": "createWithAadhaar",
+      "next": [
+        {
+          "if": "data.needsMobileOtp",
+          "to": "mobileOtp"
+        },
+        {
+          "to": "suggest"
+        }
+      ],
+      "ledger": {
+        "label": "Aadhaar OTP"
+      }
+    },
+    "faceStart": {
+      "type": "ask",
+      "prompt": "faceStart",
+      "run": "startFace",
+      "next": "faceWait",
+      "ledger": {
+        "label": "Face authentication"
+      }
+    },
+    "faceWait": {
+      "type": "ask",
+      "prompt": "faceWait",
+      "run": "checkFace",
+      "next": [
+        {
+          "if": "data.faceDone",
+          "to": "faceAadhaar"
+        },
+        {
+          "to": "faceWait"
+        }
+      ],
+      "ledger": {
+        "label": "Face capture in ABHA app"
+      }
+    },
+    "faceAadhaar": {
+      "type": "ask",
+      "prompt": "faceAadhaar",
+      "run": "createWithFace",
+      "next": [
+        {
+          "if": "data.needsMobileOtp",
+          "to": "mobileOtp"
+        },
+        {
+          "to": "suggest"
+        }
+      ],
+      "ledger": {
+        "label": "Create ABHA"
+      }
+    },
+    "mobileOtp": {
+      "type": "ask",
+      "prompt": "mobileOtp",
+      "run": "verifyEnrolMobile",
+      "next": [
+        {
+          "if": "data.resent",
+          "to": "mobileOtp"
+        },
+        {
+          "to": "suggest"
+        }
+      ],
+      "ledger": {
+        "label": "Verify mobile"
+      }
+    },
+    "suggest": {
+      "type": "auto",
+      "run": "suggestAddresses",
+      "next": "address"
+    },
+    "address": {
+      "type": "ask",
+      "prompt": "address",
+      "run": "chooseAddress",
+      "next": "match",
+      "ledger": {
+        "label": "ABHA address"
+      }
+    },
+    "dlMobile": {
+      "type": "ask",
+      "prompt": "dlMobile",
+      "run": "sendDlOtp",
+      "next": "dlOtp",
+      "ledger": {
+        "label": "Mobile"
+      }
+    },
+    "dlOtp": {
+      "type": "ask",
+      "prompt": "dlOtp",
+      "run": "verifyDlOtp",
+      "next": [
+        {
+          "if": "data.resent",
+          "to": "dlOtp"
+        },
+        {
+          "to": "dlDocument"
+        }
+      ],
+      "ledger": {
+        "label": "Verify OTP"
+      }
+    },
+    "dlDocument": {
+      "type": "ask",
+      "prompt": "dlDocument",
+      "run": "submitDl",
+      "next": "match",
+      "ledger": {
+        "label": "Driving licence"
+      }
+    },
+    "match": {
+      "type": "auto",
+      "run": "matchPatient",
+      "next": "confirm"
+    },
+    "confirm": {
+      "type": "ask",
+      "prompt": "confirm",
+      "run": "recordOnPatient",
+      "ledger": {
+        "label": "New or returning"
+      },
+      "next": [
+        {
+          "if": "data.choosePatient",
+          "to": "pickPatient"
+        },
+        {
+          "if": "data.saved",
+          "to": "card"
+        },
+        {
+          "to": "done"
+        }
+      ]
+    },
+    "pickPatient": {
+      "type": "ask",
+      "prompt": "pickPatient",
+      "run": "recordOnChosen",
+      "next": "card",
+      "ledger": {
+        "label": "Patient"
+      }
+    },
+    "card": {
+      "type": "auto",
+      "run": "fetchCard",
+      "onError": "continue",
+      "next": [
+        {
+          "if": "data.canUpdate",
+          "to": "after"
+        },
+        {
+          "to": "done"
+        }
+      ]
+    },
+    "after": {
+      "type": "ask",
+      "prompt": "after",
+      "run": "chooseAfter",
+      "ledger": {
+        "label": "ABHA card & profile"
+      },
+      "next": [
+        {
+          "if": "data.after == 'mobile'",
+          "to": "updMobile"
+        },
+        {
+          "if": "data.after == 'email'",
+          "to": "updEmail"
+        },
+        {
+          "to": "done"
+        }
+      ]
+    },
+    "updMobile": {
+      "type": "ask",
+      "prompt": "updMobile",
+      "run": "sendUpdateMobileOtp",
+      "next": "updMobileOtp"
+    },
+    "updMobileOtp": {
+      "type": "ask",
+      "prompt": "updMobileOtp",
+      "run": "verifyUpdateMobile",
+      "next": [
+        {
+          "if": "data.resent",
+          "to": "updMobileOtp"
+        },
+        {
+          "to": "after"
+        }
+      ]
+    },
+    "updEmail": {
+      "type": "ask",
+      "prompt": "updEmail",
+      "run": "sendEmailLink",
+      "next": "after"
+    },
+    "done": {
+      "type": "final",
+      "run": "result"
+    }
   }
 }

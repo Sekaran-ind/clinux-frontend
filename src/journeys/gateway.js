@@ -25,7 +25,9 @@ export function abdmMessages(data) {
 
 export function gatewayErrorText(res) {
     const messages = abdmMessages(res.data);
-    if (messages.length) return messages.join(' ');
+    // ABDM's REQUEST-ID is what NHA support asks for, especially for a bare HIS-500.
+    const ref = res.data?.abdmRequestId ? ` (ABDM REQUEST-ID ${res.data.abdmRequestId})` : '';
+    if (messages.length) return messages.join(' ') + ref;
     if (res.status === 401) return 'Your session was not accepted by the ABDM gateway. Sign out and sign in again.';
     if (res.status === 429) return 'Too many attempts. Wait a few minutes and try again.';
     if (res.status === 503) return res.data?.error || 'The ABDM gateway is not configured for this.';

@@ -307,7 +307,10 @@ describe('patient ABHA journey', () => {
     const gateway = async (path) => { calls.push(path); throw new Error('no call expected'); };
     const d = deps(gateway, [{ value: 'rec-1', label: 'Asha Rao', abhaNumber: '91-1111-2222-3333', abhaAddress: 'asha@sbx' }]);
     d._store.set(cardKey({ abhaNumber: '91-1111-2222-3333' }), { contentType: 'image/png', data: 'x' });
-    const view = await createRunner(patientAbhaJourney, d).start({ patientId: 'rec-1' });
+    const run = createRunner(patientAbhaJourney, d);
+    const onFile = await run.start({ patientId: 'rec-1' });
+    expect(onFile.prompt.choices.map((c) => c.value)).toEqual(['view', 'refresh']);
+    const view = await run.answer({ choice: 'view' });
     expect(view.result).toMatchObject({ ok: true, readonly: true, againFresh: true });
     expect(view.result.download.href).toBe('data:image/png;base64,x');
     expect(view.result.facts).toEqual(expect.arrayContaining([['ABHA number', '91-1111-2222-3333'], ['ABHA address', 'asha@sbx']]));
@@ -380,5 +383,26 @@ describe('mergeAbhaIntoPatientResponse', () => {
     expect(a.patient_abha_number).toBe('91-1');
     expect(a.patient_last_name).toBe('Rao');
     expect(a.patient_name).toBe('Aasha Rao');
+  });
+});
+
+describe('updating a recorded ABHA', () => {
+  it('re-verifies with ABDM and writes ABDM’s answer onto the same patient', async () => {
+    const { gateway } = fakeGateway({
+      'POST /abha/login/request-otp': { success: true, txnId: 't1' },
+      'POST /abha/login/verify-otp': { success: true, abhaToken: 'tok', accounts: [{ ABHANumber: '91-1111-2222-3333', name: 'Asha Rao' }] },
+      'GET /abha/session/profile': { success: true, profile: { abhaNumber: '91-1111-2222-3333', abhaAddress: 'asha.new@sbx', name: 'Asha Rao', gender: 'F', mobile: '9000000002' } },
+      'GET /abha/session/card': { success: true, contentType: 'image/png', data: 'x' },
+    });
+    const d = deps(gateway, [{ value: 'rec-1', label: 'Asha Rao', name: 'Asha Rao', abhaNumber: '91-1111-2222-3333', abhaAddress: 'asha.old@sbx' }]);
+    const run = createRunner(patientAbhaJourney, d);
+    await run.start({ patientId: 'rec-1' });
+    expect((await run.answer({ choice: 'refresh' })).prompt.step).toBe('mode');
+    await run.answer({ choice: 'number' });
+    await run.answer({ abhaNumber: '91-1111-2222-3333', otpSystem: 'abdm', consent: true });
+    const confirm = await run.answer({ otp: '123456' });
+    expect(confirm.prompt.list).toEqual(expect.arrayContaining([{ name: 'ABHA address', detail: 'asha.new@sbx' }]));
+    await run.answer({ choice: 'save' });
+    expect(d._saved).toEqual([{ id: 'rec-1', person: expect.objectContaining({ abhaAddress: 'asha.new@sbx' }) }]);
   });
 });

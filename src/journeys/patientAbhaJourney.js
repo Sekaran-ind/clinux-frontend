@@ -160,6 +160,18 @@ export const patientAbhaJourney = {
     icon: spec.icon,
 
     prompts: {
+        // A patient whose ABHA is recorded: the record here is only for display; an update re-verifies
+        // with ABDM and takes ABDM's answer.
+        abhaOnFile: (s) => {
+            const p = (s.data.patients || []).find((x) => x.value === s.data.patientId) || {};
+            return {
+                text: `${s.data.patientName} has ABHA ${p.abhaNumber || p.abhaAddress} on record here.`,
+                choices: [
+                    { value: 'view', label: 'View it', detail: 'What this clinic recorded' },
+                    { value: 'refresh', label: 'Update from ABDM', detail: 'Verify the ABHA again and refresh the patient’s details from ABDM' },
+                ],
+            };
+        },
         mode: (s) => ({
             text: s.data.patientName ? `How would you like to set up ${s.data.patientName}’s ABHA?` : 'How would you like to set up the patient’s ABHA?',
             detail: 'Once the ABHA is verified, ClinuxFlow checks whether they are already one of your patients.',
@@ -391,6 +403,8 @@ export const patientAbhaJourney = {
                 },
             };
         },
+        // abhaOnFile
+        chooseOnFile: async (a) => ({ data: { refresh: a.choice === 'refresh' } }),
         // mode
         chooseMode: async (a) => ({ data: { mode: a.choice, qr: null } }),
         // findMobile

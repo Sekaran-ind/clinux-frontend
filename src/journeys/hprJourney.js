@@ -17,6 +17,8 @@
 import spec from './specs/hpr.journey.json' with { type: 'json' };
 import { PROFILE, keepResource, providerResource } from './fhir.js';
 import { HPR_AADHAAR_CONSENT, HPR_AADHAAR_CONSENT_VERSION, afterSend, resendState } from './hprConsent.js';
+import { loadDraft } from './hprProfile.js';
+import { profilePrompts, profileActions } from './hprProfileSteps.js';
 
 export const HPR_RECORD = 'abdm:hpr';
 export const PROVIDER_RESOURCE = 'fhir:provider';
@@ -103,6 +105,7 @@ export const hprJourney = {
                 text: `Your account is linked to HPR ID ${s.data.linked.hprId}.`,
                 detail: 'A linked HPR ID is read-only here.',
                 choices: [
+                    { value: 'profile', label: s.data.profileSubmitted ? 'Update my professional profile' : s.data.profileDraft ? 'Continue my professional profile' : 'Complete my professional profile', detail: s.data.profileSubmitted ? 'Changes go to HPR as an update' : 'Personal details, registration, qualifications and work — HPR verifies you from these' },
                     { value: 'view', label: 'View my HPR ID' },
                     { value: 'link', label: 'Sign in to HPR for this session', detail: 'Needed to register a facility with HFR' },
                 ],
@@ -184,6 +187,15 @@ export const hprJourney = {
             ],
             submitLabel: 'Continue',
         }),
+        afterId: (s) => ({
+            text: `${s.data.idResult?.title || 'Done'}. HPR verifies a professional from their profile: personal details, council registration, qualifications and work.`,
+            detail: 'You can fill it in now, save a draft at any step, and finish later.',
+            choices: [
+                { value: 'profile', label: 'Complete my professional profile now' },
+                { value: 'later', label: 'Later' },
+            ],
+        }),
+        ...profilePrompts,
         finish: (s, d) => ({
             text: 'Last step: your district, your HPR role, and a password for your HPR account.',
             fields: [
@@ -201,10 +213,15 @@ export const hprJourney = {
     // LangGraph nodes they replace: an ask's (answer, state, deps), an auto/final's (state, deps).
     actions: {
         // begin
-        loadLinked: async (s, d) => ({ data: { linked: (await d.records.get(HPR_RECORD)) || null, email: d.account?.email } }),
+        loadLinked: async (s, d) => {
+                const linked = (await d.records.get(HPR_RECORD)) || null;
+                const draft = linked ? await loadDraft(d.records, linked.hprId) : null;
+                return { data: { linked, email: d.account?.email, profileDraft: !!draft?.updatedAt, profileSubmitted: !!draft?.submittedAt } };
+            },
         // mode
         chooseMode: async (a, s) => {
                 if (a.choice === 'register' && s.data.linked) throw new Error('This account already has an HPR ID.');
+                if (a.choice === 'profile' && !s.data.linked) throw new Error('Link or register an HPR ID first.');
                 return { data: { mode: a.choice } };
             },
         // viewLinked: the linked HPR ID, read-only.
@@ -254,12 +271,15 @@ export const hprJourney = {
                 const fhir = await keepResource(d, PROVIDER_RESOURCE, providerResource({ hprId: record.hprId, name: record.name || d.account.adminName, email: d.account.email }), PROFILE.provider);
                 await d.journal?.add({ journey: 'hpr', group: 'HPR', title: 'HPR ID linked', text: 'Signed in to the Healthcare Professional Registry.', facts: [['HPR ID', record.hprId]] });
                 return {
-                    result: {
-                        ok: true,
-                        readonly: true,
-                        title: 'HPR ID linked',
-                        text: 'You are signed in to HPR for this session, so facility registration can use it.',
-                        facts: [['HPR ID', record.hprId], ...(record.name ? [['Name', record.name]] : []), fhir],
+                    data: {
+                        linked: record,
+                        idResult: {
+                            ok: true,
+                            readonly: true,
+                            title: 'HPR ID linked',
+                            text: 'You are signed in to HPR for this session, so facility registration can use it.',
+                            facts: [['HPR ID', record.hprId], ...(record.name ? [['Name', record.name]] : []), fhir],
+                        },
                     },
                 };
             },
@@ -377,7 +397,7 @@ export const hprJourney = {
                     sourceType: 'AADHAAR',
                     hpCategoryCode: f.category,
                     hpSubCategoryCode: f.subCategory,
-                    stateCode: s.data.states.find((o) => o.value === f.state)?.lgd ?? f.state,
+                    stateCode: (s.data.states || []).find((o) => o.value === f.state)?.lgd ?? f.state,
                     districtCode: a.district,
                     council: !!a.council,
                     // HPR-019: the photo comes from Aadhaar (the verified KYC details).
@@ -393,6 +413,10 @@ export const hprJourney = {
                     },
                 };
             },
+        // afterId / idDone
+        chooseAfterId: async (a) => ({ data: { toProfile: a.choice === 'profile' } }),
+        idResult: async (s) => ({ result: s.data.idResult }),
+        ...profileActions,
         // registered
         saveRegistered: async (s, d) => {
                 const c = s.data.created;
@@ -406,19 +430,22 @@ export const hprJourney = {
                         ...c,
                         sourceType: 'AADHAAR',
                         mobile: s.data.mobile,
-                        stateCode: s.data.states.find((o) => o.value === f.state)?.lgd,
+                        stateCode: (s.data.states || []).find((o) => o.value === f.state)?.lgd,
                         districtCode: f.district,
                     }),
                     PROFILE.provider,
                 );
                 await d.journal?.add({ journey: 'hpr', group: 'HPR', title: 'HPR ID created', text: 'Registered with the Healthcare Professional Registry.', facts: [['HPR ID', c.hprId], ...(c.hprIdNumber ? [['HPR number', c.hprIdNumber]] : [])] });
                 return {
-                    result: {
-                        ok: true,
-                        readonly: true,
-                        title: 'HPR ID created',
-                        text: 'Your HPR ID is registered. Complete your professional profile (qualifications, work details) in ClinuxFlow to finish HPR verification.',
-                        facts: [['HPR ID', c.hprId], ...(c.hprIdNumber ? [['HPR number', c.hprIdNumber]] : []), ['Name', c.name], fhir],
+                    data: {
+                        linked: { ...c, via: 'registration' },
+                        idResult: {
+                            ok: true,
+                            readonly: true,
+                            title: 'HPR ID created',
+                            text: 'Your HPR ID is registered. HPR verifies you once your professional profile (registration, qualifications, work) is submitted.',
+                            facts: [['HPR ID', c.hprId], ...(c.hprIdNumber ? [['HPR number', c.hprIdNumber]] : []), ['Name', c.name], fhir],
+                        },
                     },
                 };
             },

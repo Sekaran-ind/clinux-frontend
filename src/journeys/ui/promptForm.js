@@ -1,13 +1,15 @@
 // The prompt contract's form logic, shared by the journey's form pane (JourneyPanel.vue), Cübo's
 // chat (an answer typed into the journey's thread) and the session store (sessions.js). A prompt
-// is { text, detail?, list?, map?, link?, qr?, download?, choices? | fields?, resend?, warning?, image?, error? }
+// is { text, detail?, list?, map?, link?, qr?, download?, choices? | fields?, resend?, warning?, image?, error?,
+// draft? } — draft: true offers "Save draft & finish later", sending the form as it is (unchecked)
+// with __draft: true; the step's action keeps it and the journey pauses.
 // (see engine.js); a field is { name, label, type?, options?, required?, pattern?, secret?, mask?,
 // readonly?, value?, near? }. type 'qrscan' holds the text a scanned QR code decodes to.
 
 const emptyValue = (f) =>
   f.type === 'checkbox' ? false
     : f.type === 'multiselect' ? []
-      : f.type === 'geo' || f.type === 'image' ? null
+      : f.type === 'geo' || f.type === 'image' || f.type === 'file' ? null
         : f.type === 'consent' ? { agreed: false, language: 'en' }
           : '';
 
@@ -46,6 +48,7 @@ export function check(prompt, values) {
 /** What the person answered, as the chat shows it — secrets masked, read-only fields left out. */
 export function summarise(prompt, answer) {
   if (answer.resend) return 'Resend OTP';
+  if (answer.__draft) return 'Saved as a draft — finish later';
   if (answer.action) return prompt.actions?.find((a) => a.value === answer.action)?.label ?? String(answer.action);
   if (answer.qr) return `Saved: ${prompt.form?.title || 'the form'}`;
   if (answer.choice !== undefined) return prompt.choices?.find((c) => c.value === answer.choice)?.label ?? String(answer.choice);
@@ -58,7 +61,7 @@ export function summarise(prompt, answer) {
       if (f.type === 'checkbox') return `✓ ${f.label}`;
       if (f.type === 'multiselect') return `${f.label}: ${v.map((x) => optionLabel(f, x)).join(', ')}`;
       if (f.type === 'geo') return `📍 ${v.lat}, ${v.lng}`;
-      if (f.type === 'image') return `📎 ${f.label}: ${v.name}`;
+      if (f.type === 'image' || f.type === 'file') return `📎 ${f.label}: ${v.name}`;
       if (f.type === 'qrscan') return `📷 ${f.label} scanned`;
       if (f.type === 'consent') return `✓ Agreed to NHA's Aadhaar consent (${f.texts[v.language].label})`;
       if (f.readonly) return null;

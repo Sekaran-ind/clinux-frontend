@@ -72,7 +72,7 @@ describe('HPR journey', () => {
         const records = new Map([[HPR_RECORD, { hprId: 'asha@hpr.abdm', name: 'Asha', linkedAt: '2026-10-01T10:00:00Z', via: 'sign-in' }]]);
         let run = createRunner(hprJourney, deps(gateway, records));
         const mode = (await run.start()).prompt;
-        expect(mode.choices.map((c) => c.value)).toEqual(['view', 'link']); // no "register a new one"
+        expect(mode.choices.map((c) => c.value)).toEqual(['profile', 'view', 'link']); // no "register a new one"
         const view = await run.answer({ choice: 'view' });
         expect(view.result).toMatchObject({ ok: true, readonly: true, title: 'HPR ID asha@hpr.abdm' });
         run = createRunner(hprJourney, deps(gateway, records));
@@ -80,7 +80,8 @@ describe('HPR journey', () => {
         const login = (await run.answer({ choice: 'link' })).prompt;
         expect(login.fields[0]).toMatchObject({ name: 'hprId', value: 'asha@hpr.abdm', readonly: true });
         expect((await run.answer({ hprId: 'other@hpr.abdm', password: 'p' })).prompt.error).toMatch(/linked to asha@hpr.abdm/);
-        expect((await run.answer({ hprId: 'asha@hpr.abdm', password: 'p' })).result).toMatchObject({ ok: true, readonly: true });
+        expect((await run.answer({ hprId: 'asha@hpr.abdm', password: 'p' })).prompt.step).toBe('afterId');
+        expect((await run.answer({ choice: 'later' })).result).toMatchObject({ ok: true, readonly: true });
     });
 
     it('links an existing HPR ID: signs in, keeps the token in memory only, saves the link', async () => {
@@ -92,7 +93,9 @@ describe('HPR journey', () => {
         const run = createRunner(hprJourney, d);
         expect((await run.start()).prompt.step).toBe('mode');
         expect((await run.answer({ choice: 'link' })).prompt.step).toBe('login');
-        const end = await run.answer({ hprId: 'asha@hpr.abdm', password: 'S3cret!pass' });
+        const offer = await run.answer({ hprId: 'asha@hpr.abdm', password: 'S3cret!pass' });
+        expect(offer.prompt.step).toBe('afterId'); // the professional profile is offered next
+        const end = await run.answer({ choice: 'later' });
         expect(end.done).toBe(true);
         expect(end.result).toMatchObject({ ok: true, title: 'HPR ID linked' });
         expect(calls[0].body).toEqual({ hprId: 'asha@hpr.abdm', password: 'S3cret!pass' });
@@ -119,7 +122,8 @@ describe('HPR journey', () => {
         const again = await run.answer({ hprId: 'a@hpr.abdm', password: 'x' });
         expect(again.prompt).toMatchObject({ step: 'login', error: 'Invalid credentials' });
         // A profile lookup failure does not undo the sign-in.
-        expect((await run.answer({ hprId: 'a@hpr.abdm', password: 'y' })).result.ok).toBe(true);
+        expect((await run.answer({ hprId: 'a@hpr.abdm', password: 'y' })).prompt.step).toBe('afterId');
+        expect((await run.answer({ choice: 'later' })).result.ok).toBe(true);
     });
 
     it('registers through Aadhaar on NHA’s page, falling back to a mobile OTP when the number does not match', async () => {
@@ -174,7 +178,8 @@ describe('HPR journey', () => {
         expect(finish.fields[0].options).toEqual([{ value: '572', label: 'Bengaluru Urban' }]);
         expect(finish.fields.find((f) => f.name === 'role').value).toBe('3');
         expect((await run.answer({ district: '572', role: '3', council: true, password: 'weak', confirm: 'weak' })).prompt.error).toMatch(/8\+ characters/);
-        const end = await run.answer({ district: '572', role: '3', council: true, password: 'Str0ng!pass', confirm: 'Str0ng!pass' });
+        expect((await run.answer({ district: '572', role: '3', council: true, password: 'Str0ng!pass', confirm: 'Str0ng!pass' })).prompt.step).toBe('afterId');
+        const end = await run.answer({ choice: 'later' });
         expect(end.result).toMatchObject({ ok: true, title: 'HPR ID created' });
 
         const create = calls.find((c) => c.path === '/hpr/registration/create').body;
@@ -377,7 +382,7 @@ describe('HFR journey', () => {
         const d = deps(gateway, records);
         let run = createRunner(hfrJourney, d);
         const list = (await run.start()).prompt;
-        expect(list.choices.map((c) => c.value)).toEqual(['continue:12', 'view:11', 'new']);
+        expect(list.choices.map((c) => c.value)).toEqual(['continue:12', 'view:11', 'update:11', 'new']);
         const view = await run.answer({ choice: 'view:11' });
         expect(view.result).toMatchObject({ ok: true, readonly: true, title: 'Main Clinic' });
         expect(view.result.facts).toEqual(expect.arrayContaining([['Facility id', 'IN331'], ['Address', '1 MG Road']]));
@@ -386,6 +391,55 @@ describe('HFR journey', () => {
         run = createRunner(hfrJourney, d);
         await run.start();
         expect((await run.answer({ choice: 'new' })).prompt.step).toBe('facility');
+    });
+
+    it('updates a submitted facility: one section, sent with the facility id, no new submit', async () => {
+        const submitted = { facilityName: 'Main Clinic', trackingId: '11', facilityId: 'IN2910000001', status: 'Created', stage: 'detailed', systemsOfMedicine: ['M'], typesOfService: ['OPD'], submittedAt: '2026-10-01T10:00:00Z' };
+        // What the gateway's registry route answers (HFR's own record); the device copy is older.
+        const registry = { facilityId: 'IN2910000001', facilityName: 'Main Clinic Renamed', ownershipCode: 'P', systemsOfMedicine: ['M'], facilityTypeCode: 'CL', facilityType: 'Clinic', stateLGDCode: '29', districtLGDCode: '572', subDistrictLGDCode: '5555', addressLine1: '1 MG Road', addressLine2: 'Bengaluru', pincode: '560001', latitude: '12.97', longitude: '77.59', contactNumber: '9345121505', contactEmailMasked: 'ma***@x.in' };
+        const { gateway, calls } = fakeGateway(hfrRoutes({ 'GET /hfr/facility/IN2910000001/registry': { success: true, facility: registry } }));
+        const d = deps(gateway, new Map([[HFR_FACILITIES, [submitted]]]));
+        let run = createRunner(hfrJourney, d);
+        await run.start();
+        const what = await run.answer({ choice: 'update:11' });
+        expect(what.prompt.step).toBe('updateWhat');
+        const detailed = await run.answer({ choice: 'detailed' });
+        expect(detailed.prompt.step).toBe('detailed');
+        const done = await run.answer({ spec_M: ['M-S1'], totalBeds: '0' });
+        expect(done.result).toMatchObject({ ok: true, readonly: true, title: 'Main Clinic Renamed updated in HFR' });
+        const sent = calls.find((c) => c.path === '/hfr/facility/detailed-information').body;
+        expect(sent.trackingId).toBe('IN2910000001'); // the facility id where the tracking id goes
+        expect(calls.some((c) => c.path === '/hfr/facility/submit')).toBe(false);
+        expect(d._records.get(HFR_FACILITIES)).toHaveLength(1); // the same facility, not a new entry
+        expect(facilityAt(d, '11')).toMatchObject({ facilityId: 'IN2910000001', stage: 'detailed' });
+
+        // Basic information: the manager signs in, and HFR's own record prefills the form.
+        run = createRunner(hfrJourney, d);
+        await run.start();
+        await run.answer({ choice: 'update:11' });
+        expect((await run.answer({ choice: 'basic' })).prompt.step).toBe('managerLogin');
+        const facility = await run.answer({ hprId: 'mgr@hpr.abdm', password: 'p' });
+        expect(facility.prompt.step).toBe('facility');
+        expect(facility.prompt.fields.find((f) => f.name === 'ownership').value).toBe('P');
+        expect(facility.prompt.fields.find((f) => f.name === 'systemsOfMedicine').value).toEqual(['M']);
+        expect(facility.prompt.fields.find((f) => f.name === 'facilityName').value).toBe('Main Clinic Renamed');
+        expect(facility.prompt.fields.find((f) => f.name === 'state').value).toBe('29');
+        const classify = await run.answer({ facilityName: 'Main Clinic', ownership: 'P', systemsOfMedicine: ['M'], state: '29' });
+        expect(classify.prompt.fields.find((f) => f.name === 'facilityType').value).toBe('5');
+        expect(classify.prompt.fields.find((f) => f.name === 'district').value).toBe('572');
+        const location = await run.answer({ ownershipSubType: 'P', facilityType: '5', specialityType: 'SINGLE', typesOfService: ['OPD'], district: '572' });
+        const field = (n) => location.prompt.fields.find((f) => f.name === n);
+        expect([field('addressLine1').value, field('city').value, field('pincode').value, field('subdistrict').value, field('phone').value]).toEqual(['1 MG Road', 'Bengaluru', '560001', '5555', '9345121505']);
+        expect(field('geo').value).toEqual({ lat: 12.97, lng: 77.59 });
+        expect(field('email').hint).toMatch(/masked \(ma\*\*\*@x.in\)/);
+        await run.answer(LOCATION);
+        const review = await run.answer(HOURS);
+        expect(review.prompt.choices[0]).toMatchObject({ value: 'create', label: 'Send the update to HFR' });
+        const end = await run.answer({ choice: 'create' });
+        expect(end.result.title).toBe('Main Clinic Renamed updated in HFR');
+        const basic = calls.filter((c) => c.path === '/hfr/facility/basic-information').at(-1);
+        expect(basic.body.trackingId).toBe('IN2910000001');
+        expect(basic.headers['X-HPRID-Auth-Token']).toBe('mgr-token');
     });
 
     it('a draft resumes at the first section HFR does not have yet', async () => {
@@ -645,7 +699,8 @@ describe('FHIR output and roles', () => {
         const run = createRunner(hprJourney, d);
         await run.start();
         await run.answer({ choice: 'link' });
-        const end = await run.answer({ hprId: 'asha@hpr.abdm', password: 'x' });
+        await run.answer({ hprId: 'asha@hpr.abdm', password: 'x' });
+        const end = await run.answer({ choice: 'later' });
         expect(end.result.ok).toBe(true);
         expect(end.result.facts.at(-1)[1]).toMatch(/incomplete for ClinuxFlowProvider: .*hpCategoryCode/);
         expect(d._records.get('fhir:provider').validation.status).toBe('invalid');

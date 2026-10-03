@@ -10,9 +10,10 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useAuthStore } from '../../stores/auth.js';
 import { journeyById } from '../index.js';
 import { useJourneySessionsStore, journeyIdOfThread, threadKeyOf } from '../sessions.js';
+import { stagesOf } from '../engine.js';
 import { useCuboProfileStore, REGISTRIES } from '../profile.js';
 import { addressFor, check, initialValues } from './promptForm.js';
-import { readImage } from './imageFile.js';
+import { readDocument, readImage } from './imageFile.js';
 import GeoPicker from './GeoPicker.vue';
 import SearchSelect from './SearchSelect.vue';
 import MapView from './MapView.vue';
@@ -44,10 +45,19 @@ const menuOpen = ref(false);
 const menuEl = ref(null);
 const doneCount = computed(() => ledger.value.filter((st) => st.state === 'done').length);
 const activeIndex = computed(() => ledger.value.findIndex((st) => st.state === 'active'));
+// Long journeys group their steps into stages (ledger `stage`, engine.js stagesOf).
+const stages = computed(() => stagesOf(ledger.value));
+const staged = computed(() => stages.value.some((g) => g.stage));
 const progressLabel = computed(() => {
   if (result.value?.readonly) return 'Read-only';
   if (result.value) return result.value.ok ? 'Finished' : result.value.title;
   if (!ledger.value.length) return busy.value ? 'Starting…' : 'Progress';
+  if (staged.value) {
+    const named = stages.value.filter((g) => g.stage);
+    const i = named.findIndex((g) => g.state === 'active');
+    const at = i >= 0 ? i : named.filter((g) => g.state === 'done').length - 1;
+    return `Stage ${Math.max(at, 0) + 1} of ${named.length}${named[Math.max(at, 0)] ? ` · ${named[Math.max(at, 0)].stage}` : ''}`;
+  }
   return `Step ${activeIndex.value >= 0 ? activeIndex.value + 1 : doneCount.value} of ${ledger.value.length}`;
 });
 const progressPct = computed(() => (ledger.value.length ? Math.round((doneCount.value / ledger.value.length) * 100) : 0));
@@ -118,6 +128,12 @@ function sendForm(action) {
   store.answer(props.threadId, { ...(action ? { action } : {}), ...(qr ? { qr } : {}) });
 }
 
+// "Save draft & finish later" (prompt.draft): the form as it stands, unchecked.
+function saveDraft() {
+  if (!prompt.value || busy.value) return;
+  store.answer(props.threadId, { ...JSON.parse(JSON.stringify(values)), __draft: true });
+}
+
 function send(choice) {
   const p = prompt.value;
   if (!p || busy.value) return;
@@ -163,7 +179,7 @@ async function pickImage(f, e) {
   reading.value = f.name;
   invalid.value = '';
   try {
-    values[f.name] = await readImage(file);
+    values[f.name] = f.type === 'file' ? await readDocument(file) : await readImage(file);
   } catch (err) {
     invalid.value = `${f.label}: ${err.message}`;
   } finally {
@@ -222,7 +238,9 @@ function toggle(name, value) {
             <div class="jp-menu-title">{{ journey.title }} · {{ result?.ok ? 100 : progressPct }}%</div>
             <!-- The journey's steps top to bottom (its JSON ledger): done / now / still to come. -->
             <ol class="jp-steps">
-              <li v-for="(st, i) in ledger" :key="st.id" :class="[st.state, { revisitable: st.state === 'done' && st.revisit && canGoBack }]" :aria-current="st.state === 'active' ? 'step' : undefined">
+              <template v-for="(st, i) in ledger" :key="st.id">
+              <li v-if="st.stage && st.stage !== ledger[i - 1]?.stage" class="jp-stage" :class="stages.find((g) => g.steps.includes(st))?.state">{{ st.stage }}</li>
+              <li :class="[st.state, { revisitable: st.state === 'done' && st.revisit && canGoBack }]" :aria-current="st.state === 'active' ? 'step' : undefined">
                 <span class="dot"><i v-if="st.state === 'done'" class="fas fa-check"></i><template v-else>{{ i + 1 }}</template></span>
                 <span class="lbl">
                   <!-- An answered step that can be changed: go back to it. -->
@@ -233,6 +251,7 @@ function toggle(name, value) {
                   <span v-if="st.signIn && profile.identity(st.signIn)?.session" class="jp-step-note">as {{ profile.identity(st.signIn).session.hprId }}</span>
                 </span>
               </li>
+              </template>
               <li v-if="!ledger.length" class="pending"><span class="lbl">Steps appear once the journey starts.</span></li>
             </ol>
             <!-- Sign-ins come from Cübo's profile (journeys/profile.js). -->
@@ -268,6 +287,7 @@ function toggle(name, value) {
           <span v-if="result.readonly" class="jp-readonly" data-testid="journey-readonly"><i class="fas fa-lock"></i> Read-only</span>
         </p>
         <p v-if="result.text" class="jp-text" style="margin-top:.25rem">{{ result.text }}</p>
+        <p v-if="result.failedStep" class="jp-muted" data-testid="journey-failed-step">At step “{{ result.failedStep }}”. Starting again reloads the journey; if it repeats, reload the page.</p>
         <dl v-if="result.facts?.length" class="result-facts">
           <template v-for="[k, v] in result.facts" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
         </dl>
@@ -353,6 +373,20 @@ function toggle(name, value) {
             <div v-else-if="f.type === 'qrscan'" class="wide">
               <QrScanField v-model="values[f.name]" :label="f.label" />
             </div>
+            <div v-else-if="f.type === 'file'" class="field" data-testid="file-field">
+              <label>{{ f.label }}<span v-if="f.required" class="req">*</span></label>
+              <div class="photo" :class="{ filled: values[f.name] }">
+                <i class="fas" :class="values[f.name]?.type === 'application/pdf' ? 'fa-file-pdf' : values[f.name] ? 'fa-file-image' : 'fa-file-arrow-up'"></i>
+                <div style="min-width:0;flex:1">
+                  <div v-if="values[f.name]" class="photo-name">{{ values[f.name].name }}</div>
+                  <div class="field-hint">{{ values[f.name]?.size ? kb(values[f.name].size) : f.hint || 'PDF, PNG or JPEG, up to 5 MB' }}</div>
+                </div>
+                <label class="ui-btn" style="padding:.3rem .65rem;cursor:pointer">
+                  <i class="fas" :class="reading === f.name ? 'fa-spinner fa-spin' : 'fa-paperclip'"></i>{{ values[f.name] ? 'Change' : 'Choose' }}
+                  <input type="file" accept="application/pdf,image/png,image/jpeg" class="sr-only" :data-testid="`file-${f.name}`" @change="pickImage(f, $event)" />
+                </label>
+              </div>
+            </div>
             <div v-else-if="f.type === 'image'" class="field" data-testid="image-field">
               <label>{{ f.label }}</label>
               <div class="photo" :class="{ filled: values[f.name] }">
@@ -406,6 +440,7 @@ function toggle(name, value) {
           <div class="wide" style="display:flex;flex-wrap:wrap;gap:.5rem">
             <button v-if="backTarget" type="button" class="ui-btn" data-testid="journey-back" :title="`Back to ${backTarget.label}`" @click="goBack(backTarget)"><i class="fas fa-arrow-left"></i> Back</button>
             <button class="ui-btn ui-btn-primary" type="submit">{{ prompt.submitLabel || 'Continue' }}</button>
+            <button v-if="prompt.draft" type="button" class="ui-btn" data-testid="journey-save-draft" title="Keeps what you entered on this device; nothing is sent yet" @click="saveDraft"><i class="fas fa-floppy-disk"></i> Save draft &amp; finish later</button>
             <button v-if="resendLabel" type="button" class="ui-btn" :disabled="!canResend" data-testid="resend" @click="resend">{{ resendLabel }}</button>
           </div>
         </form>
@@ -447,6 +482,11 @@ function toggle(name, value) {
 .jp-steps li { position: relative; display: flex; align-items: flex-start; gap: .55rem; padding: 0 0 .7rem; font-size: .8rem; color: var(--shell-text-muted); }
 .jp-steps li:not(:last-child)::before { content: ''; position: absolute; left: 10px; top: 22px; bottom: 2px; width: 2px; background: var(--shell-border); }
 .jp-steps li.done:not(:last-child)::before { background: #16a34a; }
+.jp-steps li.jp-stage { padding: .35rem 0 .45rem; font-size: .66rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--shell-text-muted); }
+.jp-steps li.jp-stage::before { display: none; }
+.jp-steps li.jp-stage.active { color: var(--color-primary-text); }
+.jp-steps li.jp-stage.done { color: #15803d; }
+.req { color: #dc2626; margin-left: .15rem; }
 .jp-steps .dot { width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: .66rem; font-weight: 700; border: 1px solid var(--shell-border-strong); background: var(--shell-surface); }
 .jp-steps .lbl { padding-top: .15rem; display: flex; flex-direction: column; }
 .jp-steps li.active { color: var(--shell-text-strong); font-weight: 600; }
