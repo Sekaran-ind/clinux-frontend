@@ -16,7 +16,7 @@
 // run; what was saved with ABDM (and its record here) stays.
 //
 // ?patient=<recordId> on /registries/abha starts the ABHA journey for that patient (PatientHome's
-// "Set up ABHA" button), skipping the "whose ABHA" question.
+// "Set up ABHA" button). ?share=<id> starts it on a Scan & Share queue entry (pages/ScanShare.vue).
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth.js';
@@ -37,7 +37,10 @@ const auth = useAuthStore();
 
 const account = computed(() => auth.currentUser);
 const journey = computed(() => journeyById(route.params.journey));
-const input = computed(() => (route.query.patient ? { patientId: String(route.query.patient) } : {}));
+const input = computed(() => {
+  if (route.query.share) return { shareId: String(route.query.share) };
+  return route.query.patient ? { patientId: String(route.query.patient) } : {};
+});
 
 // The journey's Cübo thread: carries on with a run already going (e.g. after a visit to Cübo's
 // full workspace), or starts one. Set synchronously so Cübo mounts straight onto it.
@@ -47,7 +50,7 @@ const sessions = useJourneySessionsStore();
 const cubo = useCuboStore();
 if (cubo.currentLayout === 'FAB') cubo.currentLayout = 'EXPANDED';
 const threadId = ref(null);
-watch([() => route.params.journey, () => route.query.patient, () => account.value?.id], () => {
+watch([() => route.params.journey, () => route.query.patient, () => route.query.share, () => account.value?.id], () => {
   threadId.value = journey.value && account.value ? sessions.open(journey.value.id, { account: account.value, input: input.value }) : null;
 }, { immediate: true });
 

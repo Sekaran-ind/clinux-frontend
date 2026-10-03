@@ -61,6 +61,8 @@ export const patients = {
     return listDataRecords(PATIENT_FORM_ID).map((r) => ({
       value: r.id,
       label: recordSummary(r),
+      // The person's name alone (label is the directory's one-line summary, which may lead with ids).
+      name: getAnswer(r, 'patient_name') || [getAnswer(r, 'patient_first_name'), getAnswer(r, 'patient_last_name')].filter(Boolean).join(' ') || recordSummary(r),
       mobile: getAnswer(r, 'patient_mobile') || '',
       abhaNumber: getAnswer(r, 'patient_abha_number') || '',
       abhaAddress: getAnswer(r, 'patient_abha_address') || '',

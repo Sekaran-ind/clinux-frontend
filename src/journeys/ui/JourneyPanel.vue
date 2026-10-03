@@ -16,6 +16,8 @@ import { readImage } from './imageFile.js';
 import GeoPicker from './GeoPicker.vue';
 import SearchSelect from './SearchSelect.vue';
 import MapView from './MapView.vue';
+import QrScanField from './QrScanField.vue';
+import QRCode from 'qrcode';
 import LhcFormHost from '../../components/LhcFormHost.vue';
 import { activeQuestionnaire, sliceQuestionnaireGroup, sliceRecordGroup } from '../../data/useSystemForms.js';
 
@@ -181,6 +183,13 @@ function shownOptions(f) {
   return f.options.filter((o) => values[f.name].includes(o.value) || String(o.label).toLowerCase().includes(q));
 }
 
+// A QR code for the person in front of the clinic to scan (prompt.qr: a URL, e.g. ABDM's
+// face-authentication link for the ABHA app), drawn here.
+const qrImage = ref('');
+watch(() => prompt.value?.qr, async (url) => {
+  qrImage.value = url ? await QRCode.toDataURL(url, { width: 240, margin: 1, errorCorrectionLevel: 'M' }).catch(() => '') : '';
+}, { immediate: true });
+
 function toggle(name, value) {
   const set = new Set(values[name]);
   set.has(value) ? set.delete(value) : set.add(value);
@@ -269,7 +278,9 @@ function toggle(name, value) {
             <template v-for="([k, v], n) in sec.rows" :key="n"><dt>{{ k }}</dt><dd class="plain">{{ v }}</dd></template>
           </dl>
         </div>
-        <div v-if="result.next || (result.readonly && result.again)" style="display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem">
+        <div v-if="result.next || result.download || (result.readonly && result.again)" style="display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem">
+          <!-- A file the record comes with (e.g. the patient's ABHA card). -->
+          <a v-if="result.download" :href="result.download.href" :download="result.download.filename" class="ui-btn" style="padding:.35rem .75rem" data-testid="journey-download"><i class="fas fa-download"></i> {{ result.download.label }}</a>
           <!-- Where this leads (e.g. a checked-in visit → Consultation). -->
           <RouterLink v-if="result.next" :to="result.next.to" class="ui-btn ui-btn-primary" style="padding:.35rem .75rem" data-testid="journey-next"><i class="fas fa-arrow-right"></i> {{ result.next.label }}</RouterLink>
           <button v-if="result.readonly && result.again" type="button" class="ui-btn" style="padding:.35rem .75rem" data-testid="journey-again" @click="restart"><i class="fas fa-arrow-right"></i> {{ result.again }}</button>
@@ -287,7 +298,12 @@ function toggle(name, value) {
             <li v-for="(i, n) in prompt.list" :key="n"><strong>{{ i.name }}</strong> <span>{{ i.detail }}</span></li>
           </ul>
           <MapView v-if="prompt.map" style="margin-top:.5rem" :markers="prompt.map.markers" :selected="prompt.map.selected" height="220px" />
+          <div v-if="prompt.qr" class="jp-qr" data-testid="journey-qr">
+            <img v-if="qrImage" :src="qrImage" alt="QR code to scan with the ABHA app" />
+            <a :href="prompt.qr" target="_blank" rel="noopener noreferrer" class="jp-muted" style="word-break:break-all">{{ prompt.qr }}</a>
+          </div>
         </div>
+        <a v-if="prompt.download" :href="prompt.download.href" :download="prompt.download.filename" class="ui-btn ui-btn-primary" style="align-self:flex-start" data-testid="journey-download"><i class="fas fa-download"></i> {{ prompt.download.label }}</a>
 
         <!-- A page to finish elsewhere first (NHA's Aadhaar verification), opened in a new tab. -->
         <a v-if="prompt.link" :href="prompt.link.href" target="_blank" rel="noopener noreferrer" class="ui-btn ui-btn-primary" style="align-self:flex-start" data-testid="journey-link">
@@ -333,6 +349,9 @@ function toggle(name, value) {
             </div>
             <div v-else-if="f.type === 'geo'" class="wide">
               <GeoPicker v-model="values[f.name]" :label="f.label" :address="f.near ? addressFor(prompt, f, values) : null" />
+            </div>
+            <div v-else-if="f.type === 'qrscan'" class="wide">
+              <QrScanField v-model="values[f.name]" :label="f.label" />
             </div>
             <div v-else-if="f.type === 'image'" class="field" data-testid="image-field">
               <label>{{ f.label }}</label>
@@ -447,6 +466,8 @@ function toggle(name, value) {
 .jp-menu-item.danger, .jp-menu-item.danger i { color: #dc2626; }
 .msg-error { margin: 0 0 .5rem; font-size: .78rem; color: #b91c1c; }
 .msg-warning { margin: .5rem 0 0; font-size: .78rem; color: #b45309; }
+.jp-qr { margin-top: .6rem; display: flex; flex-direction: column; align-items: flex-start; gap: .35rem; }
+.jp-qr img { width: 200px; height: 200px; border-radius: .5rem; background: #fff; padding: .4rem; border: 1px solid var(--shell-border); }
 .msg-image { margin-top: .5rem; width: 96px; height: 96px; object-fit: cover; border-radius: .5rem; border: 1px solid var(--shell-border); }
 .msg-list { margin: .5rem 0 0; padding-left: 1rem; font-size: .75rem; display: flex; flex-direction: column; gap: .15rem; }
 .msg-list span { color: var(--shell-text-muted); }
