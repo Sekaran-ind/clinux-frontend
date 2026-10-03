@@ -16,6 +16,12 @@
 //   An ask step may say "signIn": "<registry>" (e.g. "hpr"): it signs the person in to that
 //   registry. Cübo's profile holds that sign-in (journeys/profile.js), and the progress menu
 //   shows who is signed in.
+//   A step's ledger may name its `stage` ({ "label", "stage" }): a long journey's steps are grouped
+//   under their stage in the progress menu (stagesOf), e.g. HPR's profile: Personal details ->
+//   Address & contact -> Registration -> Qualifications -> Work -> Review & submit.
+//   A ledger may also say `doneIf` (a condition): a step a resumed run skipped because an earlier
+//   visit finished it (a saved draft section) still shows as done, and with "revisit" can be gone
+//   back to.
 //   An ask step may say "revisit": true: once answered, the person can go back to it (the progress
 //   menu's done steps, the form's Back button) and the journey runs forward again from there. Only
 //   mark steps whose action is safe to repeat — not OTPs or one-time transactions.
@@ -100,16 +106,47 @@ export function ledgerOf(spec, { data = {}, visited = [], current = null } = {})
     seen.add(next);
     step = next;
   }
+  // Steps done in an earlier visit (a resumed draft) that this run skipped: `ledger.doneIf` holds.
+  // Each goes in before the first step of the path that comes after it in the JSON.
+  const order = Object.keys(spec.steps);
+  for (const id of order) {
+    const cond = spec.steps[id]?.ledger?.doneIf;
+    if (!cond || path.includes(id) || !evaluate(cond, { data })) continue;
+    const at = path.findIndex((p) => order.indexOf(p) > order.indexOf(id));
+    path.splice(at < 0 ? path.length : at, 0, id);
+  }
+  const doneBefore = (id) => !!spec.steps[id]?.ledger?.doneIf && evaluate(spec.steps[id].ledger.doneIf, { data });
   return path
     .filter((id) => spec.steps[id]?.ledger)
     .map((id) => ({
       id,
       label: spec.steps[id].ledger.label,
+      ...(spec.steps[id].ledger.stage ? { stage: spec.steps[id].ledger.stage } : {}),
       ...(spec.steps[id].ledger.icon ? { icon: spec.steps[id].ledger.icon } : {}),
       ...(spec.steps[id].signIn ? { signIn: spec.steps[id].signIn } : {}),
       ...(spec.steps[id].revisit && spec.steps[id].type === 'ask' ? { revisit: true } : {}),
-      state: id === current ? 'active' : visited.includes(id) ? 'done' : 'pending',
+      state: id === current ? 'active' : visited.includes(id) || doneBefore(id) ? 'done' : 'pending',
     }));
+}
+
+/**
+ * The ledger grouped by stage, in order: [{ stage, steps, state }] where state is done (every step
+ * done), active (holds the active step, or is part done) or pending. Steps without a stage form
+ * their own group (stage ''). A stage that appears again later starts a new group.
+ */
+export function stagesOf(ledger = []) {
+  const groups = [];
+  for (const st of ledger) {
+    const stage = st.stage || '';
+    const last = groups.at(-1);
+    if (last && last.stage === stage) last.steps.push(st);
+    else groups.push({ stage, steps: [st] });
+  }
+  for (const g of groups) {
+    const states = g.steps.map((x) => x.state);
+    g.state = states.every((x) => x === 'done') ? 'done' : states.includes('active') || states.includes('done') ? 'active' : 'pending';
+  }
+  return groups;
 }
 
 /** Checks a journey's JSON against its handlers before anything runs. Returns a list of problems. */
@@ -132,6 +169,12 @@ export function checkJourney(journey) {
 }
 
 // ── Machine ──────────────────────────────────────────────────────────────────────────────────
+/** An automatic step threw: keep the message and the step, and log the stack for the console. */
+const failure = (step) => ({ event }) => {
+  console.error(`[journey] step '${step}' failed:`, event.error);
+  return { error: messageOf(event.error), failedStep: step };
+};
+
 function buildMachine(journey, deps) {
   const { spec, actions = {} } = journey;
   const merge = (context, output) => ({ ...context.data, ...(output?.data || {}) });
@@ -186,7 +229,7 @@ function buildMachine(journey, deps) {
           onDone: after(step),
           onError: step.onError === 'continue'
             ? { target: '#journey.__route', actions: assign(({ context }) => { const pending = resolveNext(step.next, { data: context.data }); return { pending, visited: [...context.visited, pending] }; }) }
-            : { target: '#journey.__failed', actions: assign({ error: ({ event }) => messageOf(event.error) }) },
+            : { target: '#journey.__failed', actions: assign(failure(id)) },
         },
       };
     } else {
@@ -196,7 +239,7 @@ function buildMachine(journey, deps) {
               src: `${id}:run`,
               input: ({ context }) => ({ data: context.data }),
               onDone: after(step),
-              onError: { target: '#journey.__failed', actions: assign({ error: ({ event }) => messageOf(event.error) }) },
+              onError: { target: '#journey.__failed', actions: assign(failure(id)) },
             },
           }
         : { always: { target: '#journey.__done', actions: assign({ result: () => step.result || { ok: true, title: 'Done' } }) } };
@@ -213,7 +256,8 @@ function buildMachine(journey, deps) {
 
   // Going back to a step already answered ("revisit": true). The runner sends GOTO only while the
   // journey waits for an answer, never mid-action. Steps after it count as not visited again.
-  const canRevisit = ({ context, event }) => !!spec.steps[event.step]?.revisit && spec.steps[event.step].type === 'ask' && context.visited.includes(event.step);
+  const doneEarlier = (context, step) => !!spec.steps[step]?.ledger?.doneIf && evaluate(spec.steps[step].ledger.doneIf, { data: context.data });
+  const canRevisit = ({ context, event }) => !!spec.steps[event.step]?.revisit && spec.steps[event.step].type === 'ask' && (context.visited.includes(event.step) || doneEarlier(context, event.step));
 
   return createMachine({
     id: 'journey',
@@ -226,7 +270,7 @@ function buildMachine(journey, deps) {
           pending: event.step,
           answer: null,
           error: null,
-          visited: context.visited.slice(0, context.visited.indexOf(event.step) + 1),
+          visited: context.visited.includes(event.step) ? context.visited.slice(0, context.visited.indexOf(event.step) + 1) : [...context.visited, event.step],
         })),
       },
     },
@@ -235,7 +279,8 @@ function buildMachine(journey, deps) {
       ...states,
       // Engine-internal states: reserved names, so a journey may name its own steps `done` or `failed`.
       __route: { always: routeTargets },
-      __failed: { always: { target: '__done', actions: assign(({ context }) => ({ result: { ...FAILED, text: context.error } })) } },
+      // Says which step failed, so a report ("That did not work") can be traced to its handler.
+      __failed: { always: { target: '__done', actions: assign(({ context }) => ({ result: { ...FAILED, text: context.error, failedStep: context.failedStep } })) } },
       __done: { type: 'final' },
     },
   }, { actors: invokes });

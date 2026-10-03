@@ -23,6 +23,11 @@ import { checkoutJourney } from './clinic/checkoutJourney.js';
 import { clinicDeps } from './clinic/clinicDeps.js';
 
 export const JOURNEYS = [hprJourney, hfrJourney, patientAbhaJourney];
+
+// Development: a journey's run lives in a store that outlives hot updates, so an edited journey
+// would keep running its old definition alongside new handlers (the cause of a confusing
+// mid-journey failure). Any change to a journey module reloads the page instead.
+if (import.meta.hot) import.meta.hot.decline();
 // Clinic operations as journeys (Front Desk, Consultation, Checkout): one run per visit.
 export const CLINIC_JOURNEYS = [frontDeskJourney, consultationJourney, checkoutJourney];
 export const journeyById = (id) => [...JOURNEYS, ...CLINIC_JOURNEYS].find((j) => j.id === id);
