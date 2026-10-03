@@ -136,7 +136,24 @@ Fonts/lforms-static — a stray CDN `<script src>` creeping back in is a regress
   only their own rows). The registry journeys feed the activity log through
   `data/operations.js`'s `journalToAudit()` — the ported clinux-cubo journeys stay unedited. ABDM
   transactions are written by clinuxflow-abdm-gateway into the shared `clinuxflow` D1; locally,
-  run the gateway with `npm run dev:shared-db` so it writes into clinuxflow-api's local database.
+  run the gateway with `npm run dev` (it uses clinuxflow-api's local database).
+- **Long journeys: stages, drafts, files.** A step's `ledger.stage` groups the progress menu
+  (`engine.js` `stagesOf`; the button reads "Stage n of m · <stage>"). `ledger.doneIf` (a condition)
+  shows a step a resumed run skipped as done, and lets it be revisited. `prompt.draft: true` adds
+  "Save draft & finish later", which sends the form unchecked with `__draft: true`; the step's
+  action keeps it and the journey ends paused. Field type `file` takes PDF/PNG/JPEG up to 5 MB
+  (`imageFile.js` `readDocument`). The HPR journey uses all three for the **professional profile**
+  (`hprProfile.js` = draft store, masters, the pure `buildProfessional` body; `hprProfileSteps.js` =
+  prompts/handlers): six stages after an HPR ID is created or linked. It's a draft in IndexedDB
+  (`abdm:hpr:profile:<hprId>`) until `register-professional-new`.
+- **Updates start from the ABDM registry, never from this device** (local copies are for display
+  in other pages). HPR: `account/information` (KYC names, DOB, contact, address, photo, category)
+  + `fetch-professional-info` (whether a profile exists decides register vs
+  `update-professional-new`; details only for public profiles). HFR: the gateway's
+  `GET /hfr/facility/:id/registry` combines three HFR read APIs; HFR returns no photos, hours,
+  unmasked email or sub-types, so those are asked again. HFR mixes codes and names (search says
+  type "CL", the master "39"), so prefills match by code or label (`registryOption`). ABHA: a
+  recorded ABHA offers "Update from ABDM" (verify again, take ABDM's profile).
 - **ABDM M1 + doctor roster** (Registries in the sidebar): the Patient ABHA journey covers NHA's M1
   table — Aadhaar OTP, face authentication (ABHA app scans a QR; no fingerprint device), driving
   licence, ABHA address, card download, profile update, verification by OTP / patient's ABHA QR

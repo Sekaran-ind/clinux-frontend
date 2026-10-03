@@ -194,6 +194,20 @@ const REGIONS = [
 ];
 
 /** The Basic Information body HFR expects, from the answers collected in this journey. */
+/** The option a registry value names, by code or by label (HFR mixes the two). */
+export function registryOption(options = [], code, label) {
+    const norm = (v) => String(v ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+    return options.find((o) => code && o.value === String(code))?.value || options.find((o) => label && norm(o.label) === norm(label))?.value || '';
+}
+
+/** After a section of a submitted facility was sent again: note it on the facility and in the journal. */
+async function updated(s, d, what, fields = {}) {
+    const u = s.data.updating;
+    await saveFacility(d.records, { trackingId: u.trackingId, ...fields, updatedAt: new Date().toISOString() });
+    await d.journal?.add({ journey: 'hfr', group: 'HFR', title: `${u.facilityName} updated in HFR`, text: `Sent ${what} again.`, facts: [['Facility id', u.facilityId], ['Updated', what]] });
+    return { data: { updated: what } };
+}
+
 export function buildBasicInformation(f) {
     return {
         // Empty creates a draft; the draft's own tracking id updates it (going back to change an
@@ -263,12 +277,25 @@ export const hfrJourney = {
         // be viewed (read-only), drafts continued, or another facility registered.
         facilities: (s) => ({
             text: `Your HFR facilities (${s.data.facilities.length}).`,
-            detail: 'Registered facilities are read-only here. Each facility is registered separately.',
+            detail: 'A registered facility is read-only here, but a section can be sent to HFR again as an update. Each facility is registered separately.',
             list: s.data.facilities.map((f) => ({ name: f.facilityName, detail: facilityLine(f).slice(f.facilityName.length + 3) })),
             choices: [
                 ...s.data.facilities.filter((f) => !isSubmitted(f)).map((f) => ({ value: `continue:${f.trackingId}`, label: `Continue draft ${f.trackingId}`, detail: facilityLine(f) })),
-                ...s.data.facilities.filter(isSubmitted).map((f) => ({ value: `view:${f.trackingId}`, label: `View ${f.facilityName}`, detail: `${f.facilityId} · read-only` })),
+                ...s.data.facilities.filter(isSubmitted).flatMap((f) => [
+                    { value: `view:${f.trackingId}`, label: `View ${f.facilityName}`, detail: `${f.facilityId} · read-only` },
+                    { value: `update:${f.trackingId}`, label: `Update ${f.facilityName} in HFR`, detail: 'Send basic, additional or detailed information again' },
+                ]),
                 { value: 'new', label: 'Register a new facility', detail: 'A separate HFR registration' },
+            ],
+        }),
+        // An update of a submitted facility: which section to send again (with its facility id).
+        updateWhat: (s) => ({
+            text: `What would you like to update for ${s.data.updating.facilityName} (${s.data.updating.facilityId})?`,
+            detail: 'HFR takes an update through the same sections as a registration, with the facility id in place of the tracking id. Nothing else changes.',
+            choices: [
+                { value: 'basic', label: 'Basic information', detail: 'Name, ownership, type, address, location, hours and photos — needs the facility manager’s HPR sign-in' },
+                { value: 'additional', label: 'Programmes and general facilities' },
+                { value: 'detailed', label: 'Specialities, beds and pharmacy' },
             ],
         }),
         managerLogin: (s) => ({
@@ -282,25 +309,28 @@ export const hfrJourney = {
             submitLabel: 'Sign in',
         }),
         facility: (s) => ({
-            text: 'About the facility.',
+            text: s.data.updating ? `Updating ${s.data.updating.facilityName} — filled in from HFR’s record.` : 'About the facility.',
             fields: [
                 // HFR takes only letters, digits and spaces, starting with a letter (its doc; search answers
                 // HIS-4029 for anything else, checked live 2026-10-01).
-                { name: 'facilityName', label: 'Facility name', value: hfrName(s.data.clinicName), pattern: FACILITY_NAME_PATTERN, hint: 'Letters, numbers and spaces only, starting with a letter (HFR rule)', required: true },
-                { name: 'ownership', label: 'Ownership', type: 'select', options: s.data.owners, required: true },
-                { name: 'systemsOfMedicine', label: 'Systems of medicine', type: 'multiselect', options: s.data.medicines, required: true },
-                { name: 'state', label: 'State', type: 'select', options: s.data.states, required: true },
+                { name: 'facilityName', label: 'Facility name', value: hfrName(s.data.prefill?.facilityName || s.data.clinicName), pattern: FACILITY_NAME_PATTERN, hint: 'Letters, numbers and spaces only, starting with a letter (HFR rule)', required: true },
+                { name: 'ownership', label: 'Ownership', type: 'select', options: s.data.owners, value: s.data.prefill?.ownershipCode || '', required: true },
+                { name: 'systemsOfMedicine', label: 'Systems of medicine', type: 'multiselect', options: s.data.medicines, value: s.data.prefill?.systemsOfMedicine || [], required: true },
+                { name: 'state', label: 'State', type: 'select', options: s.data.states, value: s.data.prefill?.stateLGDCode || '', required: true },
             ],
             submitLabel: 'Continue',
         }),
         classify: (s) => ({
             text: 'How HFR classifies the facility.',
+            ...(s.data.updating ? { detail: 'HFR’s record gives the facility type; it does not return the ownership sub-type, speciality type or type of service, so choose them again.' } : {}),
             fields: [
                 { name: 'ownershipSubType', label: 'Ownership type', type: 'select', options: OWNERSHIP_SUBTYPES[s.data.form.ownership] || [], required: true },
-                { name: 'facilityType', label: 'Facility type', type: 'select', options: s.data.facilityTypes, required: true },
+                // HFR's search reports the type as a short code ("CL") that its own facility-type
+                // master doesn't use ("39" = "Clinic/ Dispensary", live 2026-10-03): match either.
+                { name: 'facilityType', label: 'Facility type', type: 'select', options: s.data.facilityTypes, value: registryOption(s.data.facilityTypes, s.data.prefill?.facilityTypeCode, s.data.prefill?.facilityType), required: true },
                 { name: 'specialityType', label: 'Speciality', type: 'select', options: SPECIALITY_TYPES, value: 'SINGLE', required: true },
                 { name: 'typesOfService', label: 'Type of service', type: 'multiselect', options: SERVICE_TYPES, value: ['OPD'], hint: 'Not needed for a pharmacy, lab, imaging centre, blood bank, cath lab or dialysis centre' },
-                { name: 'district', label: 'District', type: 'select', options: s.data.districts, required: true },
+                { name: 'district', label: 'District', type: 'select', options: s.data.districts, value: s.data.prefill?.districtLGDCode || '', required: true },
             ],
             submitLabel: 'Continue',
         }),
@@ -309,22 +339,24 @@ export const hfrJourney = {
             fields: [
                 ...(s.data.ownerSubtypes2.length ? [{ name: 'ownershipSubType2', label: 'Ownership sub-type', type: 'select', options: s.data.ownerSubtypes2, required: true }] : []),
                 { name: 'facilitySubType', label: 'Facility sub-type', type: 'select', options: s.data.facilitySubtypes, required: true },
-                { name: 'subdistrict', label: 'Sub-district', type: 'select', options: s.data.subdistricts, required: true },
+                { name: 'subdistrict', label: 'Sub-district', type: 'select', options: s.data.subdistricts, value: s.data.prefill?.subDistrictLGDCode || '', required: true },
                 { name: 'region', label: 'Region', type: 'select', options: REGIONS, value: 'U', required: true },
-                { name: 'addressLine1', label: 'Address', required: true },
-                { name: 'city', label: 'City or town', required: true },
-                { name: 'pincode', label: 'PIN code', inputmode: 'numeric', pattern: '^\\d{6}$', required: true },
+                { name: 'addressLine1', label: 'Address', value: s.data.prefill?.addressLine1 || '', required: true },
+                { name: 'city', label: 'City or town', value: s.data.prefill?.addressLine2 || '', required: true },
+                { name: 'pincode', label: 'PIN code', inputmode: 'numeric', pattern: '^\\d{6}$', value: s.data.prefill?.pincode || '', required: true },
                 // `near`: "Find the address on the map" looks up these fields (plus the district and
                 // state chosen earlier) and drops the pin there (GeoPicker.vue, geocode.js).
                 { name: 'geo', label: 'Pin the facility on the map (HFR records its coordinates)', type: 'geo', required: true,
+                  ...(Number.isFinite(Number(s.data.prefill?.latitude)) && s.data.prefill?.latitude ? { value: { lat: Number(s.data.prefill.latitude), lng: Number(s.data.prefill.longitude) } } : {}),
                   near: { fields: ['addressLine1', 'city', 'pincode'], context: [labelOf(s.data.districts, s.data.form.district), labelOf(s.data.states, s.data.form.state)] } },
-                { name: 'phone', label: 'Facility phone', inputmode: 'tel', pattern: '^[6-9]\\d{9}$', required: true },
-                { name: 'email', label: 'Facility email', type: 'email' },
+                { name: 'phone', label: 'Facility phone', inputmode: 'tel', pattern: '^[6-9]\\d{9}$', value: s.data.prefill?.contactNumber || '', required: true },
+                { name: 'email', label: 'Facility email', type: 'email', ...(s.data.prefill?.contactEmailMasked ? { hint: `HFR shows it only masked (${s.data.prefill.contactEmailMasked}); enter it again to keep it` } : {}) },
             ],
             submitLabel: 'Check HFR for duplicates',
         }),
-        hours: () => ({
+        hours: (s) => ({
             text: 'When the facility is open, and two photographs HFR needs: its name board and its building.',
+            ...(s.data.updating ? { detail: 'HFR does not return the opening hours or the photographs it holds, so they have to be given again for an update.' } : {}),
             fields: [
                 { name: 'workingDays', label: 'Working days', type: 'multiselect', options: WORKING_DAYS.map((d) => ({ value: d, label: DAY_LABELS[d] })), value: WORKING_DAYS.slice(0, 6), required: true },
                 { name: 'allDay', label: 'Open 24 hours on these days (24×7)', type: 'checkbox' },
@@ -353,7 +385,9 @@ export const hfrJourney = {
             },
             choices: [
                 s.data.trackingId
-                    ? { value: 'create', label: 'Update the HFR draft', detail: `Sends the changes to draft ${s.data.trackingId}` }
+                    ? s.data.updating
+                        ? { value: 'create', label: 'Send the update to HFR', detail: `Updates facility ${s.data.updating.facilityId}` }
+                        : { value: 'create', label: 'Update the HFR draft', detail: `Sends the changes to draft ${s.data.trackingId}` }
                     : { value: 'create', label: 'Create the HFR draft', detail: 'Sends Basic Information to HFR and returns a tracking id' },
                 { value: 'stop', label: 'Stop here' },
             ],
@@ -418,12 +452,21 @@ export const hfrJourney = {
                 return { data: { facilities, hasFacilities: facilities.length > 0, clinicName: profileName || d.account?.clinicName, hasHpr: !!d.vault.hpr(d.account.id), profileHprId: linked?.hprId || '' } };
             },
         // facilities
-        chooseFacility: async (a, s) => {
+        chooseFacility: async (a, s, d) => {
                 const [pick, trackingId] = String(a.choice).split(':');
                 if (pick === 'new') return { data: { pick: 'new', trackingId: null, stage: null } };
-                const f = s.data.facilities.find((x) => x.trackingId === trackingId);
+                const f = (s.data.facilities || []).find((x) => x.trackingId === trackingId);
                 if (!f) throw new Error('That facility is no longer on this device.');
                 if (pick === 'view') return { data: { pick: 'view', viewing: f } };
+                if (pick === 'update') {
+                    // An update starts from what HFR has (gateway GET /hfr/facility/:id/registry),
+                    // never from this device's copy, which only lists the facility. HFR returns no
+                    // photos, hours or unmasked email; those are asked for again.
+                    const res = await d.gateway(`/hfr/facility/${encodeURIComponent(f.facilityId)}/registry`);
+                    const prefill = res.facility;
+                    const form = { facilityName: prefill.facilityName, systemsOfMedicine: prefill.systemsOfMedicine, typesOfService: [] };
+                    return { data: { pick: 'update', updating: { ...f, facilityName: prefill.facilityName }, trackingId: prefill.facilityId, form, prefill } };
+                }
                 // What the later sections need from the draft (kept with it — never the photos).
                 const form = { facilityName: f.facilityName, systemsOfMedicine: f.systemsOfMedicine || [], typesOfService: f.typesOfService || [] };
                 return { data: { pick: 'continue', trackingId: f.trackingId, stage: f.stage || 'basic', form } };
@@ -453,6 +496,7 @@ export const hfrJourney = {
                 };
             },
         // managerLogin
+        chooseUpdate: async (a) => ({ data: { section: a.choice } }),
         managerLogin: async (a, s, d) => {
                 const res = await post(d.gateway, '/hpr/auth/password-login', { hprId: a.hprId.trim(), password: a.password });
                 d.vault.setHpr(d.account.id, { token: res.token, hprId: a.hprId.trim(), expiresIn: res.expiresIn });
@@ -488,7 +532,7 @@ export const hfrJourney = {
         // classify
         classifyFacility: async (a, s) => {
                 const typesOfService = [].concat(a.typesOfService || []).filter(Boolean);
-                const typeLabel = s.data.facilityTypes.find((o) => o.value === a.facilityType)?.label || '';
+                const typeLabel = (s.data.facilityTypes || []).find((o) => o.value === a.facilityType)?.label || '';
                 if (!typesOfService.length && !NO_SERVICE_TYPE.test(typeLabel)) throw new Error(`HFR needs the type of service (OPD, Daycare or IPD) for a ${typeLabel || 'facility of this type'}.`);
                 return { data: { form: { ...s.data.form, ownershipSubType: a.ownershipSubType, facilityType: a.facilityType, specialityType: a.specialityType, district: a.district, typesOfService } } };
             },
@@ -544,6 +588,7 @@ export const hfrJourney = {
                 if (a.choice !== 'create') return { data: { stopped: true } };
                 const res = await post(d.gateway, '/hfr/facility/basic-information', buildBasicInformation({ ...s.data.form, trackingId: s.data.trackingId }), hprHeader(d));
                 savedSection(res, 'basic information');
+                if (s.data.updating) return updated(s, d, 'basic information', { facilityName: s.data.form.facilityName, address: [s.data.form.addressLine1, s.data.form.city, s.data.form.pincode].filter(Boolean).join(', ') });
                 const before = (await loadFacilities(d.records)).find((f) => f.trackingId === res.trackingId);
                 const same = !!before;
                 const f = s.data.form;
@@ -559,7 +604,7 @@ export const hfrJourney = {
                     createdAt: same ? before.createdAt : new Date().toISOString(),
                     updatedAt: new Date().toISOString(),
                 });
-                const facilityTypeLabel = s.data.facilityTypes.find((o) => o.value === f.facilityType)?.label;
+                const facilityTypeLabel = (s.data.facilityTypes || []).find((o) => o.value === f.facilityType)?.label;
                 const resource = facilityResource(f, { clinicId: d.account.clinicId, facilityTypeLabel, trackingId: res.trackingId });
                 const fhir = await keepResource(d, facilityResourceKey(res.trackingId), resource, PROFILE.facility);
                 await d.journal?.add({
@@ -587,6 +632,7 @@ export const hfrJourney = {
                 if (a.stateInsuranceSchemeId && !/^[A-Za-z0-9]*$/.test(a.stateInsuranceSchemeId.trim())) throw new Error('The state insurance scheme id takes letters and digits only.');
                 const res = await post(d.gateway, '/hfr/facility/additional-information', buildAdditionalInformation(s.data.trackingId, a));
                 savedSection(res, 'additional information');
+                if (s.data.updating) return updated(s, d, 'programmes and general facilities');
                 await saveFacility(d.records, { trackingId: s.data.trackingId, stage: 'additional', updatedAt: new Date().toISOString() });
                 return { data: { stage: 'additional', hasPharmacy: a.hasPharmacy !== 'N' } };
             },
@@ -613,6 +659,7 @@ export const hfrJourney = {
                 const typesOfService = s.data.form.typesOfService?.length ? s.data.form.typesOfService : [].concat(a.typesOfService || []).filter(Boolean);
                 const res = await post(d.gateway, '/hfr/facility/detailed-information', buildDetailedInformation(s.data.trackingId, { systemsOfMedicine: systems, typesOfService, specialities, counts, pharmacy }));
                 savedSection(res, 'detailed information');
+                if (s.data.updating) return updated(s, d, 'specialities, beds and pharmacy', { systemsOfMedicine: systems, typesOfService });
                 await saveFacility(d.records, { trackingId: s.data.trackingId, stage: 'detailed', systemsOfMedicine: systems, typesOfService, updatedAt: new Date().toISOString() });
                 return { data: { stage: 'detailed', form: { ...s.data.form, systemsOfMedicine: systems, typesOfService } } };
             },
@@ -646,6 +693,10 @@ export const hfrJourney = {
             },
         // done
         result: async (s) => {
+                if (s.data.updated) {
+                    const u = s.data.updating;
+                    return { result: { ok: true, readonly: true, again: 'Back to your facilities', title: `${u.facilityName} updated in HFR`, text: `HFR has the new ${s.data.updated}. It may be reviewed again by the state authority.`, facts: [['Facility id', u.facilityId], ['Updated', s.data.updated]] } };
+                }
                 if (s.data.stopped) return { result: { ok: true, title: 'Nothing was sent to HFR', text: 'No draft was created.' } };
                 if (s.data.later) {
                     return { result: { ok: true, title: 'Draft saved', text: 'Open this journey again to submit it.', facts: [['Tracking id', s.data.trackingId], ...(s.data.fhir ? [s.data.fhir] : [])] } };

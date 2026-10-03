@@ -1,32 +1,639 @@
 {
-  "$comment": "HPR (Healthcare Professional Registry) journey: link an existing HPR ID, or register a new one through Aadhaar (HPR registration doc v2.0). Steps and transitions are here; the gateway calls and the prompts that need code are the named handlers in hprJourney.js. Run by engine.js on XState.",
+  "$comment": "HPR (Healthcare Professional Registry) journey: link an existing HPR ID, or register a new one through Aadhaar (HPR registration doc v2.0), then build the professional profile HPR verifies (HPR-026..077): Personal details, Address & contact, Registration, Qualifications, Work, Review & submit. The profile is a draft on this device until it is submitted with register-professional-new. An update always starts from HPR's own record (account/information + fetch-professional-info), and whether HPR already has a profile decides register vs update-professional-new; every profile step offers 'Save draft & finish later'. Steps and transitions are here; the gateway calls and the prompts that need code are the named handlers in hprJourney.js (profile helpers in hprProfile.js). Run by engine.js on XState.",
   "id": "hpr",
   "title": "HPR ID",
-  "summary": "Link or register your Healthcare Professional Registry ID",
+  "summary": "Link or register your Healthcare Professional Registry ID, and complete your professional profile",
   "icon": "fa-user-doctor",
-  "related": [{ "label": "Professional profile", "to": "/staff-onboarding", "icon": "fa-address-card", "note": "Your own professional details in ClinuxFlow" }],
+  "related": [
+    {
+      "label": "Doctor roster",
+      "to": "/registries/roster",
+      "icon": "fa-user-doctor",
+      "note": "Practitioners at your facilities, checked against HPR"
+    }
+  ],
   "start": "begin",
   "steps": {
-    "begin":         { "type": "auto",  "run": "loadLinked", "next": "mode" },
-    "mode":          { "type": "ask",   "prompt": "mode", "run": "chooseMode", "next": [{ "if": "data.mode == 'view'", "to": "viewLinked" }, { "if": "data.mode == 'register'", "to": "aadhaar" }, { "to": "login" }] },
-    "viewLinked":    { "type": "final", "run": "viewLinked" },
-
-    "login":         { "type": "ask", "signIn": "hpr",   "prompt": "login", "run": "passwordLogin", "next": "profile", "ledger": { "label": "Sign in to HPR" } },
-    "profile":       { "type": "auto",  "run": "fetchProfile", "onError": "continue", "next": "linked" },
-    "linked":        { "type": "final", "run": "saveLinked" },
-
-    "aadhaar":       { "type": "ask",   "prompt": "aadhaar", "run": "startAadhaarLink", "next": "aadhaarLink", "ledger": { "label": "Aadhaar consent" } },
-    "aadhaarLink":   { "type": "ask",   "prompt": "aadhaarLink", "run": "checkAadhaarLink", "next": [{ "if": "data.renewed", "to": "aadhaarLink" }, { "to": "checkAccount" }], "ledger": { "label": "Verify on NHA's page" } },
-    "checkAccount":  { "type": "auto",  "run": "checkAccount", "next": [{ "if": "data.hpidExists", "to": "exists" }, { "to": "mobile" }] },
-    "exists":        { "type": "final", "run": "existsResult" },
-    "mobile":        { "type": "ask",   "prompt": "mobile", "run": "checkMobile", "next": [{ "if": "data.mobileMatched", "to": "loadMasters" }, { "to": "sendMobileOtp" }], "ledger": { "label": "Mobile" } },
-    "sendMobileOtp": { "type": "auto",  "run": "sendMobileOtp", "next": "mobileOtp" },
-    "mobileOtp":     { "type": "ask",   "prompt": "mobileOtp", "run": "verifyMobileOtp", "next": [{ "if": "data.mobileResent", "to": "mobileOtp" }, { "to": "loadMasters" }] },
-    "loadMasters":   { "type": "auto",  "run": "loadMasters", "next": "identity" },
-    "identity":      { "type": "ask", "revisit": true,   "prompt": "identity", "run": "chooseIdentity", "next": "jurisdiction", "ledger": { "label": "HPR ID and category" } },
-    "jurisdiction":  { "type": "ask", "revisit": true,   "prompt": "jurisdiction", "run": "chooseJurisdiction", "next": "loadDistricts", "ledger": { "label": "System of medicine and state" } },
-    "loadDistricts": { "type": "auto",  "run": "loadDistricts", "next": "finish" },
-    "finish":        { "type": "ask",   "prompt": "finish", "run": "createHprId", "next": "registered", "ledger": { "label": "District, role and password" } },
-    "registered":    { "type": "final", "run": "saveRegistered" }
+    "begin": {
+      "type": "auto",
+      "run": "loadLinked",
+      "next": "mode"
+    },
+    "mode": {
+      "type": "ask",
+      "prompt": "mode",
+      "run": "chooseMode",
+      "next": [
+        {
+          "if": "data.mode == 'view'",
+          "to": "viewLinked"
+        },
+        {
+          "if": "data.mode == 'profile'",
+          "to": "profileStart"
+        },
+        {
+          "if": "data.mode == 'register'",
+          "to": "aadhaar"
+        },
+        {
+          "to": "login"
+        }
+      ]
+    },
+    "viewLinked": {
+      "type": "final",
+      "run": "viewLinked"
+    },
+    "login": {
+      "type": "ask",
+      "signIn": "hpr",
+      "prompt": "login",
+      "run": "passwordLogin",
+      "next": "profile",
+      "ledger": {
+        "label": "Sign in to HPR",
+        "stage": "HPR ID"
+      }
+    },
+    "profile": {
+      "type": "auto",
+      "run": "fetchProfile",
+      "onError": "continue",
+      "next": "linked"
+    },
+    "linked": {
+      "type": "auto",
+      "run": "saveLinked",
+      "next": "afterId"
+    },
+    "aadhaar": {
+      "type": "ask",
+      "prompt": "aadhaar",
+      "run": "startAadhaarLink",
+      "next": "aadhaarLink",
+      "ledger": {
+        "label": "Aadhaar consent",
+        "stage": "HPR ID"
+      }
+    },
+    "aadhaarLink": {
+      "type": "ask",
+      "prompt": "aadhaarLink",
+      "run": "checkAadhaarLink",
+      "next": [
+        {
+          "if": "data.renewed",
+          "to": "aadhaarLink"
+        },
+        {
+          "to": "checkAccount"
+        }
+      ],
+      "ledger": {
+        "label": "Verify on NHA's page",
+        "stage": "HPR ID"
+      }
+    },
+    "checkAccount": {
+      "type": "auto",
+      "run": "checkAccount",
+      "next": [
+        {
+          "if": "data.hpidExists",
+          "to": "exists"
+        },
+        {
+          "to": "mobile"
+        }
+      ]
+    },
+    "exists": {
+      "type": "final",
+      "run": "existsResult"
+    },
+    "mobile": {
+      "type": "ask",
+      "prompt": "mobile",
+      "run": "checkMobile",
+      "next": [
+        {
+          "if": "data.mobileMatched",
+          "to": "loadMasters"
+        },
+        {
+          "to": "sendMobileOtp"
+        }
+      ],
+      "ledger": {
+        "label": "Mobile",
+        "stage": "HPR ID"
+      }
+    },
+    "sendMobileOtp": {
+      "type": "auto",
+      "run": "sendMobileOtp",
+      "next": "mobileOtp"
+    },
+    "mobileOtp": {
+      "type": "ask",
+      "prompt": "mobileOtp",
+      "run": "verifyMobileOtp",
+      "next": [
+        {
+          "if": "data.mobileResent",
+          "to": "mobileOtp"
+        },
+        {
+          "to": "loadMasters"
+        }
+      ]
+    },
+    "loadMasters": {
+      "type": "auto",
+      "run": "loadMasters",
+      "next": "identity"
+    },
+    "identity": {
+      "type": "ask",
+      "revisit": true,
+      "prompt": "identity",
+      "run": "chooseIdentity",
+      "next": "jurisdiction",
+      "ledger": {
+        "label": "HPR ID and category",
+        "stage": "HPR ID"
+      }
+    },
+    "jurisdiction": {
+      "type": "ask",
+      "revisit": true,
+      "prompt": "jurisdiction",
+      "run": "chooseJurisdiction",
+      "next": "loadDistricts",
+      "ledger": {
+        "label": "System of medicine and state",
+        "stage": "HPR ID"
+      }
+    },
+    "loadDistricts": {
+      "type": "auto",
+      "run": "loadDistricts",
+      "next": "finish"
+    },
+    "finish": {
+      "type": "ask",
+      "prompt": "finish",
+      "run": "createHprId",
+      "next": "registered",
+      "ledger": {
+        "label": "District, role and password",
+        "stage": "HPR ID"
+      }
+    },
+    "registered": {
+      "type": "auto",
+      "run": "saveRegistered",
+      "next": "afterId"
+    },
+    "afterId": {
+      "type": "ask",
+      "prompt": "afterId",
+      "run": "chooseAfterId",
+      "next": [
+        {
+          "if": "data.toProfile",
+          "to": "profileStart"
+        },
+        {
+          "to": "idDone"
+        }
+      ]
+    },
+    "idDone": {
+      "type": "final",
+      "run": "idResult"
+    },
+    "profileStart": {
+      "type": "auto",
+      "run": "startProfile",
+      "next": [
+        {
+          "if": "!data.hprSession",
+          "to": "profileLogin"
+        },
+        {
+          "to": "profileRegistry"
+        }
+      ]
+    },
+    "profileLogin": {
+      "type": "ask",
+      "signIn": "hpr",
+      "prompt": "profileLogin",
+      "run": "profileSignIn",
+      "next": "profileRegistry",
+      "ledger": {
+        "label": "Sign in to HPR",
+        "stage": "Personal details"
+      }
+    },
+    "profileRegistry": {
+      "type": "auto",
+      "run": "loadRegistry",
+      "next": [
+        {
+          "if": "data.registryRecord",
+          "to": "profileMasters"
+        },
+        {
+          "if": "data.hasDraft",
+          "to": "profileResume"
+        },
+        {
+          "to": "profileMasters"
+        }
+      ]
+    },
+    "profileResume": {
+      "type": "ask",
+      "prompt": "profileResume",
+      "run": "chooseResume",
+      "next": "profileMasters"
+    },
+    "profileMasters": {
+      "type": "auto",
+      "run": "loadProfileMasters",
+      "next": [
+        {
+          "if": "data.goto == 'address'",
+          "to": "address"
+        },
+        {
+          "if": "data.goto == 'contact'",
+          "to": "contact"
+        },
+        {
+          "if": "data.goto == 'registration'",
+          "to": "registration"
+        },
+        {
+          "if": "data.goto == 'qualifications'",
+          "to": "qualification"
+        },
+        {
+          "if": "data.goto == 'work'",
+          "to": "work"
+        },
+        {
+          "if": "data.goto == 'review'",
+          "to": "review"
+        },
+        {
+          "to": "personal"
+        }
+      ]
+    },
+    "personal": {
+      "type": "ask",
+      "revisit": true,
+      "prompt": "personal",
+      "run": "savePersonal",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "address"
+        }
+      ],
+      "ledger": {
+        "label": "Personal details",
+        "stage": "Personal details",
+        "doneIf": "data.draft.sections.personal.complete"
+      }
+    },
+    "address": {
+      "type": "ask",
+      "revisit": true,
+      "prompt": "address",
+      "run": "saveAddress",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "if": "data.needsDistrict",
+          "to": "addressDistricts"
+        },
+        {
+          "to": "contact"
+        }
+      ],
+      "ledger": {
+        "label": "Communication address",
+        "stage": "Address & contact",
+        "doneIf": "data.draft.sections.address.complete"
+      }
+    },
+    "addressDistricts": {
+      "type": "auto",
+      "run": "loadAddressDistricts",
+      "next": "addressDistrict"
+    },
+    "addressDistrict": {
+      "type": "ask",
+      "prompt": "addressDistrict",
+      "run": "saveAddressDistrict",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "contact"
+        }
+      ]
+    },
+    "contact": {
+      "type": "ask",
+      "revisit": true,
+      "prompt": "contact",
+      "run": "saveContact",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "registration"
+        }
+      ],
+      "ledger": {
+        "label": "Contact",
+        "stage": "Address & contact",
+        "doneIf": "data.draft.sections.contact.complete"
+      }
+    },
+    "registration": {
+      "type": "ask",
+      "revisit": true,
+      "prompt": "registration",
+      "run": "saveRegistrationCouncil",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "loadCouncils"
+        }
+      ],
+      "ledger": {
+        "label": "System of medicine and council state",
+        "stage": "Registration",
+        "doneIf": "data.draft.sections.registration.complete"
+      }
+    },
+    "loadCouncils": {
+      "type": "auto",
+      "run": "loadCouncils",
+      "next": "registrationDetails"
+    },
+    "registrationDetails": {
+      "type": "ask",
+      "prompt": "registrationDetails",
+      "run": "saveRegistrationDetails",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "qualification"
+        }
+      ],
+      "ledger": {
+        "label": "Council registration and certificate",
+        "stage": "Registration",
+        "doneIf": "data.draft.sections.registration.complete"
+      }
+    },
+    "qualification": {
+      "type": "ask",
+      "revisit": true,
+      "prompt": "qualification",
+      "run": "saveQualificationCourse",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "if": "data.foreignQualification",
+          "to": "qualificationForeign"
+        },
+        {
+          "to": "loadColleges"
+        }
+      ],
+      "ledger": {
+        "label": "Degree or diploma",
+        "stage": "Qualifications",
+        "doneIf": "data.draft.sections.qualifications.complete"
+      }
+    },
+    "qualificationForeign": {
+      "type": "ask",
+      "prompt": "qualificationForeign",
+      "run": "saveQualificationForeign",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "qualificationMore"
+        }
+      ]
+    },
+    "loadColleges": {
+      "type": "auto",
+      "run": "loadColleges",
+      "next": "qualificationCollege"
+    },
+    "qualificationCollege": {
+      "type": "ask",
+      "prompt": "qualificationCollege",
+      "run": "saveQualificationCollege",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "loadUniversities"
+        }
+      ],
+      "ledger": {
+        "label": "College",
+        "stage": "Qualifications",
+        "doneIf": "data.draft.sections.qualifications.complete"
+      }
+    },
+    "loadUniversities": {
+      "type": "auto",
+      "run": "loadUniversities",
+      "next": "qualificationDetails"
+    },
+    "qualificationDetails": {
+      "type": "ask",
+      "prompt": "qualificationDetails",
+      "run": "saveQualificationDetails",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "qualificationMore"
+        }
+      ],
+      "ledger": {
+        "label": "University, year and certificate",
+        "stage": "Qualifications",
+        "doneIf": "data.draft.sections.qualifications.complete"
+      }
+    },
+    "qualificationMore": {
+      "type": "ask",
+      "prompt": "qualificationMore",
+      "run": "chooseQualificationMore",
+      "next": [
+        {
+          "if": "data.addQualification",
+          "to": "qualification"
+        },
+        {
+          "to": "work"
+        }
+      ]
+    },
+    "work": {
+      "type": "ask",
+      "revisit": true,
+      "prompt": "work",
+      "run": "saveWork",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "if": "data.workGovt",
+          "to": "workGovt"
+        },
+        {
+          "if": "data.working",
+          "to": "workFacility"
+        },
+        {
+          "to": "review"
+        }
+      ],
+      "ledger": {
+        "label": "Current work",
+        "stage": "Work",
+        "doneIf": "data.draft.sections.work.complete"
+      }
+    },
+    "workGovt": {
+      "type": "ask",
+      "prompt": "workGovt",
+      "run": "saveWorkGovt",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "workFacility"
+        }
+      ],
+      "ledger": {
+        "label": "Government work",
+        "stage": "Work"
+      }
+    },
+    "workFacility": {
+      "type": "ask",
+      "prompt": "workFacility",
+      "run": "saveWorkFacility",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "if": "data.needsFacilityAddress",
+          "to": "workFacilityDistricts"
+        },
+        {
+          "to": "review"
+        }
+      ],
+      "ledger": {
+        "label": "Where you work",
+        "stage": "Work"
+      }
+    },
+    "workFacilityDistricts": {
+      "type": "auto",
+      "run": "loadWorkDistricts",
+      "next": "workFacilityAddress"
+    },
+    "workFacilityAddress": {
+      "type": "ask",
+      "prompt": "workFacilityAddress",
+      "run": "saveWorkFacilityAddress",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "review"
+        }
+      ]
+    },
+    "review": {
+      "type": "ask",
+      "revisit": true,
+      "prompt": "review",
+      "run": "submitProfile",
+      "next": [
+        {
+          "if": "data.paused",
+          "to": "paused"
+        },
+        {
+          "to": "profileDone"
+        }
+      ],
+      "ledger": {
+        "label": "Review and submit to HPR",
+        "stage": "Review & submit"
+      }
+    },
+    "paused": {
+      "type": "final",
+      "run": "pausedResult"
+    },
+    "profileDone": {
+      "type": "final",
+      "run": "profileResult"
+    }
   }
 }
