@@ -193,12 +193,27 @@ export const patientAbhaJourney = {
         loadPatients: async (s, d) => {
                 const patients = await d.patients.list();
                 const preset = s.data.patientId && patients.find((p) => p.value === s.data.patientId);
-                return { data: { patients, ...(preset ? { patientName: preset.label, patientMobile: preset.mobile } : {}) } };
+                return { data: { patients, ...(preset ? { patientName: preset.label, patientMobile: preset.mobile, hasAbha: !!preset.abhaNumber } : {}) } };
             },
         // pickPatient
         choosePatient: async (a, s) => {
                 const p = s.data.patients.find((x) => x.value === a.patientId);
-                return { data: { patientId: a.patientId, patientName: p?.label || '', patientMobile: p?.mobile || '' } };
+                return { data: { patientId: a.patientId, patientName: p?.label || '', patientMobile: p?.mobile || '', hasAbha: !!p?.abhaNumber } };
+            },
+        // viewAbha: a patient whose ABHA is already recorded — read-only.
+        viewAbha: async (s) => {
+                const p = s.data.patients.find((x) => x.value === s.data.patientId) || {};
+                return {
+                    result: {
+                        ok: true,
+                        readonly: true,
+                        title: `${s.data.patientName || 'This patient'} has an ABHA`,
+                        text: 'Recorded on the patient. It can’t be changed here.',
+                        facts: [['ABHA number', p.abhaNumber || '—'], ...(p.abhaAddress ? [['ABHA address', p.abhaAddress]] : []), ['Patient', s.data.patientName || '—']],
+                        again: 'Set up ABHA for another patient',
+                        againFresh: true,
+                    },
+                };
             },
         // mode
         chooseMode: async (a) => ({ data: { mode: a.choice } }),
@@ -319,6 +334,9 @@ export const patientAbhaJourney = {
                 return {
                     result: {
                         ok: true,
+                        readonly: true,
+                        again: 'Set up ABHA for another patient',
+                        againFresh: true,
                         title: s.data.mode === 'create' ? 'ABHA created and recorded' : 'ABHA verified and recorded',
                         text: s.data.patientId === NEW_PATIENT ? 'A new patient record was created from the ABHA.' : `Saved on ${s.data.patientName}’s record.`,
                         facts: [

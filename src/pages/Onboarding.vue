@@ -23,6 +23,8 @@ import { checkProviderConformance } from '../data/control/providerConformance.js
 import { checkAffiliateOrganizationConformance } from '../data/control/affiliateOrganizationConformance.js';
 import { checkAffiliatePractitionerConformance } from '../data/control/affiliatePractitionerConformance.js';
 import { API_BASE } from '../config.js';
+import { accountRecords } from '../journeys/accountRecords.js';
+import { loadFacilities, isSubmitted, facilityLine } from '../journeys/hfrFacilities.js';
 
 // Cards whose drawer needs the FULL Provider record rather than a single-group slice — either
 // because their own capture spans more than one real FHIR resource/group linkId
@@ -51,6 +53,12 @@ const RENDERER_GROUP_LINK_IDS = new Set(['section_hospital', 'section_hours', 's
 
 const onboarding = useOnboardingStore();
 const auth = useAuthStore();
+
+// The HFR facilities this account has registered or started (the HFR journey's list). The
+// Facility profile and HFR registration are independent — this only shows where each stands and
+// links across, so the two don't look disconnected.
+const hfrFacilities = ref([]);
+if (auth.currentUser?.id) loadFacilities(accountRecords(auth.currentUser.id)).then((list) => { hfrFacilities.value = list; }).catch(() => {});
 const route = useRoute();
 const router = useRouter();
 
@@ -219,11 +227,13 @@ function groupInstances(groupLinkId) {
 
 function cardStatus(card) {
   if (card.mode === 'single') return getAnswer(onboarding.getProviderRecord(), 'hospital_name') ? 'Saved' : 'Not started';
-  // ABDM registration isn't a captured QuestionnaireResponse group (FacilityHfrPanel.vue talks
-  // to the real gateway directly) — hospital_tracking_id is the real signal that at least the
-  // first stage (Basic Information) has gone through, patched onto the record by that panel's
-  // own doBasicInfo().
-  if (card.mode === 'abdm') return getAnswer(onboarding.getProviderRecord(), 'hospital_tracking_id') ? 'Started' : 'Not started';
+  // ABDM registration isn't a captured QuestionnaireResponse group: it's the HFR journey's own
+  // facility list (journeys/hfrFacilities.js), one entry per facility registered or started.
+  if (card.mode === 'abdm') {
+    const registered = hfrFacilities.value.filter(isSubmitted).length;
+    if (registered) return `${registered} registered`;
+    return hfrFacilities.value.length ? 'Started' : 'Not started';
+  }
   // D1 data, not a QuestionnaireResponse group — practitionerAffiliates is its own reactive ref
   // (loadPractitionerAffiliates above), not groupInstances().
   const n = groupInstances(card.groupLinkId).length;
@@ -524,12 +534,22 @@ function goToClinicHome() {
           </div>
           <!-- HFR registration is the guided Registries journey now (src/journeys/specs/hfr.journey.json),
                the same one Cübo runs — FacilityHfrPanel.vue and its hand-coded ledger are retired. -->
-          <div class="cf-card rounded-2xl p-4 mt-3" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
-            <div>
-              <p class="cf-label" style="margin:0">Register this facility with HFR</p>
-              <p class="text-sm" style="color:var(--cf-text);margin:.25rem 0 0">A guided journey: the facility manager signs in with their HPR ID, then Cübo collects the details step by step and submits them to HFR.</p>
+          <div class="cf-card rounded-2xl p-4 mt-3" data-testid="profile-hfr-facilities">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+              <div>
+                <p class="cf-label" style="margin:0">Your HFR facilities</p>
+                <p class="text-sm" style="color:var(--cf-text);margin:.25rem 0 0">
+                  Registered through the guided HFR journey — each facility separately, independent of this profile. Registered ones are read-only.
+                </p>
+              </div>
+              <RouterLink to="/registries/hfr" class="ui-btn ui-btn-primary"><i class="fas fa-hospital"></i> {{ hfrFacilities.length ? 'Open HFR registration' : 'Register with HFR' }}</RouterLink>
             </div>
-            <RouterLink to="/registries/hfr" class="ui-btn ui-btn-primary"><i class="fas fa-hospital"></i> Open HFR registration</RouterLink>
+            <ul v-if="hfrFacilities.length" style="list-style:none;margin:.75rem 0 0;padding:0;display:flex;flex-direction:column;gap:.35rem">
+              <li v-for="f in hfrFacilities" :key="f.trackingId" class="text-sm" style="display:flex;align-items:center;gap:.5rem;color:var(--cf-text)">
+                <i class="fas" :class="isSubmitted(f) ? 'fa-circle-check' : 'fa-file-pen'" :style="{ color: isSubmitted(f) ? '#16a34a' : '#b45309' }"></i>{{ facilityLine(f) }}
+              </li>
+            </ul>
+            <p v-else class="text-sm" style="color:var(--cf-text);margin:.75rem 0 0">No facility registered with HFR yet.</p>
           </div>
         </template>
 

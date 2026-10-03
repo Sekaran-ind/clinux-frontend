@@ -13,6 +13,12 @@
 //       "<id>": { "type": "final", "result": { "ok", "title", "text" } } // a fixed result
 //     }
 //   }
+//   An ask step may say "signIn": "<registry>" (e.g. "hpr"): it signs the person in to that
+//   registry. Cübo's profile holds that sign-in (journeys/profile.js), and the progress menu
+//   shows who is signed in.
+//   An ask step may say "revisit": true: once answered, the person can go back to it (the progress
+//   menu's done steps, the form's Back button) and the journey runs forward again from there. Only
+//   mark steps whose action is safe to repeat — not OTPs or one-time transactions.
 //   <next> is a step id, or [{ "if": "<condition>", "to": "<step>" }, ..., { "to": "<step>" }].
 //   <condition> is a tiny, safe expression over the journey's data: `data.renewed`,
 //   `!data.mobileMatched`, `data.mode == 'register'`, `data.count != 0`, joined by && / ||.
@@ -27,7 +33,7 @@
 // (state, deps), a prompt (state, deps) -> prompt; state is { data, error }. An action returns
 // { data } (merged) and/or { result }.
 //
-// The runner API is the one JourneyThread.vue drives: createRunner(journey, deps) -> { start,
+// The runner API is the one journeys/sessions.js drives: createRunner(journey, deps) -> { start,
 // answer, cancel }, each resolving to { prompt } or { done: true, result }.
 import { assign, createActor, createMachine, fromPromise, waitFor } from 'xstate';
 
@@ -100,6 +106,8 @@ export function ledgerOf(spec, { data = {}, visited = [], current = null } = {})
       id,
       label: spec.steps[id].ledger.label,
       ...(spec.steps[id].ledger.icon ? { icon: spec.steps[id].ledger.icon } : {}),
+      ...(spec.steps[id].signIn ? { signIn: spec.steps[id].signIn } : {}),
+      ...(spec.steps[id].revisit && spec.steps[id].type === 'ask' ? { revisit: true } : {}),
       state: id === current ? 'active' : visited.includes(id) ? 'done' : 'pending',
     }));
 }
@@ -203,9 +211,25 @@ function buildMachine(journey, deps) {
     ...Object.keys(spec.steps).map((id) => ({ guard: ({ context }) => context.pending === id, target: id })),
   ];
 
+  // Going back to a step already answered ("revisit": true). The runner sends GOTO only while the
+  // journey waits for an answer, never mid-action. Steps after it count as not visited again.
+  const canRevisit = ({ context, event }) => !!spec.steps[event.step]?.revisit && spec.steps[event.step].type === 'ask' && context.visited.includes(event.step);
+
   return createMachine({
     id: 'journey',
     initial: spec.start,
+    on: {
+      GOTO: {
+        guard: canRevisit,
+        target: '.__route',
+        actions: assign(({ context, event }) => ({
+          pending: event.step,
+          answer: null,
+          error: null,
+          visited: context.visited.slice(0, context.visited.indexOf(event.step) + 1),
+        })),
+      },
+    },
     context: ({ input }) => ({ data: input || {}, answer: null, error: null, result: null, pending: null, visited: [spec.start] }),
     states: {
       ...states,
@@ -262,10 +286,19 @@ export function createXStateRunner(journey, deps) {
     return view(await settle());
   }
 
+  /** Goes back to an answered step marked "revisit": true; resolves to its prompt. */
+  async function back(step) {
+    if (finished || !actor) throw new Error('This journey has ended.');
+    if (!askStepOf(actor.getSnapshot())) throw new Error('Wait for the current step to finish.');
+    if (!journey.spec.steps[step]?.revisit) throw new Error('That step can’t be changed now.');
+    actor.send({ type: 'GOTO', step });
+    return view(await settle());
+  }
+
   async function cancel() {
     finished = true;
     actor?.stop();
   }
 
-  return { start, answer, cancel, threadId: crypto.randomUUID() };
+  return { start, answer, back, cancel, threadId: crypto.randomUUID() };
 }

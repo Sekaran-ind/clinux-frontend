@@ -16,6 +16,7 @@ const emit = defineEmits(['select']);
 const el = ref(null);
 let map = null;
 let layer = null;
+let resizeObserver = null;
 const byId = new Map();
 
 function color(active) {
@@ -45,8 +46,15 @@ onMounted(() => {
   L.tileLayer(TILE_URL, { maxZoom: 19, attribution: TILE_ATTRIBUTION }).addTo(map);
   layer = L.layerGroup().addTo(map);
   draw();
+  // Mounted inside a pane that may be hidden (chat/form toggle) or a chat bubble still laying out:
+  // re-measure whenever the box changes, or the tiles render into a 0×0 viewport.
+  resizeObserver = new ResizeObserver(() => map?.invalidateSize());
+  resizeObserver.observe(el.value);
 });
-onBeforeUnmount(() => map?.remove());
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  map?.remove();
+});
 
 watch(() => props.markers, () => map && draw(), { deep: true });
 watch(

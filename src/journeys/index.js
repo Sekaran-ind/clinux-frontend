@@ -17,8 +17,15 @@ import { pushResourceRecord } from '../data/control/resourceRecords.js';
 import { journalToAudit, recordAuditEvent } from '../data/operations.js';
 import { provenanceForAudit, recordProvenance } from '../provenance/recorder.js';
 
+import { frontDeskJourney } from './clinic/frontDeskJourney.js';
+import { consultationJourney } from './clinic/consultationJourney.js';
+import { checkoutJourney } from './clinic/checkoutJourney.js';
+import { clinicDeps } from './clinic/clinicDeps.js';
+
 export const JOURNEYS = [hprJourney, hfrJourney, patientAbhaJourney];
-export const journeyById = (id) => JOURNEYS.find((j) => j.id === id);
+// Clinic operations as journeys (Front Desk, Consultation, Checkout): one run per visit.
+export const CLINIC_JOURNEYS = [frontDeskJourney, consultationJourney, checkoutJourney];
+export const journeyById = (id) => [...JOURNEYS, ...CLINIC_JOURNEYS].find((j) => j.id === id);
 
 import { accountRecords } from './accountRecords.js';
 
@@ -55,6 +62,8 @@ export const patients = {
       value: r.id,
       label: recordSummary(r),
       mobile: getAnswer(r, 'patient_mobile') || '',
+      abhaNumber: getAnswer(r, 'patient_abha_number') || '',
+      abhaAddress: getAnswer(r, 'patient_abha_address') || '',
     }));
   },
   async saveAbha(recordId, person) {
@@ -67,6 +76,15 @@ export const patients = {
   },
 };
 
+// The Facility profile (Profiles → Facility profile, the Provider composition record): the HFR
+// journey offers its name for a new facility. Read-only here; the two stay independent.
+const PROVIDER_FORM_ID = 'system-provider-composition-v1';
+export async function facilityProfile() {
+  const rec = listDataRecords(PROVIDER_FORM_ID)[0];
+  if (!rec) return null;
+  return { name: getAnswer(rec, 'hospital_name') || '', phone: getAnswer(rec, 'hospital_phone') || '', email: getAnswer(rec, 'hospital_email') || '' };
+}
+
 /** What a journey runs against for this signed-in account. */
 export function journeyDeps(account) {
   const records = accountRecords(account.id);
@@ -77,6 +95,9 @@ export function journeyDeps(account) {
     vault,
     records,
     patients,
+    facilityProfile,
+    // The clinic's records and visit coordination (clinic journeys only; built when first used).
+    get clinic() { return clinicDeps(); },
     journal: createJournal(records),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   };

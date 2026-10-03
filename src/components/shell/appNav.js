@@ -46,16 +46,13 @@ export function buildNavGroups({ role, hasActiveEncounter = false } = {}) {
     },
     {
       label: 'Clinic operations',
+      // Journeys run inside Cübo (pages/ClinicOps.vue): each page lists its visits; a visit opens
+      // that stage's journey. Checkout no longer needs an "active encounter" — it lists the visits.
       items: [
-        { key: 'front-desk', label: 'Front Desk', icon: 'fa-clipboard-user', view: 'front-desk' },
-        { key: 'consultation-desk', label: 'Consultation Desk', icon: 'fa-stethoscope', view: 'consultation-desk' },
-        {
-          key: 'checkout', label: 'Checkout', icon: 'fa-receipt', view: 'checkout',
-          // Checkout works on the active encounter only — same gate ClinicHome's old ops-nav used
-          // (it hid the button); shown disabled here so the destination stays discoverable.
-          disabled: !hasActiveEncounter,
-          hint: hasActiveEncounter ? '' : 'Open a session at Front Desk first',
-        },
+        { key: 'clinic', label: 'Visits', icon: 'fa-hospital-user', to: '/clinic' },
+        { key: 'front-desk', label: 'Front Desk', icon: 'fa-clipboard-user', to: '/clinic/front-desk' },
+        { key: 'consultation-desk', label: 'Consultation', icon: 'fa-stethoscope', to: '/clinic/consultation' },
+        { key: 'checkout', label: 'Checkout', icon: 'fa-receipt', to: '/clinic/checkout' },
         { key: 'patients', label: 'Patients', icon: 'fa-user-injured', to: '/patient-home' },
       ],
     },

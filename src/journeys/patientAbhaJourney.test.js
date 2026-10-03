@@ -204,4 +204,17 @@ describe('mergeAbhaIntoPatientResponse', () => {
     expect(a.patient_last_name).toBe('Rao');
     expect(a.patient_name).toBe('Aasha Rao');
   });
+
+  it('a patient whose ABHA is already recorded opens read-only, without asking ABDM anything', async () => {
+    const calls = [];
+    const gateway = async (path) => { calls.push(path); throw new Error('no call expected'); };
+    const run = createRunner(patientAbhaJourney, deps(gateway, [{ value: 'rec-1', label: 'Asha Rao', mobile: '9876543210', abhaNumber: '91-1111-2222-3333', abhaAddress: 'asha@sbx' }]));
+    await run.start();
+    const view = await run.answer({ patientId: 'rec-1' });
+    expect(view.result).toMatchObject({ ok: true, readonly: true, againFresh: true });
+    expect(view.result.facts).toEqual(expect.arrayContaining([['ABHA number', '91-1111-2222-3333'], ['ABHA address', 'asha@sbx']]));
+    expect(calls).toEqual([]);
+    // Opened for that patient directly (PatientHome's "Set up ABHA"): straight to the view.
+    expect((await createRunner(patientAbhaJourney, deps(gateway, [{ value: 'rec-1', label: 'Asha Rao', abhaNumber: '91-1111-2222-3333' }])).start({ patientId: 'rec-1' })).result.readonly).toBe(true);
+  });
 });

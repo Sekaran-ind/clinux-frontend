@@ -19,6 +19,9 @@ const CUBO_CATEGORIES = {
   'patient-directory': { label: 'Patients', icon: 'fa-user-injured', color: 'text-violet-500' },
   billing: { label: 'Billing', icon: 'fa-file-invoice-dollar', color: 'text-rose-500' },
   'ai-engine': { label: 'AI Engine', icon: 'fa-robot', color: 'text-purple-500' },
+  // One thread per registry journey (HPR, HFR, Patient ABHA): the journey's conversation log,
+  // written by journeys/sessions.js while the form itself shows in the content pane.
+  registry: { label: 'Registries', icon: 'fa-id-card-clip', color: 'text-teal-500' },
   // 'administration' (SPEC-22 decision #3's "Hospital state" thread, entered by Cubo.vue's own
   // startHospitalSetup()) was removed along with that whole in-Cübo checklist mechanism — real
   // onboarding-UI rebuild retired it in favor of `/onboarding`'s own real page route (a proper
@@ -140,7 +143,7 @@ export const useCuboStore = defineStore('cubo', () => {
   // `enc-<id>`) so a thread can be looked up/queried by encounter identity later, rather than
   // only by string-matching its id. Retention (enforceFifoLimits/cleanCuboHistory) is unchanged —
   // encounter threads still share the same FIFO/expiry pool as category threads.
-  function createNewThread(category = 'general', title = 'New General Query', id = null, encounterId = null) {
+  function createNewThread(category = 'general', title = 'New General Query', id = null, encounterId = null, intro = null) {
     const threadId = id || `${category}-${Date.now()}`;
 
     if (chatThreads.has(threadId)) {
@@ -155,7 +158,7 @@ export const useCuboStore = defineStore('cubo', () => {
       pinned: false,
       timestamp: Date.now(),
       encounterId,
-      messages: [{ id: Date.now(), role: 'assistant', text: `Cübo Center active on context channel: "${title}". How can I assist?`, timestamp: Date.now() }],
+      messages: [{ id: Date.now(), role: 'assistant', text: intro || `Cübo Center active on context channel: "${title}". How can I assist?`, timestamp: Date.now() }],
     });
 
     activeThreadId.value = threadId;
@@ -168,8 +171,16 @@ export const useCuboStore = defineStore('cubo', () => {
     chatThreads.update(id, (draft) => { draft.pinned = !draft.pinned; });
   }
 
+  // Told when a thread is deleted (a registry journey's run ends with its thread — sessions.js).
+  const deleteListeners = new Set();
+  function onThreadDeleted(fn) {
+    deleteListeners.add(fn);
+    return () => deleteListeners.delete(fn);
+  }
+
   function deleteThread(id) {
     if (chatThreads.has(id)) chatThreads.delete(id);
+    deleteListeners.forEach((fn) => fn(id));
     if (activeThreadId.value === id) {
       activeThreadId.value = chatThreads.toArray[0]?.id || 'default-general';
     }
@@ -216,10 +227,12 @@ export const useCuboStore = defineStore('cubo', () => {
     lastMessageId = id;
     return id;
   }
-  function addCuboMessage(role, text, { component = null, componentProps = null } = {}) {
-    const activeThread = getActiveThread();
-    if (!activeThread) return;
-    chatThreads.update(activeThread.id, (draft) => {
+  // threadId posts into that thread instead of the active one (a journey writes its log into its
+  // own thread whichever thread the person is looking at).
+  function addCuboMessage(role, text, { component = null, componentProps = null, threadId = null } = {}) {
+    const target = threadId ? chatThreads.get(threadId) : getActiveThread();
+    if (!target) return;
+    chatThreads.update(target.id, (draft) => {
       draft.messages.push({ id: nextMessageId(), role, text, timestamp: Date.now(), component, componentProps });
       draft.timestamp = Date.now();
     });
@@ -318,7 +331,7 @@ export const useCuboStore = defineStore('cubo', () => {
     limits, specialityCatalog, specialityCatalogLoaded, profilePicker, virtualRoom,
     categoryMeta, getActiveThread, switchThread, toggleThreadView, toggleProfileView,
     loadSpecialityCatalog, rolesForPickerCode, applyVirtualRoomFromPicker, clearVirtualRoom,
-    createNewThread, togglePinThread, deleteThread, addCuboMessage, formatMsgTime,
+    createNewThread, togglePinThread, deleteThread, onThreadDeleted, addCuboMessage, formatMsgTime,
     resolveActivePersona, buildCuboContext, toggleVoiceInput,
   };
 });

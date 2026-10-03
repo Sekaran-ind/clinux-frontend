@@ -367,3 +367,52 @@
     .cubo-3pane-shell.mode-content .cubo-3pane-threads-col,
     .cubo-3pane-shell.mode-content .cubo-3pane-chat-col { display: none; }
 }
+
+/* ── Compact header (every layout): drawer toggle, thread name, Chat / Form switch, icon actions. */
+.cubo-head {
+    display: flex; align-items: center; gap: .5rem; flex-shrink: 0;
+    padding: .55rem .75rem; border-bottom: 1px solid var(--shell-border, #e5e7eb);
+    background: var(--shell-surface, #fff);
+}
+.cubo-head.roomy { padding: .75rem 1rem; }
+.cubo-head-btn {
+    width: 28px; height: 28px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+    border: none; border-radius: .4rem; background: none; color: #9ca3af; font-size: .78rem; cursor: pointer;
+}
+.cubo-head-btn:hover { background: var(--shell-hover, #f3f4f6); color: var(--color-primary, #0f766e); }
+.cubo-head-btn.on { background: var(--color-primary-soft, rgba(15,118,110,.1)); color: var(--color-primary, #0f766e); }
+.cubo-seg { display: flex; flex-shrink: 0; padding: 2px; gap: 2px; border-radius: .5rem; background: var(--shell-bg, #f3f4f6); border: 1px solid var(--shell-border, #e5e7eb); }
+.cubo-seg button {
+    display: inline-flex; align-items: center; gap: .3rem; padding: .25rem .55rem; border: none; border-radius: .375rem;
+    background: none; font-size: .72rem; font-weight: 600; color: var(--shell-text-muted, #6b7280); cursor: pointer; position: relative;
+}
+.cubo-seg button.on { background: var(--color-primary, #0f766e); color: var(--color-on-primary, #fff); }
+.cubo-seg-dot { width: 7px; height: 7px; border-radius: 50%; background: #f59e0b; }
+@media (max-width: 420px) { .cubo-seg button span:not(.cubo-seg-dot) { display: none; } }
+
+/* ── Threads drawer (single-pane layouts): slides in over the chat from the left. */
+.cubo-drawer {
+    position: absolute; top: 0; bottom: 0; left: 0; z-index: 20; width: min(320px, 88%);
+    display: flex; flex-direction: column; gap: .5rem; padding: .75rem; overflow-y: auto;
+    background: var(--shell-surface, #fff); border-right: 1px solid var(--shell-border, #e5e7eb);
+    box-shadow: 8px 0 24px -12px rgba(0,0,0,.3);
+    transform: translateX(-100%); visibility: hidden; transition: transform .2s ease, visibility 0s linear .2s;
+}
+.cubo-drawer.open { transform: none; visibility: visible; transition: transform .2s ease; }
+.cubo-drawer-backdrop {
+    position: absolute; inset: 0; z-index: 15; background: rgba(15,23,42,.28);
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+}
+.cubo-drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+
+/* ── Chat beside its content pane (splitView): the form gets the larger share. */
+.cubo-split-chat { width: 38%; min-width: 300px; max-width: 440px; flex-shrink: 0; border-right: 1px solid var(--shell-border, #e5e7eb); }
+.cubo-content-pane { padding: .75rem; background: var(--shell-bg, #f7f8fa); }
+
+/* ── THREE_PANE divider between chat and content. */
+.cubo-3pane-resizer { width: 6px; flex-shrink: 0; cursor: col-resize; background: transparent; position: relative; touch-action: none; }
+.cubo-3pane-resizer::after { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: var(--shell-border, #e5e7eb); transition: background .15s; }
+.cubo-3pane-resizer:hover::after { background: var(--color-primary, #0f766e); }
+
+/* Docked with a content pane (a journey's form): wide enough for chat and form side by side. */
+.cubo-side-pane.has-content { max-width: 64rem; }

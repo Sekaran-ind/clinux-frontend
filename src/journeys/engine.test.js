@@ -3,6 +3,7 @@ import { checkJourney, createXStateRunner, evaluate, ledgerOf, resolveNext } fro
 import { hprJourney } from './hprJourney.js';
 import { hfrJourney } from './hfrJourney.js';
 import { patientAbhaJourney } from './patientAbhaJourney.js';
+import { vault } from './vault.js';
 
 describe('conditions', () => {
   const scope = { data: { mode: 'register', renewed: false, n: 0, saved: { trackingId: 'T1' } } };
@@ -84,5 +85,21 @@ describe('ledger (from the journey JSON)', () => {
   it('leaves out the branch not taken', () => {
     const l = ledgerOf(hprJourney.spec, { data: { mode: 'link' }, visited: ['begin', 'mode', 'login'], current: 'login' });
     expect(l.map((s) => s.label)).toEqual(['Sign in to HPR']);
+  });
+});
+
+describe('vault sessions (Cübo profile source)', () => {
+  it('tells subscribers when an HPR session starts and ends', () => {
+    let calls = 0;
+    const off = vault.subscribe(() => calls++);
+    vault.setHpr('acc-x', { token: 't', hprId: 'a@hpr.abdm' });
+    expect(vault.hpr('acc-x').hprId).toBe('a@hpr.abdm');
+    vault.forgetHpr('acc-x');
+    expect(vault.hpr('acc-x')).toBeNull();
+    vault.forgetHpr('acc-x'); // nothing to forget: no call
+    off();
+    vault.setHpr('acc-x', { token: 't', hprId: 'a@hpr.abdm' });
+    expect(calls).toBe(2);
+    vault.clear();
   });
 });

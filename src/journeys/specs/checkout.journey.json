@@ -1,0 +1,26 @@
+{
+  "$comment": "Checkout, as a journey (was pages/Checkout.vue): medication and payment (sections of the visit's Encounter record), the DigiLocker-ready health-record PDF, then closing the visit. Closing completes the visit: from then on every clinic journey opens it read-only. Handlers: clinic/checkoutJourney.js.",
+  "id": "checkout",
+  "title": "Checkout",
+  "summary": "Medication, payment and closing a visit",
+  "icon": "fa-receipt",
+  "category": "encounter",
+  "related": [{ "label": "Patients", "to": "/patient-home", "icon": "fa-user-injured", "note": "The clinic's patient records" }],
+  "start": "begin",
+  "steps": {
+    "begin":       { "type": "auto", "run": "begin", "next": [
+                       { "if": "data.missing", "to": "missing" },
+                       { "if": "!data.hasEncounter", "to": "missing" },
+                       { "if": "data.closed", "to": "closed" },
+                       { "if": "data.lockedBy", "to": "locked" },
+                       { "to": "medication" } ] },
+    "medication":  { "type": "ask", "revisit": true, "prompt": "medication", "run": "saveMedication", "next": "payment", "ledger": { "label": "Medication" } },
+    "payment":     { "type": "ask", "revisit": true, "prompt": "payment", "run": "savePayment", "next": "record", "ledger": { "label": "Payment" } },
+    "record":      { "type": "ask", "revisit": true, "prompt": "record", "run": "healthRecord", "next": [{ "if": "data.stay", "to": "record" }, { "to": "close" }], "ledger": { "label": "Health record" } },
+    "close":       { "type": "ask", "prompt": "close", "run": "closeVisit", "next": [{ "if": "data.closedNow", "to": "closed" }, { "to": "done" }], "ledger": { "label": "Close the visit" } },
+    "done":        { "type": "final", "run": "result" },
+    "closed":      { "type": "final", "run": "closedView" },
+    "locked":      { "type": "final", "run": "lockedResult" },
+    "missing":     { "type": "final", "run": "missingResult" }
+  }
+}

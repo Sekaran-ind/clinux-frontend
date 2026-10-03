@@ -32,10 +32,12 @@ describe('buildNavGroups', () => {
     expect(k).toEqual(expect.arrayContaining(['facility-profile', 'professional-profile']));
   });
 
-  it('disables Checkout until there is an active encounter', () => {
-    const checkout = (o) => buildNavGroups(o).flatMap((g) => g.items).find((i) => i.key === 'checkout');
-    expect(checkout({ role: 'hospital_admin' }).disabled).toBe(true);
-    expect(checkout({ role: 'hospital_admin', hasActiveEncounter: true }).disabled).toBe(false);
+  it('clinic operations are journey pages: Checkout lists its visits, so it is never disabled', () => {
+    const ops = buildNavGroups({ role: 'hospital_admin' }).find((g) => g.label === 'Clinic operations').items;
+    expect(ops.map((i) => [i.key, i.to])).toEqual([
+      ['clinic', '/clinic'], ['front-desk', '/clinic/front-desk'], ['consultation-desk', '/clinic/consultation'], ['checkout', '/clinic/checkout'], ['patients', '/patient-home'],
+    ]);
+    expect(ops.find((i) => i.key === 'checkout').disabled).toBeFalsy();
   });
 
   it('shows every registry journey to every role', () => {
@@ -67,7 +69,11 @@ describe('activeNavKey', () => {
   });
 
   it('matches a ClinicHome view item by the current view', () => {
-    expect(activeNavKey(groups, { routePath: '/clinic-home', routeName: 'clinic-home', clinicView: 'consultation-desk' })).toBe('consultation-desk');
+    expect(activeNavKey(groups, { routePath: '/clinic-home', routeName: 'clinic-home', clinicView: 'public' })).toBe('clinic-page');
+  });
+
+  it('matches a clinic journey page by its path', () => {
+    expect(activeNavKey(groups, { routePath: '/clinic/consultation', routeName: 'clinic' })).toBe('consultation-desk');
   });
 
   it('returns null for an unknown route', () => {

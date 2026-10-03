@@ -18,6 +18,8 @@ import ConnectionStatusControl from '../ConnectionStatusControl.vue';
 import TeamChat from '../TeamChat.vue';
 import SiteFooter from '../SiteFooter.vue';
 import { useConsentStore } from '../../stores/consent.js';
+import { useJourneySessionsStore } from '../../journeys/sessions.js';
+import { revalidatePending } from '../../journeys/revalidate.js';
 import { buildNavGroups, activeNavKey, runsFacility, ROLE_LABELS } from './appNav.js';
 
 // chrome=false renders the page bare (no sidebar/top bar) — used for the public surfaces. The
@@ -87,11 +89,16 @@ const MODE_OPTIONS = [
 ];
 
 const consentStore = useConsentStore();
+const journeySessions = useJourneySessionsStore();
+// Journey FHIR resources saved while the FHIR API was unreachable: checked again once per sign-in
+// (cheap — nothing is sent unless something is pending).
+watch(() => auth.currentUser?.id, (id) => { if (id) revalidatePending(id); }, { immediate: true });
 
 function signOut() {
   userMenuOpen.value = false;
   entryWorkflow.logout();
   consentStore.reset();
+  journeySessions.reset();
   clinicView.setView('public');
   router.push('/');
 }

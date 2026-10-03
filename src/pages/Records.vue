@@ -12,12 +12,13 @@ import { useConsentStore } from '../stores/consent.js';
 import { accountRecords } from '../journeys/accountRecords.js';
 import { PROFILE, validateResource } from '../journeys/fhir.js';
 import { PROVIDER_RESOURCE } from '../journeys/hprJourney.js';
-import { FACILITY_RESOURCE } from '../journeys/hfrJourney.js';
+import { facilityResourceKey, loadFacilities } from '../journeys/hfrFacilities.js';
 import { PATIENT_FORM_ID } from '../journeys/patientRecord.js';
 import { api } from '../journeys/fhirApi.js';
 import { listDataRecords } from '../data/useSystemForms.js';
 import { CONSENTS } from '../consent/terms.js';
 import { provenanceLog } from '../provenance/store.js';
+import { revalidatePending } from '../journeys/revalidate.js';
 
 const auth = useAuthStore();
 const consent = useConsentStore();
@@ -26,19 +27,33 @@ const open = ref(null);
 const checking = ref(null);
 const msg = ref('');
 
-const JOURNEY_RESOURCES = [
-  { key: PROVIDER_RESOURCE, title: 'Your HPR identity', source: 'HPR journey', profile: PROFILE.provider, link: '/registries/hpr' },
-  { key: FACILITY_RESOURCE, title: 'Your facility', source: 'HFR journey', profile: PROFILE.facility, link: '/registries/hfr' },
-];
+// The HPR Practitioner, and one Organization per HFR facility (an account can register many).
+const HPR_RESOURCE = { key: PROVIDER_RESOURCE, title: 'Your HPR identity', source: 'HPR journey', profile: PROFILE.provider, link: '/registries/hpr' };
+const JOURNEY_RESOURCES = ref([HPR_RESOURCE]);
 
 async function loadJourneyRecords() {
   if (!auth.currentUser?.id) return;
   const r = accountRecords(auth.currentUser.id);
+  const facilities = await loadFacilities(r);
+  JOURNEY_RESOURCES.value = [
+    HPR_RESOURCE,
+    ...facilities.map((f) => ({ key: facilityResourceKey(f.trackingId), title: f.facilityName, source: `HFR journey · ${f.facilityId || `draft ${f.trackingId}`}`, profile: PROFILE.facility, link: '/registries/hfr' })),
+  ];
   const out = {};
-  for (const j of JOURNEY_RESOURCES) out[j.key] = await r.get(j.key);
+  for (const j of JOURNEY_RESOURCES.value) out[j.key] = await r.get(j.key);
   journeyRecords.value = out;
 }
-onMounted(loadJourneyRecords);
+// Anything saved while the FHIR API was unreachable is checked again now, then shown.
+onMounted(async () => {
+  await loadJourneyRecords();
+  if (rows.value.some((r) => r.journeyKey && r.validation?.status === 'pending')) {
+    const checked = await revalidatePending(auth.currentUser?.id);
+    if (checked) {
+      await loadJourneyRecords();
+      msg.value = `Checked ${checked} record${checked === 1 ? '' : 's'} that ${checked === 1 ? 'was' : 'were'} waiting for the FHIR API.`;
+    }
+  }
+});
 
 // Digital provenance kept on this device (src/provenance/): newest first. Published to
 // clinuxflow-api on the paid plan only.
@@ -63,12 +78,12 @@ const rows = computed(() => [
     id: `consent:${t.key}`, title: t.title, source: 'Consent gate', resource: consent.records[t.key].resource,
     validation: consent.records[t.key].validation, profile: null,
   })),
-  ...JOURNEY_RESOURCES.filter((j) => journeyRecords.value[j.key]).map((j) => ({
+  ...JOURNEY_RESOURCES.value.filter((j) => journeyRecords.value[j.key]).map((j) => ({
     id: j.key, title: j.title, source: j.source, resource: journeyRecords.value[j.key].resource,
     validation: journeyRecords.value[j.key].validation, profile: j.profile, journeyKey: j.key,
   })),
 ]);
-const missingJourneys = computed(() => JOURNEY_RESOURCES.filter((j) => !journeyRecords.value[j.key]));
+const missingJourneys = computed(() => [HPR_RESOURCE, { key: 'hfr', title: 'Your facility', source: 'HFR journey', link: '/registries/hfr' }].filter((j) => (j.key === 'hfr' ? JOURNEY_RESOURCES.value.length === 1 : !journeyRecords.value[j.key])));
 const patientCount = computed(() => listDataRecords(PATIENT_FORM_ID).length);
 
 const STATUS = { valid: ['Valid', 'ok'], invalid: ['Incomplete', 'bad'], pending: ['Not checked yet', 'warn'] };

@@ -8,6 +8,7 @@ import PatientHome from '../pages/PatientHome.vue';
 import Designer from '../pages/Designer.vue';
 import Dashboard from '../pages/Dashboard.vue';
 import Registries from '../pages/Registries.vue';
+import ClinicOps from '../pages/ClinicOps.vue';
 import Operations from '../pages/Operations.vue';
 import Legal from '../pages/Legal.vue';
 import Consent from '../pages/Consent.vue';
@@ -90,6 +91,9 @@ const routes = [
   // ABDM registry journeys (HPR, HFR, Patient ABHA) on clinux-cubo's LangGraph journey runtime and
   // the same clinuxflow-abdm-gateway APIs Cübo/cubo-diary use — see src/journeys/index.js.
   { path: '/registries/:journey?', name: 'registries', component: Registries, meta: { requiresAuth: true } },
+  // Clinic operations as journeys (Front Desk / Consultation / Checkout), built like Registries —
+  // see pages/ClinicOps.vue and src/journeys/clinic/.
+  { path: '/clinic/:journey?', name: 'clinic', component: ClinicOps, meta: { requiresAuth: true } },
   // Activity log / ABDM transactions / Access & roles (Swastik-style Operations) — clinuxflow-api's
   // routes/operations.js, role-scoped server-side.
   // Affiliations, terms and privacy (src/legal/legal.js, from clinux-cubo/cubo-diary) — public, and
