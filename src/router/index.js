@@ -93,6 +93,9 @@ const routes = [
   // Static paths win over /registries/:journey: the ABDM M1 Scan & Share counter and the HPR doctor roster.
   { path: '/registries/scan-share', name: 'scan-share', component: () => import('../pages/ScanShare.vue'), meta: { requiresAuth: true } },
   { path: '/registries/roster', name: 'doctor-roster', component: () => import('../pages/DoctorRoster.vue'), meta: { requiresAuth: true } },
+  // ABDM M2/M3 (shared visits, consents, records from other facilities) and Scan & Pay.
+  { path: '/registries/abdm', name: 'abdm-records', component: () => import('../pages/AbdmRecords.vue'), meta: { requiresAuth: true } },
+  { path: '/registries/scan-pay', name: 'scan-pay', component: () => import('../pages/ScanPay.vue'), meta: { requiresAuth: true } },
   { path: '/registries/:journey?', name: 'registries', component: Registries, meta: { requiresAuth: true } },
   // Clinic operations as journeys (Front Desk / Consultation / Checkout), built like Registries —
   // see pages/ClinicOps.vue and src/journeys/clinic/.

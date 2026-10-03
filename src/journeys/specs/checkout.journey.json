@@ -1,5 +1,5 @@
 {
-  "$comment": "Checkout, as a journey (was pages/Checkout.vue): medication and payment (sections of the visit's Encounter record), the DigiLocker-ready health-record PDF, then closing the visit. Closing completes the visit: from then on every clinic journey opens it read-only. Handlers: clinic/checkoutJourney.js.",
+  "$comment": "Checkout, as a journey (was pages/Checkout.vue): medication and payment (sections of the visit's Encounter record), the DigiLocker-ready health-record PDF, sharing the visit through ABDM (M2 care context; Scan & Pay bill), then closing the visit. Closing completes the visit: from then on every clinic journey opens it read-only. Handlers: clinic/checkoutJourney.js.",
   "id": "checkout",
   "title": "Checkout",
   "summary": "Medication, payment and closing a visit",
@@ -16,7 +16,10 @@
                        { "to": "medication" } ] },
     "medication":  { "type": "ask", "revisit": true, "prompt": "medication", "run": "saveMedication", "next": "payment", "ledger": { "label": "Medication" } },
     "payment":     { "type": "ask", "revisit": true, "prompt": "payment", "run": "savePayment", "next": "record", "ledger": { "label": "Payment" } },
-    "record":      { "type": "ask", "revisit": true, "prompt": "record", "run": "healthRecord", "next": [{ "if": "data.stay", "to": "record" }, { "to": "close" }], "ledger": { "label": "Health record" } },
+    "record":      { "type": "ask", "revisit": true, "prompt": "record", "run": "healthRecord", "next": [{ "if": "data.stay", "to": "record" }, { "to": "abdmCheck" }], "ledger": { "label": "Health record" } },
+    "abdmCheck":   { "type": "auto", "run": "abdmCheck", "onError": "continue", "next": [{ "if": "data.abdm.needPatient", "to": "abdmPatient" }, { "to": "abdm" }] },
+    "abdmPatient": { "type": "ask", "prompt": "abdmPatient", "run": "choosePatient", "next": [{ "if": "data.abdmPatientId", "to": "abdmCheck" }, { "to": "close" }] },
+    "abdm":        { "type": "ask", "revisit": true, "prompt": "abdm", "run": "abdmAct", "next": [{ "if": "data.stay", "to": "abdmCheck" }, { "to": "close" }], "ledger": { "label": "Share through ABDM" } },
     "close":       { "type": "ask", "prompt": "close", "run": "closeVisit", "next": [{ "if": "data.closedNow", "to": "closed" }, { "to": "done" }], "ledger": { "label": "Close the visit" } },
     "done":        { "type": "final", "run": "result" },
     "closed":      { "type": "final", "run": "closedView" },

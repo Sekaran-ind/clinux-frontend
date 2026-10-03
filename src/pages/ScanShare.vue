@@ -15,6 +15,7 @@ import QRCode from 'qrcode';
 import { useAuthStore } from '../stores/auth.js';
 import { accountRecords } from '../journeys/index.js';
 import { findHfrFacility, knownFacilities } from '../data/roster.js';
+import { callNextToken } from '../data/hie.js';
 import { ageFrom, dismissShare, fetchQueue, fetchScanShareFacilities, registerScanShareFacility, shareQrUrl, stopScanShareFacility, suggestHipName } from '../data/scanShare.js';
 
 const router = useRouter();
@@ -105,6 +106,7 @@ function printQr() {
 
 // ── Today's queue, refreshed every few seconds while this page is open ──
 const shares = ref([]);
+const counters = ref({}); // Running Token: { [counter]: { runningToken, averageMinutes } }
 const queueError = ref('');
 const onlyCounter = ref(false);
 let timer = null;
@@ -113,6 +115,7 @@ async function loadQueue() {
   try {
     const res = await fetchQueue({ facilityId: facilityId.value, ...(onlyCounter.value ? { context: counter.value.trim() } : {}) });
     shares.value = res.shares || [];
+    counters.value = res.counters || {};
     queueError.value = '';
   } catch (err) {
     queueError.value = err.message;
@@ -127,6 +130,23 @@ onMounted(async () => { await load(); loadQueue(); timer = setInterval(loadQueue
 onBeforeUnmount(() => clearInterval(timer));
 
 const waiting = computed(() => shares.value.filter((s) => s.status === 'waiting').length);
+
+// Running Token Status: what ABDM tells a patient who asks from their ABHA app which token is being served.
+const serving = computed(() => counters.value[counter.value.trim()] || null);
+const calling = ref(false);
+async function callNext() {
+  calling.value = true;
+  try {
+    const r = await callNextToken(facilityId.value, counter.value.trim());
+    counters.value = { ...counters.value, [r.context]: { runningToken: r.runningToken, averageMinutes: r.averageMinutes } };
+    queueError.value = '';
+    loadQueue();
+  } catch (err) {
+    queueError.value = err.message;
+  } finally {
+    calling.value = false;
+  }
+}
 const open = (s) => router.push({ path: '/registries/abha', query: { share: s.id } });
 async function dismiss(s) {
   try { await dismissShare(s.id); loadQueue(); } catch (err) { queueError.value = err.message; }
@@ -191,6 +211,12 @@ const GENDER = { M: 'Male', F: 'Female', O: 'Other', T: 'Other' };
             <label class="field" style="max-width:10rem"><span>Counter</span><input v-model="counter" class="cf-input" maxlength="12" placeholder="1" data-testid="scan-share-counter" /></label>
             <img v-if="qrImage" :src="qrImage" alt="Scan & Share QR for this counter" class="qr" data-testid="scan-share-qr" />
             <a :href="qrUrl" target="_blank" rel="noopener noreferrer" class="cell-code" style="word-break:break-all">{{ qrUrl }}</a>
+            <div class="serving" data-testid="running-token">
+              <div><div class="cell-muted">Now serving at counter {{ counter || '—' }}</div><div class="token-big">{{ serving?.runningToken ?? '—' }}</div>
+                <div v-if="serving?.averageMinutes" class="cell-muted">about {{ serving.averageMinutes }} min per token</div></div>
+              <button type="button" class="ui-btn ui-btn-primary" :disabled="calling || !counter" data-testid="call-next" @click="callNext"><i class="fas" :class="calling ? 'fa-spinner fa-spin' : 'fa-bullhorn'"></i> Call next</button>
+            </div>
+            <p class="cell-muted" style="margin:0;font-size:.72rem">Patients can check this token from their ABHA app (ABDM Running Token).</p>
             <div style="display:flex;gap:.5rem;flex-wrap:wrap">
               <button type="button" class="ui-btn" :disabled="!qrImage" @click="printQr"><i class="fas fa-print"></i> Print</button>
               <button type="button" class="ui-btn" @click="stop"><i class="fas fa-ban"></i> Stop taking shares</button>
@@ -213,7 +239,7 @@ const GENDER = { M: 'Male', F: 'Female', O: 'Other', T: 'Other' };
             <table class="q-table" data-testid="scan-share-queue">
               <thead><tr><th>Token</th><th>Patient</th><th>ABHA</th><th>Time</th><th></th></tr></thead>
               <tbody>
-                <tr v-for="s in shares" :key="s.id" :class="s.status">
+                <tr v-for="s in shares" :key="s.id" :class="[s.status, { serving: serving && s.context === counter.trim() && s.tokenNumber === serving.runningToken }]">
                   <td><span class="token">{{ s.tokenNumber }}</span><div class="cell-muted">counter {{ s.context || '—' }}</div></td>
                   <td>
                     <div class="cell-strong">{{ s.name || '—' }}</div>
@@ -239,6 +265,9 @@ const GENDER = { M: 'Male', F: 'Female', O: 'Other', T: 'Other' };
 </template>
 
 <style scoped>
+.serving { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .6rem .75rem; border: 1px solid var(--shell-border); border-radius: 8px; }
+.token-big { font-size: 1.6rem; font-weight: 800; color: var(--color-primary-text); line-height: 1.1; }
+tr.serving td { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
 .panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: .75rem; padding: .9rem 1rem; border-bottom: 1px solid var(--shell-border); }
 .panel-title { font-weight: 700; font-size: .9rem; color: var(--shell-text-strong); }
 .panel-sub { font-size: .75rem; color: var(--shell-text-muted); margin-top: .15rem; }

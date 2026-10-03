@@ -14,9 +14,33 @@ import { useAuthStore } from '../../stores/auth.js';
 import { API_BASE, apiFetch } from '../../config.js';
 import { chatThreads } from '../../data/collections/chatThreads.js';
 import { buildPrescriptionPdf } from './prescriptionPdf.js';
+import { answer } from './encounterRecord.js';
+import { fetchScanShareFacilities } from '../../data/scanShare.js';
+import { listBills, listCareContexts, publishBill, shareCareContext, smsNotify } from '../../data/hie.js';
+import { billProcedures, opConsultBundle } from '../../abdm/careContextBundle.js';
+import { accountRecords } from '../accountRecords.js';
+import { HPR_RECORD } from '../hprJourney.js';
 
 export const ENCOUNTER_FORM_ID = 'system-encounter-composition-v1';
 export const PATIENT_FORM_ID = 'system-patient-profile-v1';
+
+/** A patient record's details as ABDM needs them. */
+export function patientDetails(record) {
+  if (!record) return null;
+  const first = answer(record, 'patient_first_name');
+  const last = answer(record, 'patient_last_name');
+  const birthDate = answer(record, 'patient_birthdate');
+  return {
+    id: record.id,
+    name: [first, last].filter(Boolean).join(' ') || answer(record, 'patient_name'),
+    gender: answer(record, 'patient_gender'),
+    birthDate,
+    yearOfBirth: birthDate ? Number(String(birthDate).slice(0, 4)) : null,
+    mobile: answer(record, 'patient_mobile'),
+    abhaNumber: answer(record, 'patient_abha_number'),
+    abhaAddress: answer(record, 'patient_abha_address'),
+  };
+}
 
 export const newEncounterId = () => 'rec-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
 
@@ -95,6 +119,54 @@ export function clinicDeps() {
       setTimeout(() => URL.revokeObjectURL(url), 60000);
       return { qrIncluded };
     },
+
+    // ABDM at Checkout: share the visit (M2 care context) and send its bill (Scan & Pay).
+    /** The visit's patient record: the id Front Desk stored, else the one patient with the visit's name. */
+    patientOf(encounterId, chosenId = null) {
+      const record = find(ENCOUNTER_FORM_ID, encounterId);
+      const id = chosenId || answer(record, 'encounter_patient_id');
+      if (id) return find(PATIENT_FORM_ID, id);
+      const name = answer(record, 'encounter_patient_ref');
+      const same = listDataRecords(PATIENT_FORM_ID).filter((r) => name && (recordSummary(r) === name || answer(r, 'patient_name') === name));
+      return same.length === 1 ? same[0] : null;
+    },
+    async abdmStatus(encounterId, chosenPatientId = null) {
+      const { facilities = [] } = await fetchScanShareFacilities();
+      const facility = facilities[0] || null;
+      if (!facility) return { facility: null };
+      const record = find(ENCOUNTER_FORM_ID, encounterId);
+      const patient = patientDetails(this.patientOf(encounterId, chosenPatientId));
+      if (!patient) return { facility, patient: null, needPatient: true };
+      const [{ careContexts = [] }, { bills = [] }] = await Promise.all([listCareContexts({ patientReference: patient.id }), listBills(encounterId)]);
+      const unpaid = billProcedures(record).flatMap((p) => p.services).reduce((sum, x) => sum + x.amount, 0);
+      return {
+        facility, patient, unpaid,
+        careContext: careContexts.find((c) => c.careContextReference === encounterId && c.facilityId === facility.facilityId) || null,
+        bill: bills.find((b) => b.status !== 'cancelled') || null,
+      };
+    },
+    async shareVisit(encounterId, patient, facility) {
+      const record = find(ENCOUNTER_FORM_ID, encounterId);
+      if (!record) throw new Error('This visit is no longer on this device.');
+      const me = auth.currentUser;
+      const hpr = me?.id ? await accountRecords(me.id).get(HPR_RECORD).catch(() => null) : null;
+      const date = record.updatedAt || record.createdAt || new Date().toISOString();
+      const bundle = opConsultBundle({ encounter: record, patient, facility: { id: facility.facilityId, name: facility.facilityName }, practitioner: { name: hpr?.name || me?.adminName || me?.email, hprId: hpr?.hprId }, date: new Date(date).toISOString() });
+      const chief = answer(record, 'encounter_chief_complaint');
+      if (!patient.gender || !patient.yearOfBirth) throw new Error('Add the patient’s gender and date of birth to their record first — ABDM matches records on them.');
+      return shareCareContext({
+        facilityId: facility.facilityId,
+        patient: { reference: patient.id, name: patient.name, gender: patient.gender, yearOfBirth: patient.yearOfBirth, abhaAddress: patient.abhaAddress || undefined, abhaNumber: patient.abhaNumber || undefined, mobile: patient.mobile || undefined },
+        careContext: { reference: encounterId, display: `OP consultation ${new Date(date).toLocaleDateString('en-IN')}${chief ? ` — ${chief}` : ''}`.slice(0, 200), hiType: 'OPConsultation', date },
+        bundle,
+      });
+    },
+    sendBill(encounterId, patient, facility) {
+      const procedures = billProcedures(find(ENCOUNTER_FORM_ID, encounterId), { patientName: patient.name });
+      if (!procedures.length) throw new Error('This visit has no unpaid charges (Payment step: an issued invoice with an amount).');
+      return publishBill({ facilityId: facility.facilityId, abhaAddress: patient.abhaAddress, abhaNumber: patient.abhaNumber || undefined, patientName: patient.name, encounterReference: encounterId, procedures });
+    },
+    textPatient: (facility, mobile) => smsNotify(facility.facilityId, mobile),
 
     // AI SOAP draft (paid): the journey thread's typed messages are the dictation.
     paid: () => auth.currentUser?.tier === 'paid',

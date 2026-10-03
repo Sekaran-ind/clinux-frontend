@@ -7,7 +7,9 @@ import { closedView, lockVisit, lockedResult, missingResult, openVisit, saveSect
 const NEW_PATIENT = '__new';
 
 /** A new visit's starting record: just who it's for. */
-const seedFor = (patientName) => ({ data: { resourceType: 'QuestionnaireResponse', status: 'in-progress', item: [{ linkId: 'section_encounter', item: [{ linkId: 'encounter_patient_ref', answer: [{ valueString: patientName }] }] }] } });
+// encounter_patient_id isn't a form field: mergeSection keeps it, so the visit always knows its
+// patient record (encounter_patient_ref is only the name). ABDM sharing at Checkout reads it.
+const seedFor = (patientName, patientId) => ({ data: { resourceType: 'QuestionnaireResponse', status: 'in-progress', item: [{ linkId: 'section_encounter', item: [{ linkId: 'encounter_patient_ref', answer: [{ valueString: patientName }] }, ...(patientId ? [{ linkId: 'encounter_patient_id', answer: [{ valueString: patientId }] }] : [])] }] } });
 
 export const frontDeskJourney = {
   spec,
@@ -60,12 +62,12 @@ export const frontDeskJourney = {
       if (a.patientId === NEW_PATIENT) return { data: { newPatient: true } };
       const name = d.clinic.patientSummary(a.patientId);
       if (!name) throw new Error('That patient is no longer on this device.');
-      return { data: { newPatient: false, patientId: a.patientId, patientName: name, seed: seedFor(name) } };
+      return { data: { newPatient: false, patientId: a.patientId, patientName: name, seed: seedFor(name, a.patientId) } };
     },
     savePatient: async (a, s, d) => {
       const id = d.clinic.save(d.clinic.PATIENT_FORM_ID, a.qr);
       const name = d.clinic.patientSummary(id);
-      return { data: { newPatient: false, patientId: id, patientName: name, seed: seedFor(name) } };
+      return { data: { newPatient: false, patientId: id, patientName: name, seed: seedFor(name, id) } };
     },
     saveEncounter: async (a, s, d) => {
       saveSection(s, d, 'section_encounter', a.qr);

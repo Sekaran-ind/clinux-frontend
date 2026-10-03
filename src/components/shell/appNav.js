@@ -65,6 +65,10 @@ export function buildNavGroups({ role, hasActiveEncounter = false } = {}) {
         { key: 'registry-abha', label: 'Patient ABHA', icon: 'fa-id-card', to: '/registries/abha', badge: 'ABHA' },
         // ABDM M1: patients scan the facility's QR with the ABHA app (pages/ScanShare.vue).
         { key: 'registry-scan-share', label: 'Scan & Share', icon: 'fa-qrcode', to: '/registries/scan-share', badge: 'M1' },
+        // ABDM M2 (HIP) + M3 (HIU): shared visits, consents, records from elsewhere (pages/AbdmRecords.vue).
+        { key: 'registry-abdm', label: 'ABDM records', icon: 'fa-share-nodes', to: '/registries/abdm', badge: 'M2·M3' },
+        // Scan & Pay: bills paid from the ABHA app (pages/ScanPay.vue).
+        { key: 'registry-scan-pay', label: 'Scan & Pay', icon: 'fa-indian-rupee-sign', to: '/registries/scan-pay' },
         // Swastik's Doctor roster: HPR-verified practitioners per HFR facility (pages/DoctorRoster.vue).
         { key: 'registry-roster', label: 'Doctor roster', icon: 'fa-user-doctor', to: '/registries/roster', badge: 'HPR' },
       ],
