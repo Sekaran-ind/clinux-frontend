@@ -47,7 +47,7 @@ export function journalToAudit(event) {
   if (journey === 'hfr' && title.startsWith('HFR draft')) return { action: 'hfr.draft_saved', objectId: fact(event, 'Tracking id'), metadata: { trackingId: fact(event, 'Tracking id') } };
   if (journey === 'hfr' && title.endsWith('submitted to HFR')) return { action: 'hfr.submitted', objectId: fact(event, 'Facility id'), metadata: { facilityId: fact(event, 'Facility id'), trackingId: fact(event, 'Tracking id') } };
   if (journey === 'abha') {
-    const metadata = { abhaNumber: fact(event, 'ABHA number'), abhaAddress: fact(event, 'ABHA address'), recordId: event.recordId };
+    const metadata = { abhaNumber: fact(event, 'ABHA number'), abhaAddress: fact(event, 'ABHA address'), recordId: event.recordId, mode: fact(event, 'Via'), kind: fact(event, 'Patient') };
     if (title === 'Patient created from ABHA') return { action: 'abha.patient_created', objectId: event.recordId, metadata };
     if (title === 'ABHA recorded on a patient') return { action: 'abha.recorded', objectId: event.recordId, metadata };
   }

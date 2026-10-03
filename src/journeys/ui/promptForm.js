@@ -1,8 +1,8 @@
 // The prompt contract's form logic, shared by the journey's form pane (JourneyPanel.vue), Cübo's
 // chat (an answer typed into the journey's thread) and the session store (sessions.js). A prompt
-// is { text, detail?, list?, map?, link?, choices? | fields?, resend?, warning?, image?, error? }
+// is { text, detail?, list?, map?, link?, qr?, download?, choices? | fields?, resend?, warning?, image?, error? }
 // (see engine.js); a field is { name, label, type?, options?, required?, pattern?, secret?, mask?,
-// readonly?, value?, near? }.
+// readonly?, value?, near? }. type 'qrscan' holds the text a scanned QR code decodes to.
 
 const emptyValue = (f) =>
   f.type === 'checkbox' ? false
@@ -59,6 +59,7 @@ export function summarise(prompt, answer) {
       if (f.type === 'multiselect') return `${f.label}: ${v.map((x) => optionLabel(f, x)).join(', ')}`;
       if (f.type === 'geo') return `📍 ${v.lat}, ${v.lng}`;
       if (f.type === 'image') return `📎 ${f.label}: ${v.name}`;
+      if (f.type === 'qrscan') return `📷 ${f.label} scanned`;
       if (f.type === 'consent') return `✓ Agreed to NHA's Aadhaar consent (${f.texts[v.language].label})`;
       if (f.readonly) return null;
       return `${f.label}: ${f.type === 'select' ? optionLabel(f, v) : v}`;

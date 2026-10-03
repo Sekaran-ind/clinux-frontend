@@ -63,6 +63,10 @@ export function buildNavGroups({ role, hasActiveEncounter = false } = {}) {
         { key: 'registry-hpr', label: 'HPR ID', icon: 'fa-user-doctor', to: '/registries/hpr', badge: 'HPR' },
         { key: 'registry-hfr', label: 'Facility registration', icon: 'fa-hospital-user', to: '/registries/hfr', badge: 'HFR' },
         { key: 'registry-abha', label: 'Patient ABHA', icon: 'fa-id-card', to: '/registries/abha', badge: 'ABHA' },
+        // ABDM M1: patients scan the facility's QR with the ABHA app (pages/ScanShare.vue).
+        { key: 'registry-scan-share', label: 'Scan & Share', icon: 'fa-qrcode', to: '/registries/scan-share', badge: 'M1' },
+        // Swastik's Doctor roster: HPR-verified practitioners per HFR facility (pages/DoctorRoster.vue).
+        { key: 'registry-roster', label: 'Doctor roster', icon: 'fa-user-doctor', to: '/registries/roster', badge: 'HPR' },
       ],
     },
     {
